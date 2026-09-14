@@ -1,0 +1,11 @@
+# Runtime probado para CPython 3.12 x64 / Windows 11.
+# Las versiones de Qt se fijan también en sus tres ruedas transitivas.
+PySide6==6.10.2
+PySide6_Addons==6.10.2
+PySide6_Essentials==6.10.2
+shiboken6==6.10.2
+PyMuPDF==1.26.7
+fonttools==4.61.1
+pypdf==6.6.0
+Pillow==12.1.0
+numpy==2.4.1
