@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 import pytest
 
 from pdfmodder.app import MainWindow
-from pdfmodder.model import transform
+from pdfmodder.model import transform,union
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,8 +29,16 @@ def editor(qtbot,tmp_path):
 
 
 def settled(qtbot,window):
-    qtbot.waitUntil(lambda:not window.busy,timeout=30000)
+    qtbot.waitUntil(lambda:not window.busy and not getattr(window,'_rich_loading',False)
+                   and not getattr(window,'_rich_accept_pending',False)
+                   and getattr(window,'_rich_pending',None) is None
+                   and not (getattr(window,'_rich_active',False) and window._rich_timer.isActive()),timeout=30000)
     assert not window.last_error,window.last_error
+
+
+def ready_editor(qtbot,window):
+    qtbot.waitUntil(lambda:window.canvas.editor.isVisible(),timeout=30000)
+    assert not window.canvas.editor.textCursor().hasSelection(), 'Entrar en edición no debe seleccionar todo'
 
 
 def choose(qtbot,window,text):
@@ -55,6 +63,7 @@ def test_full_ui_edit_drag_save_reopen_cancel_and_failed_save(qtbot,editor,tmp_p
     assert editor.model.text(editor.canvas.ids) == "10/09/2026"
 
     # Escape during a drag must not become a move when the mouse is released.
+    editor.canvas.set_interaction_mode('move')
     cancelled_end = editor.canvas.viewport_point((glyph.origin[0]+18,glyph.origin[1]+18))
     qtbot.mousePress(editor.canvas.viewport(),Qt.LeftButton,pos=point)
     qtbot.mouseMove(editor.canvas.viewport(),pos=cancelled_end)
@@ -66,26 +75,29 @@ def test_full_ui_edit_drag_save_reopen_cancel_and_failed_save(qtbot,editor,tmp_p
 
     # A real on-page typing session, then Escape: zero committed edits.
     qtbot.mouseDClick(editor.canvas.viewport(),Qt.LeftButton,pos=point)
-    assert editor.canvas.editor.isVisible()
+    ready_editor(qtbot,editor)
+    qtbot.keyClick(editor.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
     qtbot.keyClicks(editor.canvas.editor,"99/99/9999")
     qtbot.keyClick(editor.canvas.editor,Qt.Key_Escape)
     assert not editor.canvas.editor.isVisible()
     assert editor.state["history_index"] == 0
 
     editor.start_edit()
+    ready_editor(qtbot,editor)
+    qtbot.keyClick(editor.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
     qtbot.keyClicks(editor.canvas.editor,"11/09/2026")
     qtbot.keyClick(editor.canvas.editor,Qt.Key_Return,modifier=Qt.ControlModifier)
     settled(qtbot,editor)
-    assert editor.state["preview"]
+    assert not editor.state["preview"]
     assert "11/09/2026" in "".join(g.text for g in editor.model.glyphs)
-    assert editor.state["history_index"] == 0
-    qtbot.mouseClick(editor.commit_button,Qt.LeftButton)
-    settled(qtbot,editor)
     assert editor.state["history_index"] == 1
 
     # One drag produces one history entry. The canvas emits unrotated PDF units.
     moved_glyph,start = choose(qtbot,editor,"11/09/2026")
-    center = ((moved_glyph.bbox[0]+moved_glyph.bbox[2])/2,(moved_glyph.bbox[1]+moved_glyph.bbox[3])/2)
+    # Drag inside the text box, away from the new edge/corner resize handles.
+    bounds=union(g.bbox for g in editor.model.selected(editor.canvas.ids))
+    center = ((bounds[0]+bounds[2])/2,(bounds[1]+bounds[3])/2)
+    start=editor.canvas.viewport_point(center)
     end = editor.canvas.viewport_point((center[0]+12,center[1]+10))
     deltas = []
     editor.canvas.move_requested.connect(lambda dx,dy:deltas.append((dx,dy)))
@@ -169,6 +181,8 @@ def test_typing_session_cannot_retarget_other_text(qtbot,editor):
     choose(qtbot,editor,"10/09/2026")
     initial=editor.canvas.ids[:]
     editor.start_edit()
+    ready_editor(qtbot,editor)
+    qtbot.keyClick(editor.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
     qtbot.keyClicks(editor.canvas.editor,"11/09/2026")
     other=next(g for g in editor.model.glyphs if g.origin==(48.,197.))
     point=editor.canvas.viewport_point(((other.bbox[0]+other.bbox[2])/2,(other.bbox[1]+other.bbox[3])/2))
@@ -177,10 +191,12 @@ def test_typing_session_cannot_retarget_other_text(qtbot,editor):
     assert not editor.zoom_box.isEnabled() and not editor.pages.isEnabled()
     qtbot.keyClick(editor.canvas,Qt.Key_Right)
     qtbot.wait(220)
-    assert editor.state['history_index']==0 and not editor.busy
+    # Live rendering may be in progress; it must never commit a move/edit.
+    settled(qtbot,editor)
+    assert editor.state['history_index']==0 and editor._rich_active
     qtbot.keyClick(editor.canvas.editor,Qt.Key_Return,modifier=Qt.ControlModifier)
     settled(qtbot,editor)
-    assert editor.state['preview']
+    assert not editor.state['preview'] and editor.state['history_index']==1
     assert '11/09/2026' in ''.join(g.text for g in editor.model.glyphs)
     assert ''.join(g.text for g in editor.model.glyphs).count('TOTAL')==3
 
@@ -195,6 +211,7 @@ def test_thumbnails_do_not_interrupt_typing_or_drag(qtbot,editor):
     assert not editor.busy
     editor.canvas._press=None
     editor.start_edit()
+    ready_editor(qtbot,editor)
     editor._load_visible_thumbnail()
     assert not editor.busy and editor.canvas.editor.isVisible()
     editor.cancel()

@@ -12,9 +12,13 @@ import shutil
 import subprocess
 import time
 import zipfile
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALLER = ROOT / "releases/v0.8/PDFModder-v0.8-Instalar.exe"
+sys.path.insert(0,str(ROOT))
+from pdfmodder import __version__
+LABEL = 'v'+(__version__ if __version__.split('.')[-1]!='0' else '.'.join(__version__.split('.')[:2]))
+INSTALLER = ROOT / 'releases' / LABEL / f'PDFModder-{LABEL}-Instalar.exe'
 
 
 def native(path):
@@ -57,10 +61,14 @@ def snapshot(folder):
 
 def verify():
     assert os.name == "nt", "Esta prueba requiere Windows."
+    build_report=json.loads((INSTALLER.parent/'INSTALADOR.json').read_text(encoding='utf-8'))
+    assert build_report['application']=='PDF Modder '+__version__
+    assert build_report['installer_sha256']==sha(INSTALLER)
+    assert build_report['payload_sha256']==sha(ROOT/'build/installer/PDFModderPayload.zip')
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     base = ROOT / "output/portability" / ("instalador-" + stamp)
     base.mkdir(parents=True, exist_ok=False)
-    report = {"ok": False, "started_utc": datetime.now(timezone.utc).isoformat(),
+    report = {"ok": False, "app_version": __version__, "started_utc": datetime.now(timezone.utc).isoformat(),
               "installer_sha256": sha(INSTALLER), "test_directory": str(base), "tests": []}
     expected = {}
     with zipfile.ZipFile(ROOT / "build/installer/PDFModderPayload.zip") as archive:
@@ -72,7 +80,8 @@ def verify():
         for name, digest in expected.items():
             file = native(target / name)
             assert file.is_file() and sha(file) == digest, "Archivo incorrecto: " + str(file)
-        assert (target / ".pdfmodder-installation.json").is_file()
+        marker=json.loads((target / ".pdfmodder-installation.json").read_text(encoding='utf-8-sig'))
+        assert marker['application_id']=='PDFModder.Windows.PerUser' and marker['version']==__version__
         return len(expected)
 
     def install(target, name):
@@ -160,6 +169,7 @@ def verify():
         assert result["exit_code"] == 0, result
         app = json.loads(app_report.read_text(encoding="utf-8"))
         assert app["ok"] and app["frozen"] and app["stage"] == "complete"
+        assert app['app_version']==__version__
         assert len(app["steps"]) == 23 and all(step["ok"] for step in app["steps"])
         assert app["exe_sha256"] == expected["PDFModder.exe"]
         assert Path(app["source"]).is_relative_to(target)

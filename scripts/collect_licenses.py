@@ -29,14 +29,18 @@ EXPECTED_RUNTIME = {
     "pypdf": "6.6.0",
     "pillow": "12.1.0",
     "numpy": "2.4.1",
+    "pyhanko": "0.33.0",
+    "pyhanko-certvalidator": "0.29.1",
+    "cryptography": "50.0.1",
 }
 APP_ROOT_FILES = (
-    "LICENSE", "README.md", "requirements.txt", "requirements-dev.txt",
+    ".gitignore", "LICENSE", "README.md", "requirements.txt", "requirements-dev.txt",
     "requirements-lock-win-py312.txt", "pyproject.toml", "PDFModder.spec",
     "run_pdfmodder.py",
 )
-APP_DIRECTORIES = ("pdfmodder", "scripts", "tests", "docs", "examples", "assets")
-EXCLUDE_PARTS = {"__pycache__", ".pytest_cache", ".git", ".venv", "dist", "build"}
+APP_DIRECTORIES = ("pdfmodder", "scripts", "tests", "docs", "examples", "assets", "installer", ".github")
+EXCLUDE_PARTS = {"__pycache__", ".pytest_cache", ".git", ".venv", "dist", "build", "output", "releases", "tmp"}
+FORBIDDEN_SOURCE_SUFFIXES = {".exe", ".zip", ".dll", ".pyd", ".key", ".pem", ".pfx", ".p12", ".log"}
 LICENSE_NAMES = re.compile(r"^(?:licen[sc]e|copying|copyright|notice|authors)(?:[._-].*)?$", re.I)
 
 
@@ -61,19 +65,34 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def stage_source(destination: Path) -> list[dict[str, str]]:
+def source_files() -> list[tuple[Path, Path]]:
+    """One allowlist for the corresponding source and the GitHub source archive."""
     files = [ROOT / name for name in APP_ROOT_FILES if (ROOT / name).is_file()]
     for dirname in APP_DIRECTORIES:
         directory = ROOT / dirname
         if directory.is_dir():
             files.extend(path for path in directory.rglob("*") if path.is_file())
-    manifest = []
+    selected = []
+    seen = set()
     for file in sorted(set(files)):
         relative = file.relative_to(ROOT)
-        if any(part in EXCLUDE_PARTS for part in relative.parts) or file.suffix in {".pyc", ".pyo"}:
+        if any(part.casefold() in EXCLUDE_PARTS for part in relative.parts) or file.suffix.lower() in {".pyc", ".pyo"}:
             continue
         if file.is_symlink() or not file.resolve().is_relative_to(ROOT):
             raise RuntimeError(f"No se empaqueta un enlace a un archivo externo: {relative}")
+        if file.suffix.lower() in FORBIDDEN_SOURCE_SUFFIXES:
+            raise RuntimeError(f"Archivo no previsto para publicar como fuente: {relative}")
+        key = relative.as_posix().casefold()
+        if key in seen:
+            raise RuntimeError(f"Ruta repetida en las fuentes: {relative}")
+        seen.add(key)
+        selected.append((file, relative))
+    return selected
+
+
+def stage_source(destination: Path) -> list[dict[str, str]]:
+    manifest = []
+    for file, relative in source_files():
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(file, target)

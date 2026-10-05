@@ -110,7 +110,10 @@ def line_window(qtbot,tmp_path):
 
 
 def settled(qtbot,window):
-    qtbot.waitUntil(lambda:not window.busy,timeout=30000)
+    qtbot.waitUntil(lambda:not window.busy and not getattr(window,'_rich_loading',False)
+                   and not getattr(window,'_rich_accept_pending',False)
+                   and getattr(window,'_rich_pending',None) is None
+                   and not (getattr(window,'_rich_active',False) and window._rich_timer.isActive()),timeout=30000)
     assert not window.last_error,window.last_error
 
 
@@ -155,7 +158,7 @@ def test_line_adjustment_request_scope_and_explicit_full_line_area(qtbot,line_wi
     assert not window._request(text="otro texto",formatting=True,adjust_line=True).line_reflow
 
 
-def test_double_click_line_preview_cancel_then_word_preview_during_thumbnail_commit_save(qtbot,line_window,tmp_path):
+def test_legacy_line_preview_cancel_then_word_preview_during_thumbnail_commit_save(qtbot,line_window,tmp_path):
     window,source=line_window
     original=source.read_bytes()
     original_revision=window.model.revision
@@ -163,10 +166,13 @@ def test_double_click_line_preview_cancel_then_word_preview_during_thumbnail_com
     line=window.model.group(first,"line")
     original_bounds=union(g.bbox for g in window.model.selected(line))
     window.canvas.set_selection(line)
-    double_click_sequence(qtbot,window.canvas,center(first))
+    # The explicit legacy route retains justified-line redistribution and
+    # its two-step preview. Rich editing is exercised by test_ui.py.
+    window.start_legacy_edit()
     assert window.canvas.ids==line
     assert window.canvas.editor.isVisible()
     assert window.line_reflow_box.isEnabled()  # Can opt out while typing.
+    qtbot.keyClick(window.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
     qtbot.keyClicks(window.canvas.editor,"Inicio amplio final")
     qtbot.keyClick(window.canvas.editor,Qt.Key_Return,modifier=Qt.ControlModifier)
     settled(qtbot,window)
@@ -186,9 +192,11 @@ def test_double_click_line_preview_cancel_then_word_preview_during_thumbnail_com
     window._load_visible_thumbnail()
     assert window.busy and window._thumbnail_busy
     glyph=glyph_for(window,"breve")
-    double_click_sequence(qtbot,window.canvas,center(glyph))
+    window.canvas.set_selection(window.model.group(glyph,'word'))
+    window.start_legacy_edit()
     assert window.canvas.editor.isVisible()
     assert window.canvas.editor.toPlainText()=="breve"
+    qtbot.keyClick(window.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
     qtbot.keyClicks(window.canvas.editor,"descartado")
     qtbot.keyClick(window.canvas.editor,Qt.Key_Return,modifier=Qt.ControlModifier)
     assert window._pending_text_preview is not None
@@ -197,7 +205,8 @@ def test_double_click_line_preview_cancel_then_word_preview_during_thumbnail_com
     assert not window.canvas.editor.isVisible()
     assert window.state["history_index"]==0
 
-    double_click_sequence(qtbot,window.canvas,center(glyph))
+    window.start_legacy_edit()
+    qtbot.keyClick(window.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
     qtbot.keyClicks(window.canvas.editor,"extenso")
     qtbot.keyClick(window.canvas.editor,Qt.Key_Return,modifier=Qt.ControlModifier)
     assert window._pending_text_preview is not None
@@ -227,6 +236,7 @@ def test_double_click_line_preview_cancel_then_word_preview_during_thumbnail_com
     window.open_document(output)
     settled(qtbot,window)
     double_click_sequence(qtbot,window.canvas,center(glyph_for(window,"extenso")))
+    qtbot.waitUntil(lambda:window.canvas.editor.isVisible(),timeout=30000)
     assert window.canvas.editor.isVisible()
     assert window.canvas.editor.toPlainText()=="extenso"
     window.cancel()
@@ -260,11 +270,13 @@ def test_tagged_justified_word_can_be_edited_again_after_save_and_reopen(qtbot,l
         window.mode_box.setCurrentIndex(window.mode_box.findData("word"))
         qtbot.mouseClick(window.canvas.viewport(),Qt.LeftButton,pos=window.canvas.viewport_point((10.,10.)))
         double_click_sequence(qtbot,window.canvas,center(glyph))
+        qtbot.waitUntil(lambda:window.canvas.editor.isVisible(),timeout=30000)
         assert window.canvas.editor.isVisible()
         assert window.canvas.editor.toPlainText()==old
         assert window.model.text(window.canvas.ids)==old
         request=window._request(text=new,formatting=True,adjust_line=True)
         assert request.line_reflow and request.width is None and request.height is None
+        qtbot.keyClick(window.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
         qtbot.keyClicks(window.canvas.editor,new)
         qtbot.keyClick(window.canvas.editor,Qt.Key_Return,modifier=Qt.ControlModifier)
         settled(qtbot,window)

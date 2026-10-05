@@ -6,7 +6,7 @@ import traceback
 import pymupdf as fitz
 from pypdf import PdfReader
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QApplication, QDialog, QToolBar
+from PySide6.QtWidgets import QApplication, QDialog, QToolButton
 import pytest
 
 from pdfmodder.app import MainWindow
@@ -34,12 +34,13 @@ def settled(qtbot,window):
     assert not window.last_error,window.last_error
 
 
-def toolbar_button(window,action):
-    for toolbar in window.findChildren(QToolBar):
-        button=toolbar.widgetForAction(action)
-        if button is not None:
-            return button
-    raise AssertionError(f'No hay botón visible para {action.text()}')
+def advanced_tool_button(window,name,action):
+    window.advanced_tools_section.set_expanded(True)
+    button=window.findChild(QToolButton,name)
+    assert button is not None and button.defaultAction() is action
+    window.tools_scroll.ensureWidgetVisible(button)
+    assert button.isVisible() and button.isEnabled(),action.text()
+    return button
 
 
 def test_click_place_text_real_typography_dialog_preview_commit_save_and_reopen(qtbot,composing_editor,tmp_path):
@@ -52,10 +53,12 @@ def test_click_place_text_real_typography_dialog_preview_commit_save_and_reopen(
     assert window.model and window.state['page_count']==2
 
     # Starting text placement while inspecting images must return to text mode.
-    qtbot.mouseClick(toolbar_button(window,window.image_mode_action),Qt.LeftButton)
+    qtbot.mouseClick(advanced_tool_button(window,'toolSelectImages',window.image_mode_action),Qt.LeftButton)
     assert window.canvas.image_mode
-    assert window.add_text_action.isEnabled()
-    qtbot.mouseClick(toolbar_button(window,window.add_text_action),Qt.LeftButton)
+    # The explicit font/dimension dialog remains in Advanced tools; the main
+    # Add text action now starts the inline editor tested by workflow_v150.
+    assert window.add_text_properties_action.isEnabled()
+    qtbot.mouseClick(advanced_tool_button(window,'toolAddTextProperties',window.add_text_properties_action),Qt.LeftButton)
     assert window.canvas.placement_mode and not window.canvas.image_mode
     assert not window.save_action.isEnabled()
     assert window.state['history_index']==0
@@ -120,6 +123,7 @@ def test_click_place_text_real_typography_dialog_preview_commit_save_and_reopen(
     preview_text=''.join(g.text for g in window.model.glyphs)
     assert preview_text.count(expected_text)==1
     assert window.commit_button.isEnabled()
+    window.tools_scroll.ensureWidgetVisible(window.commit_button)
     qtbot.mouseClick(window.commit_button,Qt.LeftButton)
     settled(qtbot,window)
     assert not window.state['preview'] and window.state['history_index']==1

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QImageIOHandler
-from PySide6.QtWidgets import QComboBox, QDialog
+from PySide6.QtWidgets import QComboBox, QDialog, QCheckBox
 import pytest
 
 from pdfmodder.dialogs import FontPicker, TextDialog
@@ -191,16 +191,18 @@ def test_format_dialog_keeps_existing_anchor_and_does_not_rewrite_colour(qtbot,m
     class Dialog:
         def __init__(self,*args,**kwargs):
             self.align_box=QComboBox()
+            self.allow_overlap_box=QCheckBox()
             for value in ('left','center','right'):
                 self.align_box.addItem(value,value)
         def values(self):
-            return dict(text='Original',width=100,height=30,size=12.375,font_name=None,font_file=None,color=None,reflow=False,align=self.align_box.currentData())
+            return dict(text='Original',width=100,height=30,size=12.375,font_name=None,font_file=None,color=None,reflow=False,align=self.align_box.currentData(),allow_overlap=self.allow_overlap_box.isChecked())
     monkeypatch.setattr(dialogs,'TextDialog',Dialog)
     glyph=SimpleNamespace(font='Helvetica',size=12.375,color=(.1,.2,.3,.4),opacity=1,direction=(1,0),mode=0,bbox=(30,40,130,60))
     model=SimpleNamespace(revision='unchanged',selected=lambda ids:[glyph],text=lambda ids:'Original')
     anchor=QComboBox()
     anchor.addItem('Derecha','right')
     harness=SimpleNamespace(page_number=0,model=model,canvas=SimpleNamespace(ids=[0]),anchor_box=anchor,
+        allow_overlap_box=QCheckBox(),auto_height_box=QCheckBox(),
         _catalog=lambda callback:callback(catalog),_exec_edit_dialog=lambda dialog:QDialog.Accepted,
         _request=lambda **kwargs:SimpleNamespace(**kwargs),_error=lambda msg:pytest.fail(msg),
         _submit=lambda cmd,payload,callback:captured.append(payload['request']),_previewed=lambda *_:None)

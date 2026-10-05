@@ -170,7 +170,8 @@ def test_visual_crop_dialog_drag_numbers_rotation_and_cancel(qtbot):
     qtbot.addWidget(dialog)
     dialog.show()
     qtbot.waitExposed(dialog)
-    assert dialog.operation()=={'replacement_bytes':None,'crop':(0,0,1,1),'rotation':0}
+    assert dialog.operation()=={'replacement_bytes':None,'crop':(0,0,1,1),'rotation':0,
+                               'fit_mode':'fit','flip_horizontal':False,'flip_vertical':False}
     r=dialog.canvas.image_rect()
     start=QPoint(round(r.left()+r.width()*.1),round(r.top()+r.height()*.1))
     end=QPoint(round(r.left()+r.width()*.6),round(r.top()+r.height()*.8))
@@ -184,9 +185,13 @@ def test_visual_crop_dialog_drag_numbers_rotation_and_cancel(qtbot):
     dialog.crop_spins[3].setValue(100)
     dialog.rotation_box.setCurrentIndex(1)
     operation=dialog.operation()
-    assert operation=={'replacement_bytes':None,'crop':(0,0,.5,1),'rotation':90}
+    assert operation=={'replacement_bytes':None,'crop':(0,0,.5,1),'rotation':90,
+                       'fit_mode':'fit','flip_horizontal':False,'flip_vertical':False}
     output,report=edit_image_pdf(sample(),0,'0',**operation)
-    assert report['verified'] and export_image_pdf(output,0,'0')['width_px']==20
+    asset=export_image_pdf(output,0,'0')
+    assert report['verified'] and report['pixels_preserved']
+    assert (asset['width_px'],asset['height_px'])==(40,20)
+    assert rgba(asset['image_bytes'])==rgba(image_bytes())
     qtbot.keyClick(dialog,Qt.Key_Escape)
     assert dialog.result()==0
 

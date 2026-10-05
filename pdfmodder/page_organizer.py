@@ -16,8 +16,9 @@ class PageOrganizerDialog(QDialog):
     import_requested = Signal(object, int)  # list[str] paths, final insertion index
     thumbnail_requested = Signal(str, int)  # source id, source page index
 
-    def __init__(self, pages, parent=None):
+    def __init__(self, pages, parent=None, *, capabilities=None):
         super().__init__(parent)
+        self._capabilities = dict(capabilities or {})
         self.setWindowTitle("Organizar páginas")
         self.resize(830, 690)
         self._busy = False
@@ -186,12 +187,22 @@ class PageOrganizerDialog(QDialog):
 
     def _update_buttons(self):
         selected = bool(self.page_list.selectedItems())
-        for button in (self.up_button, self.down_button, self.rotate_button, self.duplicate_button, self.remove_button):
-            button.setEnabled(selected and not self._busy)
-        for button in (self.blank_button, self.import_button, self.reset_button):
-            button.setEnabled(not self._busy)
+        for button, capability in ((self.up_button, 'reorder'), (self.down_button, 'reorder'),
+                (self.rotate_button, 'rotate'), (self.duplicate_button, 'duplicate'), (self.remove_button, 'delete')):
+            button.setEnabled(selected and self._allowed(capability))
+            button.setToolTip('' if self._capabilities.get(capability, True) else
+                self._capabilities.get('reason') or 'Esta operación no conserva todavía la estructura accesible.')
+        for button, capability in ((self.blank_button, 'insert_blank'), (self.import_button, 'insert_pdf')):
+            button.setEnabled(self._allowed(capability))
+            button.setToolTip('' if self._capabilities.get(capability, True) else
+                self._capabilities.get('reason') or 'Esta operación no conserva todavía la estructura accesible.')
+        self.reset_button.setEnabled(not self._busy)
         self.apply_button.setEnabled(not self._busy and self.page_list.count()>0 and self.plan()!=getattr(self,"_initial_plan",self.plan()))
-        self.page_list.setDragEnabled(not self._busy)
+        self.page_list.setDragEnabled(self._allowed('reorder'))
+        self.page_list.setAcceptDrops(self._allowed('reorder'))
+
+    def _allowed(self, capability):
+        return not self._busy and self._capabilities.get(capability, True)
 
     def plan(self):
         result = []
@@ -202,7 +213,7 @@ class PageOrganizerDialog(QDialog):
         return result
 
     def rotate_selected(self):
-        if self._busy:
+        if not self._allowed('rotate'):
             return
         for item in self.page_list.selectedItems():
             data = item.data(Qt.UserRole)
@@ -211,7 +222,7 @@ class PageOrganizerDialog(QDialog):
         self._changed()
 
     def duplicate_selected(self):
-        if self._busy:
+        if not self._allowed('duplicate'):
             return
         selected = sorted(self.page_list.selectedItems(), key=self.page_list.row)
         if not selected:
@@ -228,7 +239,7 @@ class PageOrganizerDialog(QDialog):
         self._changed()
 
     def move_selected(self, delta):
-        if self._busy or delta not in (-1, 1):
+        if not self._allowed('reorder') or delta not in (-1, 1):
             return
         items = sorted(self.page_list.selectedItems(), key=self.page_list.row, reverse=delta>0)
         selected_ids = {item.data(Qt.UserRole)["_id"] for item in items}
@@ -242,7 +253,7 @@ class PageOrganizerDialog(QDialog):
         self._changed()
 
     def remove_selected(self):
-        if self._busy:
+        if not self._allowed('delete'):
             return
         items = self.page_list.selectedItems()
         if len(items) == self.page_list.count():
@@ -253,7 +264,7 @@ class PageOrganizerDialog(QDialog):
         self._changed()
 
     def insert_blank(self):
-        if self._busy:
+        if not self._allowed('insert_blank'):
             return
         entry = {"source": "blank", "width": pt(self.width_box.value()), "height": pt(self.height_box.value()), "rotation": 0}
         item = self._append_entry(entry, self.position_box.value()-1)
@@ -262,6 +273,8 @@ class PageOrganizerDialog(QDialog):
         self._changed()
 
     def choose_pdf(self):
+        if not self._allowed('insert_pdf'):
+            return
         paths, _ = QFileDialog.getOpenFileNames(self, "Insertar páginas de PDF", "", "Documentos PDF (*.pdf)")
         if paths:
             self.set_busy(True)

@@ -194,7 +194,7 @@ class VerticalSmoke(QObject):
         self.finish(error=str(error))
 
     def _timed_out(self):
-        self.finish(error=f"Tiempo límite de 55 segundos excedido en el paso {self.stage}.",terminate=True)
+        self.finish(error=f"Tiempo límite de {self.timeout.interval()/1000:g} segundos excedido en el paso {self.stage}.",terminate=True)
 
     def finish(self,error=None,terminate=False):
         if self.finished:
@@ -214,6 +214,8 @@ class VerticalSmoke(QObject):
             ok,error = False,str(exc)
         report = {
             "ok":ok,"error":error,"frozen":bool(getattr(sys,"frozen",False)),
+            "qt_platform":QApplication.instance().platformName(),
+            "native_ui_verified":bool(ok and QApplication.instance().platformName()=='windows'),
             "app_version":__version__,
             "exe_sha256":_digest(Path(sys.executable).read_bytes()) if getattr(sys,"frozen",False) else None,
             "stage":self.stage,"elapsed_seconds":round(time.perf_counter()-self.started,3),

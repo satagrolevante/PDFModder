@@ -32,6 +32,10 @@ for name in ('docs', 'examples', 'assets'):
 if (root / 'README.md').is_file():
     datas.append((str(root / 'README.md'), '.'))
 datas += collect_data_files('pymupdf')
+datas += collect_data_files('pyhanko')
+datas += collect_data_files('pyhanko_certvalidator')
+datas += collect_data_files('tzdata')
+datas += copy_metadata('pyHanko', recursive=True)
 for package in ('PyMuPDF', 'fonttools', 'pypdf', 'Pillow', 'numpy', 'PySide6', 'PySide6_Essentials', 'shiboken6'):
     datas += copy_metadata(package)
 
@@ -40,7 +44,7 @@ a = Analysis(
     pathex=[str(root)],
     binaries=[],
     datas=datas,
-    hiddenimports=['pymupdf', 'pypdf', 'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets'],
+    hiddenimports=['pymupdf', 'pypdf', 'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'PySide6.QtPrintSupport'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -67,5 +71,6 @@ exe = EXE(
     console=debug_console,
     disable_windowed_traceback=False,
     contents_directory='_internal',
+    icon=str(root / 'assets' / 'icons' / 'pdfmodder.ico'),
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='PDFModder')

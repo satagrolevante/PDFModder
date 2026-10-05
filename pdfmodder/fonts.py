@@ -102,6 +102,7 @@ def _font_metadata(buffer: bytes, fallback_name: str) -> dict[str, Any]:
         "manufacturer_url": None,
         "permissions_url": _PERMISSIONS_URL,
         "identity_verified": False,
+        "outline_format": None,
     }
     try:
         with TTFont(BytesIO(buffer), lazy=False) as tt:
@@ -116,6 +117,7 @@ def _font_metadata(buffer: bytes, fallback_name: str) -> dict[str, Any]:
                 "license_url": _first_name(tt, 14),
                 "manufacturer_url": _first_name(tt, 11),
                 "variable": "fvar" in tt,
+                "outline_format": "CFF2" if "CFF2" in tt else "CFF" if "CFF " in tt else "TrueType" if "glyf" in tt else "desconocido",
                 "glyph_count": int(tt["maxp"].numGlyphs) if "maxp" in tt else None,
                 "table_tags": [str(tag) for tag in tt.keys() if tag != "GlyphOrder"],
                 "cmap_tables": [{"platform": int(table.platformID), "encoding": int(table.platEncID),
@@ -139,7 +141,23 @@ def _font_metadata(buffer: bytes, fallback_name: str) -> dict[str, Any]:
                     "embedding_permission": {0: "instalable", 2: "restringida", 4: "solo vista e impresión", 8: "editable"}.get(usage, "ambigua"),
                 })
     except (TTLibError, ValueError, KeyError, OSError, AssertionError):
-        pass
+        # PDF often embeds a raw CFF instead of the original OpenType wrapper.
+        # Its own names/version/charstrings are useful evidence, but it has no
+        # OS/2 fsType or Unicode cmap: never invent embedding permissions.
+        try:
+            from fontTools.cffLib import CFFFontSet
+            cff=CFFFontSet();cff.decompile(BytesIO(buffer),None)
+            if len(cff.fontNames)==1:
+                top=cff[0]
+                result.update(outline_format='CFF',postscript_name=str(cff.fontNames[0]),
+                              family=getattr(top,'FamilyName',None),version=getattr(top,'version',None),
+                              glyph_count=len(top.charset),unicode_cmap=False,
+                              glyph_count_basis='Entradas CharStrings de CFF; no equivale a cobertura Unicode',
+                              table_tags=['CFF (programa PDF)'])
+                if hasattr(top,'Weight'):
+                    result.update(variant=str(top.Weight),variant_source='diccionario CFF del programa')
+        except Exception:
+            pass
     return result
 
 
@@ -147,7 +165,7 @@ def _program_evidence(metadata: dict[str, Any]) -> dict[str, Any]:
     """Values read from the font program, separate from the PDF BaseFont name."""
     keys = ("sha256", "byte_length", "postscript_name", "family", "variant", "variant_source",
             "version", "fs_type", "os2_version", "embedding_permission", "glyph_count", "glyph_count_basis",
-            "unicode_cmap", "cmap_tables", "table_tags", "available_count", "subset")
+            "unicode_cmap", "cmap_tables", "table_tags", "available_count", "subset", "outline_format")
     return {key: metadata.get(key) for key in keys}
 
 
@@ -496,7 +514,8 @@ class FontResolver:
         resolved = None
         metadata["resolution_scope"] = "unicode_reinsertion"
         try:
-            resolved = self.resolve(doc, page_number, metadata["resource"], text or "")
+            resolved = self.resolve(doc, page_number, metadata["resource"], text or "",
+                                    allow_local=include_local or not content)
             metadata["resolved_source"] = resolved.source
             metadata["resolved_name"] = resolved.name
             metadata["resolved_program"] = _program_evidence(resolved.metadata)
@@ -531,6 +550,17 @@ class FontResolver:
         metadata["local_candidates"] = self._local_evidence(metadata, text) if include_local and not metadata["base14"] else []
         metadata["local_candidates_checked"] = include_local
         metadata["association"] = self._associations.get(name)
+        coverage=metadata['coverage']
+        state=('exact_embedded_unicode' if content and resolved is not None and resolved.source=='incrustada' and coverage['addressable']
+               else 'original_codes_required' if content and resolved is None
+               else 'explicit_association' if resolved is not None and resolved.source=='importada'
+               else 'local_name_requires_validation' if resolved is not None and resolved.source=='instalada'
+               else 'standard_pdf_face' if metadata['base14'] else 'unavailable')
+        metadata['editability']={'state':state,'unicode_available':resolved is not None and bool(coverage['addressable']),
+                                'native_codes_may_be_available':bool(content),
+                                'missing_characters':['«'+chr(cp)+'» (U+'+f'{cp:04X}'+')' for cp in coverage['missing_codepoints']],
+                                'automatic_similar_substitution':False,
+                                'action':'Importar la variante completa o elegir otra fuente explícitamente' if state in ('original_codes_required','unavailable') else 'Comprobar el fragmento con su apariencia original'}
         return metadata
 
     def inspect(self, doc: pymupdf.Document, page_number: int, text: str | None = None,
@@ -548,7 +578,8 @@ class FontResolver:
             normalized_name(m.get("postscript_name") or "")}]
 
     def inspect_selection(self, doc: pymupdf.Document, page_number: int, font_name: str, text: str,
-                          *, font_xref: int | None = None, resource: str | None = None) -> dict[str, Any]:
+                          *, font_xref: int | None = None, resource: str | None = None,
+                          include_local: bool = True) -> dict[str, Any]:
         """Identify a selected resource without choosing between equal names.
 
         ``font_xref``/``resource`` must come from actual PDF text operators, not
@@ -568,7 +599,7 @@ class FontResolver:
         for metadata, content in candidates:
             distinct.setdefault((metadata["xref"], metadata["resource"]), (metadata, content))
         candidates = list(distinct.values())
-        inspected = [self._inspect_record(doc, page_number, m, b, text, True) for m, b in candidates]
+        inspected = [self._inspect_record(doc, page_number, m, b, text, include_local) for m, b in candidates]
         if len(inspected) > 1:
             match, certainty = "ambiguous_name", "ambiguous_resource"
             label = "Hay varios recursos distintos con ese nombre"
@@ -586,7 +617,8 @@ class FontResolver:
                 "certainty_detail": detail, "candidate_count": len(inspected), "candidates": inspected,
                 "requires_reproduction_validation": True}
 
-    def resolve(self, doc: pymupdf.Document, page_number: int, font_name: str, text: str) -> ResolvedFont:
+    def resolve(self, doc: pymupdf.Document, page_number: int, font_name: str, text: str,
+                *, allow_local: bool = True) -> ResolvedFont:
         records = self._records(doc, page_number)
         candidates = self._matching_records(records, font_name)
         if not candidates:
@@ -613,7 +645,7 @@ class FontResolver:
             metadata.update({"source": "Base14", "identity_basis": "Recurso nominal estándar PDF; requiere verificación de métricas/apariencia"})
             return ResolvedFont(target, font, None, alias, "Base14", metadata)
         # Coincidencia nominal EXACTA por nombre PostScript, nunca por familia.
-        for path in self._installed_index().get(target, []):
+        for path in (self._installed_index().get(target, []) if allow_local else []):
             try:
                 resolved = self._from_file(path, "instalada", target, text)
                 if resolved.metadata.get("postscript_name") != target:

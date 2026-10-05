@@ -129,7 +129,7 @@ def test_organizer_refuses_omitted_link_target_and_reports_omitted_bookmarks():
         assert doc.get_toc() == [[1, "BASE detalle 3", 1]]
 
 
-@pytest.mark.parametrize("filename", ["form.pdf", "signature_marker_invalid.pdf", "encrypted.pdf", "restricted.pdf", "etiquetado.pdf"])
+@pytest.mark.parametrize("filename", ["form.pdf", "signature_marker_invalid.pdf", "encrypted.pdf", "restricted.pdf"])
 def test_organizer_keeps_existing_protected_document_guards(filename):
     protected = (EXAMPLES / filename).read_bytes()
     with pytest.raises(EditError):

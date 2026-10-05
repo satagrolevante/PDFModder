@@ -139,6 +139,8 @@ class EditRequest:
     color: tuple | None = None
     line_reflow: bool = False  # Repartir espacios de la misma línea al sustituir.
     auto_width: bool = False
+    auto_height: bool = False  # Extensión vertical explícita, conservando el tamaño.
+    allow_overlap: bool = False  # El usuario permite superponer texto; no elimina vecinos.
     line_spacing: float | None = None  # Distancia entre líneas en puntos PDF.
     paragraph_spacing: float = 0.  # Espacio extra tras saltos de párrafo explícitos.
     ocr_mode: str = "visible"  # 'searchable' cambia sólo la capa OCR invisible.

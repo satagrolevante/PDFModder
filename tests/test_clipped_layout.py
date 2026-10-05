@@ -5,7 +5,7 @@ from io import BytesIO
 import pymupdf as fitz
 import pytest
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, ByteStringObject, ContentStream, DictionaryObject, FloatObject, NameObject, NumberObject
+from pypdf.generic import ArrayObject, ByteStringObject, ContentStream, DecodedStreamObject, DictionaryObject, FloatObject, NameObject, NumberObject
 
 from pdfmodder.clipping import CLIP_ISSUE, _raw
 from pdfmodder.engine import edit_pdf, extract_page
@@ -196,15 +196,15 @@ def test_q_restore_removes_unrelated_inherited_text_clip():
 
 
 @pytest.mark.parametrize('kwargs,message',[
-    ({'dx':1},'mover'),({'size':9},'tamaño'),({'font_name':'Arial'},'fuente'),
-    ({'reflow':True},'entre líneas'),({'anchor':'decimal'},'anclaje'),
+    ({'dx':1},'mover'),({'size':0},'tamaño'),({'font_name':'Arial'},'fuente'),
+    ({'anchor':'decimal'},'anclaje'),
 ])
 def test_variable_length_guard_keeps_format_movement_and_reflow_explicit(kwargs,message):
     with pytest.raises(EditError,match=message):change(fixture(),'SOL','ESTRELLA',width=80,**kwargs)
 
 
-def test_native_route_does_not_invent_codes_not_observed_in_selected_resource():
-    with pytest.raises(EditError,match='códigos únicos'):change(fixture(native=True),'SOL','NIÑO',width=80)
+def test_native_route_does_not_invent_codes_absent_from_selected_resource():
+    with pytest.raises(EditError,match='código único'):change(fixture(native=True),'SOL','漢字',width=80)
 
 
 def test_extgstate_requires_explicit_font_size_after_gs():
@@ -237,6 +237,10 @@ def test_different_direct_font_resource_cannot_supply_missing_native_code():
     page=writer.pages[0]
     fonts=page['/Resources']['/Font']
     fonts[NameObject('/cour')]=DictionaryObject(dict(fonts['/cour']))
+    # Z is unavailable in this resource, even though the OTHER font paints Z.
+    fonts['/cour'][NameObject('/Encoding')]=DictionaryObject({
+        NameObject('/BaseEncoding'):NameObject('/WinAnsiEncoding'),
+        NameObject('/Differences'):ArrayObject([NumberObject(90),NameObject('/.notdef')])})
     fonts[NameObject('/helv')]=DictionaryObject(dict(writer.pages[1]['/Resources']['/Font']['/helv']))
     stream=ContentStream(page.get_contents(),writer)
     operations=[]
@@ -249,5 +253,127 @@ def test_different_direct_font_resource_cannot_supply_missing_native_code():
     stream.operations=operations
     page[NameObject('/Contents')]=writer._add_object(stream)
     out=BytesIO();writer.write(out)
-    with pytest.raises(EditError,match='códigos únicos'):
+    with pytest.raises(EditError,match='código único'):
         change(out.getvalue(),'SOL','ZOLA',width=80)
+
+
+@pytest.mark.parametrize('native',[False,True])
+@pytest.mark.parametrize('replacement',['SÓL','NIÑO','Íñigo €'])
+def test_encoding_declared_but_previously_unused_characters_reuse_exact_font(native,replacement):
+    data=fixture(native=native)
+    if native and '€' in replacement:
+        # Differences overrides 128 (Euro in WinAnsi) with A in this font.
+        with pytest.raises(EditError,match='«€»'):
+            change(data,'SOL',replacement,auto_width=True)
+        return
+    output,report=change(data,'SOL',replacement,auto_width=True)
+    assert report['verified'] and report['font_resources_unchanged']
+    with fitz.open(stream=output,filetype='pdf') as doc:
+        assert replacement in doc[0].get_text()
+    before,after=PdfReader(BytesIO(data)),PdfReader(BytesIO(output))
+    from pdfmodder.clipping import _signature
+    assert _signature(before.pages[0]['/Resources'])==_signature(after.pages[0]['/Resources'])
+
+
+@pytest.mark.parametrize('native',[False,True])
+@pytest.mark.parametrize('fragment',['SOL','O'])
+@pytest.mark.parametrize('spacing',[(0,0,100),(.375,1.1,80)])
+def test_native_movement_preserves_internal_tj_next_cursor_and_shared_page(native,fragment,spacing):
+    data=fixture(native=native,shared=True,tc=spacing[0],tw=spacing[1],tz=spacing[2])
+    model,word=selected(data,'SOL')
+    chosen=word if fragment=='SOL' else word[1:2]
+    output,report=edit_pdf(data,EditRequest(0,[g.id for g in chosen],dx=9,dy=14,revision=model.revision))
+    assert report['verified'] and report['font_resources_unchanged'] and report['cursor_residual']==0
+    assert report['moved_characters']==len(chosen)
+    assert all(p['max_channel_delta']==0 for p in report['pages'])
+    with fitz.open(stream=data,filetype='pdf') as before,fitz.open(stream=output,filetype='pdf') as after:
+        assert before[1].get_pixmap().samples==after[1].get_pixmap().samples
+        assert before[1].get_texttrace()==after[1].get_texttrace()
+        after_model=extract_page(after,0,output)
+        for original in model.glyphs:
+            moved=original.id in {g.id for g in chosen}
+            x,y=original.origin
+            matches=[g for g in after_model.glyphs if g.text==original.text and
+                     abs(g.origin[0]-(x+9 if moved else x))<.001 and
+                     abs(g.origin[1]-(y+14 if moved else y))<.001]
+            assert len(matches)==1
+        targets=[g for g in after_model.glyphs if any(g.text==o.text and
+                 abs(g.origin[0]-o.origin[0]-9)<.001 and abs(g.origin[1]-o.origin[1]-14)<.001 for o in chosen)]
+    if fragment=='O' and spacing[0]==0:
+        # Original negative kerning overlaps the S glyph envelope. A NEW
+        # move into that envelope remains conservative; undo restores bytes.
+        with pytest.raises(EditError,match='solapa'):
+            edit_pdf(output,EditRequest(0,[g.id for g in targets],dx=-9,dy=-14,revision=after_model.revision))
+        return
+    restored,_=edit_pdf(output,EditRequest(0,[g.id for g in targets],dx=-9,dy=-14,revision=after_model.revision))
+    with fitz.open(stream=data,filetype='pdf') as before,fitz.open(stream=restored,filetype='pdf') as after:
+        assert before[0].get_pixmap().samples==after[0].get_pixmap().samples
+
+
+@pytest.mark.parametrize('rotation',[0,90,180,270])
+def test_native_movement_uses_unrotated_crop_coordinates(rotation):
+    with fitz.open(stream=fixture(),filetype='pdf') as doc:
+        doc[0].set_cropbox(fitz.Rect(20,20,430,380));doc[0].set_rotation(rotation)
+        data=doc.tobytes()
+        model=extract_page(doc,0,data)
+    chosen=model.glyphs[:3]
+    assert ''.join(g.text for g in chosen)=='SOL'
+    output,report=edit_pdf(data,EditRequest(0,[g.id for g in chosen],dx=9,dy=3,revision=model.revision))
+    assert report['verified'] and all(p['max_channel_delta']==0 for p in report['pages'])
+    assert report['new_bounds'][0]==pytest.approx(report['old_bounds'][0]+9,abs=.001)
+    assert report['new_bounds'][1]==pytest.approx(report['old_bounds'][1]+3,abs=.001)
+
+
+def test_native_movement_blocks_destination_outside_clip_and_leaves_source_identical():
+    data=fixture(clip_right=70)
+    fingerprint=sha256(data).hexdigest()
+    model,chosen=selected(data,'SOL')
+    with pytest.raises(EditError,match='fuera del recorte'):
+        edit_pdf(data,EditRequest(0,[g.id for g in chosen],dx=30,dy=1,revision=model.revision))
+    assert sha256(data).hexdigest()==fingerprint
+
+
+def test_native_movement_blocks_unknown_text_clip_even_when_later_tr_is_zero():
+    data=fixture(inherited_text_clip=True)
+    model,chosen=selected(data,'SOL')
+    with pytest.raises(EditError,match='recorte complejo|Codificación'):
+        edit_pdf(data,EditRequest(0,[g.id for g in chosen],dx=1,dy=1,revision=model.revision))
+
+
+def test_native_movement_blocks_neighbours_and_links():
+    data=fixture()
+    model,chosen=selected(data,'SOL')
+    with pytest.raises(EditError,match='solapa'):
+        edit_pdf(data,EditRequest(0,[g.id for g in chosen],dx=100,revision=model.revision))
+    with fitz.open(stream=data,filetype='pdf') as doc:
+        doc[0].insert_link({'kind':fitz.LINK_URI,'from':fitz.Rect(70,65,100,95),'uri':'https://example.org/'})
+        data=doc.tobytes()
+        model=extract_page(doc,0,data)
+    with pytest.raises(EditError,match='enlace'):
+        edit_pdf(data,EditRequest(0,[g.id for g in chosen],dx=35,revision=model.revision))
+
+
+@pytest.mark.parametrize('entries,replacement,supported',[
+    ([(201,'É')],'ÉOL',True),
+    ([(0,'漢')],'漢OL',False),  # A Unicode label does not create a missing glyph.
+    ([(201,'É'),(202,'É')],'ÉOL',False),  # Two distinct codes: no silent choice.
+])
+def test_declared_tounicode_requires_a_real_unique_glyph_in_same_resource(entries,replacement,supported):
+    writer=PdfWriter(clone_from=PdfReader(BytesIO(fixture())))
+    cm=DecodedStreamObject()
+    mapping='\n'.join(f'<{code:02x}> <{char.encode("utf-16-be").hex()}>' for code,char in entries)
+    cm.set_data(('/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n'
+                 '1 begincodespacerange\n<00> <ff>\nendcodespacerange\n'
+                 f'{len(entries)} beginbfchar\n{mapping}\nendbfchar\nendcmap\n'
+                 'CMapName currentdict /CMap defineresource pop\nend end').encode())
+    writer.pages[0]['/Resources']['/Font']['/cour'][NameObject('/ToUnicode')]=writer._add_object(cm)
+    buffer=BytesIO();writer.write(buffer)
+    data=buffer.getvalue()
+    if supported:
+        output,report=change(data,'SOL',replacement)
+        assert report['verified'] and report['font_resources_unchanged']
+        with fitz.open(stream=output,filetype='pdf') as doc:assert replacement in doc[0].get_text()
+    else:
+        fingerprint=sha256(data).hexdigest()
+        with pytest.raises(EditError,match='código único'):change(data,'SOL',replacement)
+        assert sha256(data).hexdigest()==fingerprint

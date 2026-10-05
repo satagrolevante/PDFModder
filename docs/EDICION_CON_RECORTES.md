@@ -1,8 +1,10 @@
-# Texto recortado e identificación de fuentes en 0.8
+> La descripción siguiente conserva el alcance de 0.8.1. La [revisión 0.8.2](CORRECCIONES_V082.md) amplía campos fragmentados, líneas, fuentes y movimientos.
+
+# Texto recortado e identificación de fuentes en 0.8.1
 
 La presencia de recortes gráficos no bloquea por sí sola agregar imágenes. El texto existente dispone de una ruta conservadora que modifica códigos dentro de sus operadores originales. No elimina los recortes, no ejecuta reconocimiento OCR, no tapa texto ni rasteriza la página. Desde 0.8 también se pueden retirar duplicados OCR invisibles cuando se demuestra su correspondencia con las palabras digitales editadas.
 
-Las funciones de recortes de 0.5 se conservaron en la versión 0.7, archivada por separado en `releases/v0.7/`. La verificación final de 0.8 está completada: 416 pruebas aprobadas, incluidas las siete regresiones de anchura nativa, y cuatro recorridos del ejecutable. El recorrido de campos recortados pasó sus 12 pasos, dos guardados y reaperturas conservando los vecinos. Las comprobaciones históricas citadas al final mantienen su alcance y versión.
+Las funciones de recortes de 0.5 se conservaron en la versión 0.7, archivada por separado en `releases/v0.7/`. Como evidencia histórica, 0.8.0 completó 416 pruebas y cuatro recorridos de su ejecutable; el recorrido de campos recortados pasó 12 pasos. Estas cifras no acreditan el paquete 0.8.1. La aceptación nueva del motor, sus límites y el estado del paquete se documentan en [CORRECCIONES_V081.md](CORRECCIONES_V081.md).
 
 ## Aceptar una edición
 
@@ -15,7 +17,7 @@ Las funciones de recortes de 0.5 se conservaron en la versión 0.7, archivada po
 
 ## Alcance del texto recortado
 
-`clipping.py` interpreta operadores mediante `pypdf.generic.ContentStream`. Un sondeo temporal identifica qué operador y recurso pintan cada carácter; el sondeo no se exporta. Los códigos nuevos deben haberse observado en el mismo recurso de fuente. La ruta de igual avance conserva directamente los códigos y operadores; la ruta de longitud variable compensa el avance del cursor dentro del mismo Tj/TJ. Recursos directos sin xref también se distinguen por su nombre de recurso.
+`clipping.py` interpreta operadores mediante `pypdf.generic.ContentStream`. Un sondeo temporal identifica qué operador y recurso pintan cada carácter; el sondeo no se exporta. En 0.8.1, `native_codes.py` amplía los códigos ya observados con los declarados por Encoding/ToUnicode del mismo recurso y exige un glifo real verificable. No inventa una codificación, no toma códigos de otra fuente por nombre ni convierte automáticamente un carácter ausente en otra tipografía. La ruta de igual avance conserva directamente los códigos y operadores; la ruta de longitud variable compensa el avance del cursor dentro del mismo Tj/TJ. Recursos directos sin xref también se distinguen por su nombre de recurso.
 
 La ruta de igual avance conserva la cantidad de caracteres, el recurso original, su codificación, el programa de fuente, los ajustes TJ, las matrices y los operadores de recorte. Se escribe un stream privado de la página y una copia completa, evitando alterar otras páginas que compartan recursos. Se vuelven a comprobar todos los caracteres, posiciones y estilos, las capas invisibles, imágenes, vectores, elementos relacionados y apariencia fuera de las pequeñas cajas de los caracteres realmente modificados.
 
@@ -23,7 +25,11 @@ Desde 0.5, `clipped_layout.py` permite además longitud y avances diferentes en 
 
 En 0.8, **Ajustar anchura al texto** está activo por defecto para una sola línea. Adapta el área sin escalar las letras; sigue comprobando el recorte de origen y destino, los vecinos, los elementos interactivos y el borde de página. Para usar una anchura fija, desactive esa opción y establezca **Anchura de área** dentro de su columna. Disponer de una caja mayor no permite invadir otro campo.
 
-Se mantienen los bloqueos de cambios de fuente/tamaño/color, movimiento y redistribución entre líneas en esta ruta. **Ajustar el resto de la línea** requiere seleccionar el campo completo; la vista previa informa de que no se justifica ni se desplazan vecinos. Para editar sólo un fragmento sin desplazarlos, desactive esa opción. La justificación de una línea y la composición de párrafos en otros PDFs compatibles conservan sus controles propios, descritos en la [guía 0.8](GUIA_V08.md).
+Se mantienen los bloqueos de cambios de fuente/tamaño/color y redistribución entre líneas en esta ruta. **Ajustar el resto de la línea** requiere seleccionar el campo completo; la vista previa informa de que no se justifica ni se desplazan vecinos. Para editar sólo un fragmento sin desplazarlos, desactive esa opción. La justificación de una línea y la composición de párrafos en otros PDFs compatibles conservan sus controles propios, descritos en la [guía 0.8](GUIA_V08.md).
+
+Desde 0.8.1, `move_clipped_text` permite mover caracteres, palabras y líneas compatibles mediante una transformación `q / cm / TJ / Q` alrededor de los fragmentos seleccionados. Conserva sus códigos, avances TJ, fuente y distribución interna; restaura el estado gráfico y deja el cursor textual posterior en su posición nativa. El recorte ya establecido permanece fijo: no se desplaza ni se elimina para permitir el movimiento. Las coordenadas se convierten mediante la transformación de página y se validan después de guardar, también con desplazamientos fraccionarios. Se bloquean recortes complejos o desconocidos, caracteres originalmente cortados, destinos fuera de su recorte o página, solapamientos y codificaciones que no permitan aislar cada carácter.
+
+El ajuste de línea de 0.8.1 también reconoce pequeñas diferencias de línea base introducidas por exportadores: además de la tolerancia anterior, admite como máximo 0,3 puntos y el 4 % del tamaño de letra, con la misma línea, tramo y fuente, una operación de pintura coherente y fuerte superposición vertical. Las letras conservadas mantienen sus alturas; no se unen filas ni columnas por cercanía. Esta mejora no convierte un campo recortado dividido entre varios operadores en un párrafo editable: esa limitación sigue comprobándose de forma independiente.
 
 Cuando existe OCR invisible duplicado bajo una palabra digital, 0.8 verifica que los centros de todos sus caracteres estén cubiertos por esa palabra visible, dentro de tolerancias pequeñas. Sólo entonces retira el duplicado y aplica la edición digital en una misma transacción. Los caracteres de la palabra que no se modifican siguen presentes como texto visible real; la capa OCR de otras palabras permanece intacta. La vista previa informa de la retirada. Para una selección parcial se necesita mantener también el orden de extracción; si la ruta nativa no puede demostrarlo, se solicita seleccionar la palabra completa.
 

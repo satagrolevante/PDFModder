@@ -14,11 +14,18 @@ class AdvancedEditing:
         self.auto_width_box.setChecked(True)
         self.auto_width_box.setToolTip('Ajusta el área de una línea sin cambiar tamaño ni escala. En párrafos se conserva la anchura definida para redistribuir.')
         form.insertRow(8,self.auto_width_box)
+        self.auto_height_box=QCheckBox('Ajustar altura al texto');self.auto_height_box.setObjectName('autoAreaHeight')
+        self.auto_height_box.setChecked(True)
+        self.auto_height_box.setToolTip('Adapta la altura al insertar líneas o cambiar el formato, sin reducir letras. Se comprueban el borde de página, los recortes y los vecinos.')
+        form.addRow(self.auto_height_box)
+        self.allow_overlap_box=QCheckBox('Permitir superponer texto');self.allow_overlap_box.setObjectName('allowTextOverlap')
+        self.allow_overlap_box.setToolTip('Permite colocar texto encima de otro. Ambos siguen siendo texto real; revisa la legibilidad en la vista previa.')
+        form.addRow(self.allow_overlap_box)
         self.line_spacing_box=self._spin('lineSpacing',0,300,3);self.line_spacing_box.setSuffix(' pt');self.line_spacing_box.setSpecialValueText('Original / automático')
         self.paragraph_spacing_box=self._spin('paragraphSpacing',0,300,3);self.paragraph_spacing_box.setSuffix(' pt')
         self.paragraph_spacing_box.setToolTip('Espacio adicional entre párrafos separados por una línea en blanco.')
         form.addRow('Interlineado',self.line_spacing_box);form.addRow('Separación párrafos',self.paragraph_spacing_box)
-        hint=QLabel('Enter: salto de línea. Línea en blanco: nuevo párrafo. Activa Redistribuir para ajustar el texto dentro de esta área.')
+        hint=QLabel('Intro: nueva línea. Ctrl+Intro: vista previa. Línea en blanco: nuevo párrafo. La anchura limita el ajuste entre líneas.')
         hint.setWordWrap(True);form.addRow(hint)
         self.ocr_mode_box=QCheckBox('Corregir sólo la capa OCR buscable')
         self.ocr_mode_box.setObjectName('ocrSearchableMode')
@@ -61,7 +68,9 @@ class AdvancedEditing:
         ready=bool(self.state) and not self.busy and not self.state.get('preview') and not self.canvas.editor.isVisible()
         editable=ready and not self.state.get('issues') and not self.compare_action.isChecked()
         self.replace_action.setEnabled(editable)
-        self.organize_action.setEnabled(editable and not self.state.get('tagged'))
+        page_caps=self.state.get('page_capabilities',{})
+        self.organize_action.setEnabled(editable and page_caps.get('supported',not self.state.get('tagged')))
+        self.organize_action.setToolTip(page_caps.get('reason') or 'Revisa el orden final antes de aplicar; se conserva la estructura compatible.')
         self.elements_box.setEnabled(ready)
         image=self.canvas.selected_image()
         self.image_export_button.setEnabled(ready and bool(image))
@@ -74,7 +83,13 @@ class AdvancedEditing:
         if ocr:self.line_reflow_box.setEnabled(False)
 
     def _extend_request(self,request):
+        request.allow_overlap=self.allow_overlap_box.isChecked()
         if request.text is not None:
+            if '\n' in request.text or '\r' in request.text:
+                request.text=request.text.replace('\r\n','\n').replace('\r','\n')
+                request.reflow=True
+                request.line_reflow=False
+            request.auto_height=self.auto_height_box.isChecked() and (request.reflow or request.size is not None)
             request.auto_width=self.auto_width_box.isChecked() and not request.reflow
             request.line_spacing=self.line_spacing_box.value() or None
             request.paragraph_spacing=self.paragraph_spacing_box.value()
@@ -91,6 +106,8 @@ class AdvancedEditing:
         report=self.last_report or {}
         if report.get('auto_width') and report.get('page')==self.page_number:
             self.width_box.setValue(mm(report['area_width']))
+        if report.get('auto_height') and report.get('page')==self.page_number:
+            self.height_box.setValue(mm(report['area_height']))
 
     def all_elements(self):
         self._element_zone=None;self.canvas.zone_rect=None;self.canvas._draw_overlays();self.refresh_elements()
@@ -181,7 +198,8 @@ class AdvancedEditing:
         payload=self._image_payload(image_id)
         def got(asset):
             from .image_editor import ImageEditorDialog
-            dialog=ImageEditorDialog(asset.get('preview_png') or asset['image_bytes'],self)
+            dialog=ImageEditorDialog(asset.get('preview_png') or asset['image_bytes'],self,
+                                    frame_rect=asset.get('rect'),initial_operation=asset.get('image_operation'))
             if self._exec_edit_dialog(dialog)==QDialog.Accepted:
                 self._submit('image',{**payload,'operation':'edit',**dialog.operation()},self._previewed)
         self._submit('export_image',payload,got)
@@ -231,7 +249,7 @@ class AdvancedEditing:
         if self.busy:return
         def loaded(info):
             from .page_organizer import PageOrganizerDialog
-            dialog=PageOrganizerDialog(info['pages'],self)
+            dialog=PageOrganizerDialog(info['pages'],self,capabilities=self.state.get('page_capabilities'))
             paths={};submit=self._start_dialog_jobs(dialog)
             def thumbnail(source,page):
                 payload={'page':page}

@@ -114,11 +114,10 @@ def test_invisible_overlaid_ocr_is_removed_without_leaving_stale_hidden_text():
 @pytest.mark.parametrize('kwargs,message',[
     ({'text':'05/05/20260'},'espacio disponible'),
     ({'text':'05/05/2026','dx':2},'mover|Mover'),
-    ({'text':'05/05/2026','reflow':True},'cantidad'),
-    ({'text':'05/05/2026','size':9},'tamaño'),
-    ({'text':'05/05/2026','font_name':'Helvetica'},'formato'),
+    ({'text':'05/05/2026','reflow':True},'espacio disponible'),
+    ({'text':'05/05/2026','size':0},'tamaño'),
     ({'text':'05/05/2026','width':150},'área'),
-    ({'text':'03/05/2026'},'código único'),
+    ({'text':'漢3/05/2026'},'código único'),
 ])
 def test_unsupported_clipped_changes_have_specific_blocks(kwargs,message):
     data=fixture()
@@ -202,6 +201,9 @@ def test_direct_font_resources_do_not_borrow_codes_from_another_resource_with_no
         operations.append((args,op))
     fonts=page['/Resources']['/Font']
     fonts[NameObject('/cour')]=DictionaryObject(dict(fonts['/cour']))
+    fonts['/cour'][NameObject('/Encoding')]=DictionaryObject({
+        NameObject('/BaseEncoding'):NameObject('/WinAnsiEncoding'),
+        NameObject('/Differences'):ArrayObject([NumberObject(53),NameObject('/.notdef')])})
     fonts[NameObject('/helv')]=DictionaryObject(dict(writer.pages[1]['/Resources']['/Font']['/helv']))
     operations.extend([([],b'BT'),([NameObject('/helv'),NumberObject(10)],b'Tf'),
                        ([NumberObject(1),NumberObject(0),NumberObject(0),NumberObject(1),NumberObject(250),NumberObject(200)],b'Tm'),

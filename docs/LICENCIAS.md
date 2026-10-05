@@ -35,6 +35,16 @@ Para reemplazarlas, conserve una copia del paquete y sustituya en `_internal/PyS
 
 ## Inventario y avisos transitivos
 
+### Firma local incorporada en 1.6.0
+
+pyHanko 0.33.0 y pyhanko-certvalidator 0.29.1 se distribuyen bajo MIT.
+cryptography 50.0.1 utiliza Apache-2.0 o BSD-3-Clause y contiene avisos de
+sus componentes nativos. Sus licencias, las de ASN.1, XML y demás dependencias
+se recopilan con las ruedas exactas en el inventario de la entrega. No se
+incluyen certificados personales ni claves privadas. La firma utiliza un
+certificado aportado por el usuario; no requiere un SDK de pago ni un servicio
+de sellado de tiempo. Véase la [documentación de pyHanko](https://docs.pyhanko.eu/en/v0.33.0/).
+
 `scripts/collect_licenses.py` recorre las distribuciones del entorno de construcción, copia archivos `LICENSE`, `COPYING`, `NOTICE`, `COPYRIGHT` y directorios `licenses`, además de sus metadatos. Conserva también los avisos de herramientas de pruebas/construcción, aunque alguna no forme parte del ejecutable. Incluye la licencia del intérprete. El inventario JSON registra versiones, enlaces declarados, requisitos y SHA-256 de cada aviso copiado; el manifiesto del código registra sus archivos y hashes.
 
 El script aborta si falta una versión de runtime fijada o no encuentra su licencia. Es una recopilación reproducible de los avisos publicados, no una auditoría jurídica automática de cada componente nativo. Para una distribución pública, revise los avisos del paquete final y las fuentes correspondientes de los binarios realmente incorporados.

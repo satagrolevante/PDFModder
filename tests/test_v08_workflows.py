@@ -11,6 +11,7 @@ def test_paragraph_spacing_preview_overflow_and_recovery(qtbot,line_window,tmp_p
     window,_=line_window;source=prepare(qtbot,window,tmp_path)
     window.canvas.set_selection([g.id for g in window.model.glyphs[:3]])
     window.reflow_box.setChecked(True)
+    window.auto_height_box.setChecked(False)  # Explicit fixed-height area still detects overflow.
     window.width_box.setValue(mm(120));window.height_box.setValue(mm(30))
     window.line_spacing_box.setValue(16);window.paragraph_spacing_box.setValue(7)
     window.content.setPlainText('UNO DOS\nTRES\n\nCUATRO')

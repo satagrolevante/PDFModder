@@ -21,6 +21,7 @@ from pypdf.generic import ArrayObject, Fit, IndirectObject, NameObject, StreamOb
 from .engine import full_write
 from .model import EditError
 from .validation import _canonical, assert_characters, assert_pixels, document_issues, related, trace_chars
+from . import page_catalog
 
 
 def parse_pages(expression: str, page_count: int) -> list[int]:
@@ -122,8 +123,6 @@ def _check_destination(holder, *, context):
 
 
 def _preflight(data, label):
-    from .tagged import require_untagged
-    require_untagged(data,'Reorganizar páginas')
     try:
         doc = fitz.open(stream=data, filetype="pdf")
     except Exception as exc:
@@ -138,10 +137,14 @@ def _preflight(data, label):
             raise EditError(f"{label}: el PDF necesita reparación; no se reorganiza una estructura incierta.")
         reader = PdfReader(io.BytesIO(data), strict=True)
         root = reader.trailer["/Root"]
-        allowed_catalog = {"/Type", "/Pages", "/Outlines", "/Metadata", "/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/Version", "/MarkInfo"}
+        allowed_catalog = {"/Type", "/Pages", "/Outlines", "/Metadata", "/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/Version", "/MarkInfo", "/StructTreeRoot", "/AcroForm", "/Names"}
         unsupported = sorted(str(key) for key in root if key not in allowed_catalog)
         if unsupported:
             raise EditError(f"{label}: estructura de documento no compatible al reorganizar páginas: {', '.join(unsupported)}. Puede contener destinos con nombre, capas, adjuntos, etiquetas o acciones.")
+        page_catalog.preflight(reader)
+        if root.get('/StructTreeRoot'):
+            from .tagged_pages import preflight
+            preflight(data)
         preferences = _object(root.get("/ViewerPreferences", {}))
         if preferences.get("/PrintPageRange"):
             raise EditError(f"{label}: intervalos de impresión predefinidos que requieren remapeo no compatible.")
@@ -221,7 +224,7 @@ def _mapped_toc(doc, mapping):
     return result, removed
 
 
-def _annotation_details(reader, page_number, mapping=None):
+def _annotation_details(reader, page_number, mapping=None, *, ignore_struct_parent=False):
     refs = list(_object(reader.pages[page_number].get("/Annots", [])))
     page_refs = {(page.indirect_reference.idnum, page.indirect_reference.generation): number for number, page in enumerate(reader.pages)}
     annot_refs = {(ref.idnum, ref.generation): index for index, ref in enumerate(refs) if isinstance(ref, IndirectObject)}
@@ -232,6 +235,10 @@ def _annotation_details(reader, page_number, mapping=None):
         # Link destinations are separately checked with the complete mapped list;
         # destination /A versus /Dest spelling may legitimately change.
         annotation.pop("/P", None)
+        if ignore_struct_parent:
+            # The tagged replacement validator checks this association against
+            # the remapped ParentTree / OBJR rather than its source numeric key.
+            annotation.pop('/StructParent', None)
         if annotation.get("/Subtype") == "/Link":
             annotation.pop("/A", None)
             annotation.pop("/Dest", None)
@@ -245,7 +252,7 @@ def _metadata(reader):
 
 def _catalog_metadata(reader):
     root = reader.trailer["/Root"]
-    return {key: _semantic(root[key]) for key in ("/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/MarkInfo") if key in root}
+    return {key: _semantic(root[key]) for key in ("/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/MarkInfo", "/AcroForm") if key in root}
 
 
 def _build_pdf(readers, selections, toc_groups):
@@ -257,11 +264,21 @@ def _build_pdf(readers, selections, toc_groups):
     """
     writer = PdfWriter(clone_from=readers[0])
     writer.root_object.pop(NameObject("/Outlines"), None)
+    writer.root_object.pop(NameObject("/Names"), None)
     for number in reversed(range(len(writer.pages))):
         writer.remove_page(number)
     writer.reset_translation(readers[0])
     for reader, pages in zip(readers, selections):
         writer.append(reader, pages=pages, import_outline=False)
+    # Preflight permits only empty forms. append() can otherwise introduce an
+    # empty external AcroForm into a document that never had one.
+    if '/AcroForm' not in readers[0].trailer['/Root']:
+        writer.root_object.pop(NameObject('/AcroForm'), None)
+    destination_maps, offset = [], 0
+    for selection in selections:
+        destination_maps.append({old: offset + new for new, old in enumerate(selection)})
+        offset += len(selection)
+    page_catalog.rebuild_many(writer, readers, destination_maps)
     for reader, toc in zip(readers, toc_groups):
         parents = []
         for level, title, target_page, destination in toc:
@@ -298,6 +315,7 @@ def _validate(output, inputs, assignments, maps, expected_toc):
         readers = [PdfReader(io.BytesIO(data), strict=True) for data in inputs]
         result = stack.enter_context(fitz.open(stream=output, filetype="pdf"))
         independent = PdfReader(io.BytesIO(output), strict=True)
+        page_catalog.validate(readers, independent, maps)
         if result.page_count != len(assignments) or len(independent.pages) != len(assignments):
             raise EditError("Validación de páginas: número de páginas incorrecto.")
         if _metadata(readers[0]) != _metadata(independent) or sources[0].get_xml_metadata() != result.get_xml_metadata():
@@ -344,13 +362,20 @@ def _select_pdf(data, pages, operation):
         for number in retained:
             _mapped_links(doc[number], mapping)
         toc, removed = _mapped_toc(doc, mapping)
-        output = _build_pdf([reader], [retained], [toc])
+        tagged_report = None
+        if reader.trailer['/Root'].get('/StructTreeRoot'):
+            from .tagged_pages import build_tagged_pages
+            output, tagged_report = build_tagged_pages(reader, [{'source': 'current', 'page': page, 'rotation': 0} for page in retained], toc)
+        else:
+            output = _build_pdf([reader], [retained], [toc])
     assignments = [(0, page) for page in retained]
     stats = _validate(output, [data], assignments, [mapping], toc)
     return output, {"verified": True, "operation": operation, "page_count": len(retained),
                     "pages": stats, "page_map": retained, "removed_bookmarks": removed,
+                    "named_destinations": page_catalog.report(reader, mapping),
                     "source_sha256": hashlib.sha256(data).hexdigest(), "elapsed_seconds": round(time.perf_counter()-started, 3),
-                    "independent_parser": "pypdf", "metadata_policy": "Se conservan metadatos y XMP del documento actual."}
+                    "independent_parser": "pypdf", "tagged_structure": tagged_report,
+                    "metadata_policy": "Se conservan metadatos y XMP del documento actual."}
 
 
 def delete_pages_pdf(data: bytes, pages: list[int]):
@@ -375,6 +400,9 @@ def merge_pdfs(data: bytes, additions: list[bytes]):
             doc, reader = _preflight(payload, "Documento actual" if index == 0 else f"PDF añadido {index}")
             docs.append(stack.enter_context(doc))
             readers.append(reader)
+        if any(reader.trailer['/Root'].get('/StructTreeRoot') for reader in readers):
+            raise EditError('PDF etiquetado: combinar PDFs requiere fusionar sus árboles de accesibilidad; esta operación todavía no está habilitada.')
+        page_catalog.require_unambiguous(readers)
         assignments, maps, toc, source_metadata, toc_groups, selections = [], [], [], [], [], []
         for index, doc in enumerate(docs):
             offset = len(assignments)
@@ -513,6 +541,7 @@ def _organizer_toc(writer, readers, groups):
 def _build_organized(readers, entries, source_indices, maps, toc_groups):
     writer = PdfWriter(clone_from=readers[0])
     writer.root_object.pop(NameObject("/Outlines"), None)
+    writer.root_object.pop(NameObject("/Names"), None)
     for index in reversed(range(len(writer.pages))):
         writer.remove_page(index)
     for entry in entries:
@@ -539,6 +568,7 @@ def _build_organized(readers, entries, source_indices, maps, toc_groups):
         mapping[entry["page"]] = output_number
         _retarget_page_annotations(readers[source_number], entry["page"], copied, output_number, mapping)
     final_writer = PdfWriter(clone_from=copied)
+    page_catalog.rebuild_many(final_writer, readers, maps)
     _organizer_toc(final_writer, readers, toc_groups)
     output = io.BytesIO()
     final_writer.write(output)
@@ -557,12 +587,13 @@ def _font_programs(page):
     return sorted(result)
 
 
-def _validate_organized(output, inputs, entries, source_indices, maps, expected_toc, primary_rotations):
+def _validate_organized(output, inputs, entries, source_indices, maps, expected_toc, primary_rotations, *, tagged_remap=False):
     with ExitStack() as stack:
         docs = [stack.enter_context(fitz.open(stream=data, filetype="pdf")) for data in inputs]
         readers = [PdfReader(io.BytesIO(data), strict=True) for data in inputs]
         result = stack.enter_context(fitz.open(stream=output, filetype="pdf"))
         independent = PdfReader(io.BytesIO(output), strict=True)
+        page_catalog.validate(readers, independent, maps)
         if result.page_count != len(entries) or len(independent.pages) != len(entries):
             raise EditError("El organizador produjo un número de páginas incorrecto.")
         if _metadata(readers[0]) != _metadata(independent) or docs[0].get_xml_metadata() != result.get_xml_metadata():
@@ -610,7 +641,7 @@ def _validate_organized(output, inputs, entries, source_indices, maps, expected_
             expected_related["links"] = _mapped_links(original, mapping)
             if expected_related != related(copied):
                 raise EditError(f"La página final {output_number+1} no conserva imágenes, vectores, anotaciones o enlaces.")
-            if _annotation_details(readers[source_number], input_page, mapping) != _annotation_details(independent, output_number):
+            if _annotation_details(readers[source_number], input_page, mapping, ignore_struct_parent=tagged_remap) != _annotation_details(independent, output_number, ignore_struct_parent=tagged_remap):
                 raise EditError(f"La página final {output_number+1} cambió atributos de anotaciones.")
             if _raw_link_targets(readers[source_number], input_page, mapping) != _raw_link_targets(independent, output_number):
                 raise EditError(f"La página final {output_number+1} cambió coordenadas PDF o atributos de destino.")
@@ -622,7 +653,7 @@ def _validate_organized(output, inputs, entries, source_indices, maps, expected_
         return stats
 
 
-def organize_pages_pdf(data: bytes, plan: list[dict], additions: dict[str, bytes] | None = None):
+def organize_pages_pdf(data: bytes, plan: list[dict], additions: dict[str, bytes] | None = None, *, _tagged_replacement=False):
     """Execute an explicit final order; source indices and rotation deltas are 0-based.
 
     Entries are current/external PDF pages, or blank pages in PDF points.
@@ -647,6 +678,7 @@ def organize_pages_pdf(data: bytes, plan: list[dict], additions: dict[str, bytes
             docs.append(stack.enter_context(doc))
             readers.append(reader)
         entries = _organizer_plan(plan, {key: len(doc) for key, doc in zip(source_ids, docs)})
+        page_catalog.require_unambiguous(readers, entries)
         source_indices = {key: index for index, key in enumerate(source_ids)}
         maps = [{} for _ in docs]
         primary_rotations = {}
@@ -669,11 +701,24 @@ def organize_pages_pdf(data: bytes, plan: list[dict], additions: dict[str, bytes
             expected_toc.extend(toc)
             toc_groups.append(toc)
             removed.extend(excluded)
-        output = _build_organized(readers, entries, source_indices, maps, toc_groups)
-    stats = _validate_organized(output, inputs, entries, source_indices, maps, expected_toc, primary_rotations)
+        tagged_report = None
+        if any(reader.trailer['/Root'].get('/StructTreeRoot') for reader in readers):
+            if _tagged_replacement and len(readers) == 2:
+                from .tagged_merge import build_tagged_replacement
+                output, tagged_report = build_tagged_replacement(readers, entries, source_indices, maps, toc_groups)
+            elif len(readers) != 1 or not readers[0].trailer['/Root'].get('/StructTreeRoot'):
+                raise EditError('PDF etiquetado: insertar otro PDF requiere fusionar sus árboles de accesibilidad; esta operación todavía no está habilitada.')
+            else:
+                from .tagged_pages import build_tagged_pages
+                output, tagged_report = build_tagged_pages(readers[0], entries, toc_groups[0])
+        else:
+            output = _build_organized(readers, entries, source_indices, maps, toc_groups)
+    stats = _validate_organized(output, inputs, entries, source_indices, maps, expected_toc, primary_rotations,
+                                tagged_remap=bool(tagged_report and tagged_report.get('operation') == 'replace_tagged_pages'))
     return output, {"verified": True, "operation": "organize_pages", "page_count": len(entries),
                     "page_map": [entry["page"] if entry["source"] == "current" else None for entry in entries],
-                    "assignments": entries, "pages": stats, "removed_bookmarks": removed,
+                    "assignments": entries, "pages": stats, "removed_bookmarks": removed, "tagged_structure": tagged_report,
+                    "named_destinations": page_catalog.report(readers[0], maps[0]),
                     "destination_policy": "Primera aparición final del destino; los enlaces a la propia página apuntan a su copia.",
                     "source_sha256": {key: hashlib.sha256(payload).hexdigest() for key, payload in zip(source_ids, inputs)},
                     "metadata_policy": "Se conservan Info/XMP del documento actual y los marcadores compatibles de los documentos incorporados.",

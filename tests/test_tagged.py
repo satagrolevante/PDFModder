@@ -267,8 +267,8 @@ def test_layout_bbox_blocks_only_its_affected_structural_element():
 
 
 @pytest.mark.parametrize('operation', ['text', 'image_add', 'image_delete', 'image_transform',
-                                      'pages_delete', 'pages_extract', 'pages_merge'])
-def test_unimplemented_tagged_content_operations_have_specific_blocks(operation):
+                                      'pages_merge'])
+def test_tagged_operations_without_semantic_choices_have_specific_blocks(operation):
     from pdfmodder.composition import AddTextRequest, insert_text_pdf
     from pdfmodder.media import add_image_pdf, delete_image_pdf, transform_image_pdf
     from pdfmodder.pageops import delete_pages_pdf, extract_pages_pdf, merge_pdfs
@@ -288,7 +288,7 @@ def test_unimplemented_tagged_content_operations_have_specific_blocks(operation)
         'pages_extract': lambda: extract_pages_pdf(source, [1]),
         'pages_merge': lambda: merge_pdfs(source, [source]),
     }
-    with pytest.raises(EditError, match=r'(?i)etiquetado:.*(?:asignar|remapear).*etiquetas'):
+    with pytest.raises(EditError, match=r'(?i)etiquetado:.*(?:(?:asignar|remapear).*etiquetas|fusionar.*accesibilidad|orden de lectura|descripci[oó]n)'):
         operations[operation]()
     assert sha256(source).hexdigest() == original_hash
     assert audit_tagged(source)['reading_order'].startswith(DATE_TEXT+MOVE_TEXT)

@@ -23,7 +23,10 @@ def test_visible_text_with_ocr_preview_has_no_stale_hidden_date(qtbot,line_windo
     qtbot.mouseClick(window.canvas.viewport(),Qt.LeftButton,pos=point)
     assert window.model.text(window.canvas.ids)=='Fecha: 10/09/2026'
     assert all(g.mode==0 for g in window.model.selected(window.canvas.ids))
-    window.start_edit();qtbot.keyClicks(window.canvas.editor,'Fecha: 11/09/2026')
+    window.start_edit()
+    qtbot.waitUntil(lambda:window.canvas.editor.isVisible(),timeout=30000)
+    qtbot.keyClick(window.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
+    qtbot.keyClicks(window.canvas.editor,'Fecha: 11/09/2026')
     qtbot.mouseClick(window.preview_step_button,Qt.LeftButton);settled(qtbot,window)
     assert window.last_report['ocr_cleanup']['verified']
     assert 'duplicado OCR' in window.message.text()
@@ -45,7 +48,10 @@ def test_hidden_ocr_element_requires_explicit_mode_and_preserves_scan_pixels(qtb
     with pytest.raises(ValueError,match='Activa'):
         window._request(text='Fecha: 11/09/2026',formatting=True,adjust_line=True)
     window.ocr_mode_box.setChecked(True)
-    window.start_edit();qtbot.keyClicks(window.canvas.editor,'Fecha: 11/09/2026')
+    window.start_edit()
+    qtbot.waitUntil(lambda:window.canvas.editor.isVisible(),timeout=30000)
+    qtbot.keyClick(window.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
+    qtbot.keyClicks(window.canvas.editor,'Fecha: 11/09/2026')
     qtbot.mouseClick(window.preview_step_button,Qt.LeftButton);settled(qtbot,window)
     assert window.last_report['appearance_unchanged']
     assert window.last_report['ocr_mode']=='searchable'
@@ -98,5 +104,7 @@ def test_image_context_exports_then_dialog_crops_rotates_replaces_one_instance(q
     target=tmp_path/'image-edited.pdf';window.save_as(target);settled(qtbot,window)
     from pdfmodder.media import export_image_pdf
     result=export_image_pdf(target.read_bytes(),0,'0')
-    assert (result['width_px'],result['height_px'])==(40,40)
+    assert (result['width_px'],result['height_px'])==(80,40)
+    with Image.open(BytesIO(result['image_bytes'])) as selected:
+        assert selected.convert('RGB').tobytes()==Image.new('RGB',(80,40),'blue').tobytes()
     assert export_image_pdf(target.read_bytes(),0,'1')['image_bytes']==export.read_bytes()

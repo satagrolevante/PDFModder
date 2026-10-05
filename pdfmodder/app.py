@@ -16,14 +16,41 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFormLayout, QListView,
     QSplitter, QListWidget, QListWidgetItem, QPlainTextEdit, QLabel, QPushButton,
     QDoubleSpinBox, QComboBox, QCheckBox, QLineEdit, QToolBar, QFileDialog,
-    QMessageBox, QDialog, QDialogButtonBox, QInputDialog, QGroupBox, QScrollArea,
+    QMessageBox, QDialog, QDialogButtonBox, QInputDialog, QGroupBox, QScrollArea, QStackedWidget,
 )
 
 from .canvas import PdfCanvas
 from .model import EditRequest, mm, pt, union, transform
 from .editing_ui import ExtendedEditing
 from .advanced_ui import AdvancedEditing
+from .rich_ui import RichEditing
+from .object_ui import ObjectEditing
+from .tools_ui_v150 import ToolsWorkspaceV150Mixin
+from .page_actions_v150 import PageActionsV150Mixin
+from .insertion_ui_v150 import InsertionUiV150Mixin
+from .signing_ui import SigningUiMixin
+from .workspace_ui_v170 import WorkspaceUiV170Mixin
+from .document_ui_v170 import DocumentUiV170Mixin
+from .clipboard_ui_v170 import ClipboardUiV170Mixin
+from .reading_ui_v171 import ReadingUiV171Mixin
+from .continuous_ui_v180 import ContinuousUiV180Mixin
+from .continuous_reader_v180 import ContinuousReader
+from .workspace_v200 import WorkspaceV200Mixin
+from .printing_v200 import PrintingV200Mixin
+from .tools_v200 import FormsRedactionMixin
 from . import __version__
+
+
+def _application_icon():
+    """Load the bundled icon both from the source tree and PyInstaller."""
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    for name in ("pdfmodder.ico", "pdfmodder.png"):
+        path = root / "assets" / "icons" / name
+        if path.is_file():
+            icon = QIcon(str(path))
+            if not icon.isNull():
+                return icon
+    return QIcon()
 
 
 def _dispatch(command, payload):
@@ -32,7 +59,7 @@ def _dispatch(command, payload):
     return dispatch(command, payload)
 
 
-class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
+class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixin,ClipboardUiV170Mixin,WorkspaceUiV170Mixin,SigningUiMixin,ToolsWorkspaceV150Mixin,PageActionsV150Mixin,InsertionUiV150Mixin,RichEditing,ObjectEditing,AdvancedEditing,ExtendedEditing,QMainWindow):
     operation_finished = Signal(str, object)
     error_raised = Signal(str)
     page_ready = Signal()
@@ -48,6 +75,7 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         self._thumbnail_busy = False
         self._pending_text_preview = None
         self._closed = False
+        self._active_session_v200 = None
         self._allow_close = False
         self.state = {}
         self.model = None
@@ -102,11 +130,16 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         self.addToolBar(self.toolbar)
         self.open_action = self._action("Abrir…", self.choose_open, "Ctrl+O")
         self.save_action = self._action("Guardar como…", self.choose_save, "Ctrl+Shift+S")
+        self.sign_action = self._action("Firmar…", self.choose_sign_document)
+        self.sign_action.setObjectName('signDocumentAction')
+        self.sign_action.setToolTip('Firmar con un certificado de Windows y sello visible opcional')
         self.toolbar.addSeparator()
         self.undo_action = self._action("Deshacer", lambda:self.history("undo"), "Ctrl+Z")
         self.redo_action = self._action("Rehacer", lambda:self.history("redo"), "Ctrl+Y")
         self.toolbar.addSeparator()
         self.toolbar.addWidget(QLabel(" Zoom "))
+        self.zoom_out_action = self._action("Reducir zoom", lambda:self.step_zoom_v160(-1))
+        self.zoom_out_action.setObjectName('zoomOutAction')
         self.zoom_box = QComboBox()
         self.zoom_box.setObjectName("zoomBox")
         for value in (50,75,100,125,150,200,300,400):
@@ -114,11 +147,13 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         self.zoom_box.setCurrentIndex(3)
         self.zoom_box.currentIndexChanged.connect(lambda _:self.set_zoom(self.zoom_box.currentData()))
         self.toolbar.addWidget(self.zoom_box)
+        self.zoom_in_action = self._action("Aumentar zoom", lambda:self.step_zoom_v160(1))
+        self.zoom_in_action.setObjectName('zoomInAction')
         self.fit_page_action = self._action("Ajustar página", lambda:self.fit_page(False))
         self.fit_width_action = self._action("Ajustar anchura", lambda:self.fit_page(True))
         self.compare_action = self._action("Ver original", self.toggle_original, checkable=True)
         self.highlight_action = self._action("Resaltar cambios", self.toggle_highlights, checkable=True)
-        self.highlight_action.setChecked(True)
+        self.highlight_action.setChecked(False)
         self.toolbar.addSeparator()
         self.search_box = QLineEdit()
         self.search_box.setObjectName("searchBox")
@@ -181,7 +216,12 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         self.canvas.cancel_requested.connect(self.cancel)
         self.canvas.delete_requested.connect(lambda:self.preview_text(""))
         self.canvas.arrow_requested.connect(self.arrow_move)
-        splitter.addWidget(self.canvas)
+        self.reader = ContinuousReader()
+        self.document_views = QStackedWidget()
+        self.document_views.setObjectName('documentViews')
+        self.document_views.addWidget(self.canvas)
+        self.document_views.addWidget(self.reader)
+        splitter.addWidget(self.document_views)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setMinimumWidth(290)
@@ -204,10 +244,10 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         hint = QLabel("Ctrl+clic: añadir/quitar fragmentos. Mayús+clic: rango en la línea. Doble clic: escribir sobre la página.")
         hint.setWordWrap(True)
         panel_layout.addWidget(hint)
-        self.line_reflow_box = QCheckBox("Ajustar el resto de la línea")
+        self.line_reflow_box = QCheckBox("Ajustar línea desde el panel lateral")
         self.line_reflow_box.setObjectName("lineReflowBox")
         self.line_reflow_box.setChecked(True)
-        self.line_reflow_box.setToolTip("Al sustituir texto de una línea, conserva sus extremos y reparte los espacios sin estirar las letras. Desactívalo para editar sólo la selección. Para ampliar el área, selecciona la línea completa. Los cambios explícitos de tamaño y la redistribución en varias líneas desactivan esta opción.")
+        self.line_reflow_box.setToolTip("Se aplica al contenido del panel lateral y a la edición conservadora OCR/etiquetada. Conserva los extremos y reparte los espacios sin estirar letras. En el editor sobre la página se redistribuye sólo el cuadro elegido: selecciona la línea completa si quieres ajustarla entera. Los cambios explícitos de tamaño y la redistribución en varias líneas desactivan esta opción.")
         panel_layout.addWidget(self.line_reflow_box)
         self.property_box = QGroupBox("Selección")
         form = QFormLayout(self.property_box)
@@ -305,6 +345,23 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         self.addAction(escape)
         self._create_extended_ui(panel_layout)
         self._create_advanced_ui(panel_layout,form)
+        self._init_rich(panel_layout)
+        self._init_objects()
+        self._create_tools_workspace_v150(splitter,scroll,panel)
+        self._create_document_ui_v170()
+        self._create_clipboard_ui_v170()
+        self._create_workspace_v170()
+        self.toolbar.insertAction(self.sign_action,self.document_properties_action)
+        self.toolbar.insertAction(self.sign_action,self.document_security_action)
+        toolbar_actions=self.toolbar.actions()
+        clipboard_anchor=toolbar_actions[toolbar_actions.index(self.redo_action)+1]
+        for action in (self.cut_action_v170,self.copy_action_v170,self.paste_action_v170,self.delete_action_v170):
+            self.toolbar.removeAction(action)
+            self.toolbar.insertAction(clipboard_anchor,action)
+        self._create_reading_ui_v171()
+        self._init_workspace_v200()
+        self._init_printing_v200()
+        self.setup_forms_redaction_v200()
 
     @staticmethod
     def _spin(name, low, high, decimals=3):
@@ -318,11 +375,17 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
     def _submit(self, command, payload=None, callback=None):
         if self.busy or self._closed:
             return False
+        if not self._reading_command_allowed_v171(command):
+            return False
+        if getattr(self, '_signature_placement_dialog', None) is not None and command != 'page':
+            return False
         self.last_error = ""
         self._command = command
         self._callback = callback
         self._thumbnail_busy = command == "page" and bool((payload or {}).get("thumbnail"))
-        self.future = self.pool.submit(_dispatch,command,payload or {})
+        payload = dict(payload or {})
+        self._background_ui_v200 = payload.pop('_background_ui', False)
+        self.future = self.pool.submit(_dispatch,command,payload)
         self.statusBar().showMessage({"open":"Abriendo PDF…","page":"Renderizando página…","preview":"Validando y renderizando la modificación…","apply":"Validando movimiento…","save":"Validando y guardando copia…"}.get(command,"Procesando…"))
         self._refresh_actions()
         return True
@@ -337,13 +400,24 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         self._thumbnail_busy = False
         try:
             result = future.result()
-            if "state" in result:
+            if "state" in result and not self._background_ui_v200:
                 self.state = result["state"]
             self._refresh_actions()
             if callback:
                 callback(result)
             self.operation_finished.emit(command,result)
         except Exception as exc:
+            if command == 'prepare_editing':
+                self._mode_preparing_v171 = False
+                self._set_mode_v171('reading')
+            if command in ('rich_preview','rich_prepare') and not self._rich_active:
+                self._refresh_actions()
+                return
+            self._rich_failed(command,str(exc))
+            if command == 'recover' and 'PASSWORD_REQUIRED:' in str(exc):
+                self._retry_recovery_password_v200()
+                self._refresh_actions()
+                return
             if command == "open" and "PASSWORD_REQUIRED:" in str(exc):
                 password, accepted = QInputDialog.getText(self,"PDF cifrado","Introduce una contraseña legítima del documento:",QLineEdit.Password)
                 if accepted:
@@ -384,9 +458,10 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         original = self.compare_action.isChecked()
         selected = bool(self.canvas.ids) and not original and not preview
         permitted = not self.state.get("issues")
-        writing = self.canvas.editor.isVisible()
+        writing = self.canvas.editor.isVisible() or getattr(self,'_rich_active',False) or getattr(self,'_rich_loading',False)
         self.open_action.setEnabled(not self.busy and not writing)
-        self.save_action.setEnabled(ready and not preview and permitted and not writing)
+        self.save_action.setEnabled(ready and not preview and (permitted or self.state.get('metadata_only_save',False)) and not writing)
+        self.sign_action.setEnabled(ready and not preview and permitted and not writing and not original)
         self.undo_action.setEnabled(ready and self.state.get("undo",False) and not writing)
         self.redo_action.setEnabled(ready and self.state.get("redo",False) and not writing)
         self.property_box.setEnabled(ready and selected and permitted and not writing)
@@ -398,9 +473,11 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
             action.setEnabled(ready and not preview and not writing)
         self.search_box.setEnabled(ready and not writing)
         self.zoom_box.setEnabled(ready and not writing)
+        self.zoom_out_action.setEnabled(ready and not writing and self.zoom > .100001)
+        self.zoom_in_action.setEnabled(ready and not writing and self.zoom < 3.999999)
         self.canvas.read_only = not ready or original or preview or not permitted or writing
         self.canvas.allow_background_edit = bool(opened and self._thumbnail_busy and not original and not preview and permitted and not writing)
-        self.line_reflow_box.setEnabled(bool(opened and selected and permitted and (ready or self._thumbnail_busy) and self._line_reflow_available() and self._pending_text_preview is None))
+        self.line_reflow_box.setEnabled(bool(opened and selected and permitted and not (getattr(self,'_rich_active',False) or getattr(self,'_rich_loading',False)) and (ready or self._thumbnail_busy) and self._line_reflow_available() and self._pending_text_preview is None))
         if self._thumbnail_busy and writing:
             self.cancel_button.setEnabled(True)
         self.edit_steps.setVisible(bool(writing or preview or self._pending_text_preview))
@@ -419,6 +496,26 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
             self.compare_action.setEnabled(False)
         self._refresh_extended()
         self._refresh_advanced()
+        if hasattr(self,'objects_action'):
+            self.objects_action.setEnabled(ready and permitted and not writing and not preview and not original)
+            self.copy_format_action.setEnabled(ready and selected and not writing and permitted)
+            self.paste_format_action.setEnabled(ready and bool(self._format_copy) and not writing and permitted and not preview)
+            self.interaction_box.setEnabled(ready and not writing and not preview)
+        if getattr(self,'_rich_active',False):
+            self.edit_step_label.setText('✓ Aceptar / Ctrl+Intro valida y aplica el borrador. × Cancelar / Esc lo descarta.')
+            self.preview_step_button.setText('Aceptar ✓ · Ctrl+Intro')
+            self.preview_step_button.setEnabled(not self._rich_accept_pending)
+            self.apply_step_button.hide()
+            self.cancel_step_button.setEnabled(not self._rich_accept_pending)
+        else:
+            self.preview_step_button.setText('1. Ver vista previa · Ctrl+Intro')
+            self.preview_step_button.show()
+            self.apply_step_button.show()
+        self._refresh_document_v170()
+        self._refresh_clipboard_v170()
+        self._refresh_v170()
+        self._restrict_signature_placement()
+        self._refresh_reading_actions_v171()
 
     def _confirm_discard(self):
         if not (self.state.get("dirty") or self.state.get("preview") or self.canvas.editor.isVisible()):
@@ -436,14 +533,16 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         if self.canvas.editor.isVisible():
             self._error("Aplica o cancela la escritura antes de abrir otro documento.")
             return False
-        payload = {"path":str(path),"password":password}
+        payload = {"path":str(path),"password":password,"reading":True}
         if self.config_path:
             payload["config_path"] = str(self.config_path)
         if self.history_dir:
             payload["history_dir"] = str(self.history_dir)
         def opened(result):
+            self.recent_open(self.state.get('path',path))
             self.model = None
             self.page_number = 0
+            self._set_mode_v171('reading')
             self._thumbnail_pages.clear()
             self._thumbnail_order.clear()
             self.compare_action.setChecked(False)
@@ -458,9 +557,17 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
                 self.pages.addItem(item)
             self.pages.setCurrentRow(0)
             self.pages.blockSignals(False)
-            self._notice("\n".join(self.state.get("issues",[])) or (
-                "PDF etiquetado: puedes editar o mover texto existente compatible. Se verifican las etiquetas y el orden de lectura. Añadir contenido o reorganizar páginas requiere un soporte adicional."
-                if self.state.get('tagged') else "Selecciona texto para editarlo. Se conservará el archivo original."))
+            if self.state.get('issues'):
+                self._error('\n'.join(self.state['issues']))
+            elif self.application_mode == 'reading':
+                self._notice('Modo Lectura: selecciona y copia texto. Pulsa «Herramientas» para editar.')
+            elif self.state.get('tagged'):
+                pages=self.state.get('page_capabilities',{})
+                page_notice=('Puedes eliminar o extraer páginas conservando sus etiquetas.' if pages.get('delete') and pages.get('extract')
+                             else 'Páginas: '+(pages.get('reason') or 'la estructura requiere una comprobación específica.'))
+                self._notice('PDF etiquetado: selecciona texto y haz doble clic para editarlo. '+page_notice+' El PDF original se conserva.')
+            else:
+                self._notice('Modo Lectura: selecciona y copia texto. Pulsa «Herramientas» para editar.')
             self.load_page()
         self._open_retry = (str(path),password)
         return self._submit("open",payload,opened)
@@ -468,17 +575,22 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
     def load_page(self):
         if not self.state:
             return
+        if self.application_mode == 'reading':
+            self._ensure_reader_v180()
+            return
         self._sync_page_list()
         origins=self.state.get('original_pages',[])
         if origins and origins[self.page_number] is None:
             self.compare_action.setChecked(False)
-        self._submit("page",{"number":self.page_number,"zoom":self.zoom,"original":self.compare_action.isChecked()},self._loaded_page)
+        self._submit("page",{"number":self.page_number,"zoom":self.zoom,"original":self.compare_action.isChecked(),"reading":self.application_mode=='reading'},self._loaded_page)
 
     def _loaded_page(self,result):
+        self._page_png=result['png']
         self.model = result["model"]
         self.fonts = result["fonts"]
         pixmap = self.canvas.set_page(result["png"],self.model,result["zoom"],result["changes"])
         self.zoom = result["zoom"]
+        self._sync_zoom_control()
         self.canvas.set_images(result.get('images',[]),self._restore_image_rect)
         self._restore_image_rect=None
         self._set_thumbnail(self.page_number,pixmap)
@@ -506,18 +618,53 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
             # Wait for the edit toolbar and properties to finish their layout.
             QTimer.singleShot(0, reveal_edit)
         self.statusBar().showMessage(f"Página {self.page_number+1}/{self.state['page_count']} · Zoom {self.zoom*100:.1f}% · PDF real renderizado" + (" · PREVISUALIZACIÓN pendiente de aplicar" if self.state.get("preview") else ""))
+        if result.get('comparison_warning') and self.compare_action.isChecked():
+            self._notice(result['comparison_warning'])
         self._advanced_page()
+        self._after_reading_page_loaded_v171()
         self.page_ready.emit()
 
     def go_page(self,index):
-        if index < 0 or not self.state or self.busy or self.state.get("preview") or self.canvas.editor.isVisible():
+        if self.application_mode == 'reading' and 0 <= index < self.state.get('page_count',0):
+            self.reader.go_page(index)
+            self.page_number = index
+            return
+        if index < 0 or index >= self.state.get('page_count',0) or not self.state or self.busy or self.state.get("preview") or self.canvas.editor.isVisible():
             return
         self.page_number = index
         self._restore_ids = self._restore_regions = None
         self.canvas.search_rects = [m["rect"] for m in self._search_matches if m["page"] == index]
         self.load_page()
 
+    def _sync_zoom_control(self):
+        blocked = self.zoom_box.blockSignals(True)
+        try:
+            custom = self.zoom_box.findData('fit', Qt.UserRole + 1)
+            if custom >= 0:
+                self.zoom_box.removeItem(custom)
+            index = next((i for i in range(self.zoom_box.count())
+                          if abs(float(self.zoom_box.itemData(i)) - self.zoom) < 1e-8), -1)
+            if index < 0:
+                self.zoom_box.addItem(f'{self.zoom * 100:.1f}%', self.zoom)
+                index = self.zoom_box.count() - 1
+                self.zoom_box.setItemData(index, 'fit', Qt.UserRole + 1)
+            self.zoom_box.setCurrentIndex(index)
+        finally:
+            self.zoom_box.blockSignals(blocked)
+
+    def step_zoom_v160(self, direction):
+        """Scale from the actual zoom, including a custom Fit page value."""
+        self.set_zoom(self.zoom * (1.25 if direction > 0 else .8))
+
     def set_zoom(self,value):
+        if self.application_mode == 'reading' and self.state:
+            self.zoom = max(.1, min(float(value), 4.))
+            self._reader_generation_v180 += 1
+            self._reader_queue_v180.clear()
+            self.reader.set_zoom(self.zoom)
+            self._sync_zoom_control()
+            self._refresh_actions()
+            return
         if not value or self.busy or self.canvas.editor.isVisible():
             return
         self.zoom = max(.1,min(float(value),4.))
@@ -526,12 +673,16 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
             self.load_page()
 
     def fit_page(self,width_only=False):
-        if not self.model:
+        if self.application_mode == 'reading' and self.reader._geometries:
+            width, height = self.reader._geometries[self.reader.current_page()]
+        elif self.model:
+            width, height = self.model.width, self.model.height
+        else:
             return
-        viewport = self.canvas.viewport()
-        ratio = (viewport.width()-35)/self.model.width
+        viewport = self.reader.viewport() if self.application_mode == 'reading' else self.canvas.viewport()
+        ratio = (viewport.width()-35)/width
         if not width_only:
-            ratio = min(ratio,(viewport.height()-35)/self.model.height)
+            ratio = min(ratio,(viewport.height()-35)/height)
         self.set_zoom(ratio)
 
     def toggle_original(self,checked):
@@ -559,9 +710,14 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
             self._refresh_actions()
             return
         selected = self.model.selected(ids)
+        if self.application_mode == 'reading':
+            self.selection_label.setText(f'{len(selected)} caracteres · Lectura / Ctrl+C para copiar')
+            self.content.setPlainText(self.canvas.reading_text())
+            self._refresh_actions()
+            return
         bounds = union(g.bbox for g in selected)
         styles = {(g.font,g.size,g.color,g.opacity,g.direction) for g in selected}
-        self.selection_label.setText(f"{len(selected)} caracteres · {len(styles)} estilo(s)" + ("\nSelección mixta: movimiento exacto; la escritura puede bloquearse." if len(styles)>1 else ""))
+        self.selection_label.setText(f"{len(selected)} caracteres · {len(styles)} estilo(s)" + ("\nVarios formatos: edita por fragmentos sobre la página. Cada recurso se verifica antes de aplicar." if len(styles)>1 else ""))
         self.content.setPlainText(self.model.text(ids))
         def normalized(name):
             return re.sub(r"^[A-Z]{6}\+","",str(name).lstrip("/"))
@@ -593,6 +749,15 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         self._refresh_actions()
 
     def start_edit(self):
+        from .clipping import CLIP_ISSUE
+        tagged_clipped = bool(self.state.get('tagged') and self.model and CLIP_ISSUE in self.model.issues)
+        if (self.state.get('tagged') and not tagged_clipped) or (self.model and any(g.mode==3 for g in self.model.glyphs)):
+            self.start_legacy_edit()
+            self._notice('Esta selección utiliza la edición conservadora de etiquetas/OCR. Ctrl+Intro genera la vista previa y «Aplicar» confirma; el formato por fragmentos no se aplica a esta capa.')
+            return
+        return self.start_rich_edit()
+
+    def start_legacy_edit(self):
         if (self.busy and not self._thumbnail_busy) or (self.canvas.read_only and not self.canvas.allow_background_edit) or not self.canvas.ids:
             return
         self.canvas.start_editor(self.content.toPlainText())
@@ -632,6 +797,9 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         return self._extend_request(request)
 
     def preview_text(self,text):
+        if getattr(self,'_rich_active',False):
+            self._rich_accept(self.canvas.editor.payload())
+            return
         if (self.busy and not self._thumbnail_busy) or self.compare_action.isChecked() or self.state.get("preview") or self._pending_text_preview is not None:
             return
         try:
@@ -651,9 +819,9 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
     def _send_text_preview(self,request):
         self._restore_ids = self.canvas.ids[:]
         self.content.setPlainText(request.text)
-        self.canvas.editor.hide()
-        self._editing_context = None
-        self._submit("preview",{"request":request},self._previewed)
+        # Keep the user's draft on screen if validation fails.
+        self.canvas.editor.setReadOnly(True)
+        self._submit("preview",{"request":request},self._legacy_preview_finished_v200)
 
     def _previewed(self,result):
         self.last_report = result.get("report")
@@ -693,18 +861,26 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
             self.pages.item(index).setIcon(QIcon())
         removed=(self.last_report or {}).get('removed_bookmarks',[])
         message="Cambio aplicado al PDF. Guardar como crea una copia validada."
+        if (self.last_report or {}).get('warning'):
+            message+=' '+self.last_report['warning']
         if removed:
             message+=f" Se retiraron {len(removed)} marcadores de páginas excluidas: "+', '.join(str(title) for title in removed)+'.'
         self._notice(message)
         self.load_page()
 
     def cancel(self):
+        if self._cancel_signature_placement():return
+        if self.cancel_rich():return
         if self.busy and not self._thumbnail_busy:
             return
         self._pending_text_preview = None
         self.canvas.editor.setReadOnly(False)
         self.canvas._press = self.canvas._drag = None
         self.canvas._image_drag_rect=None
+        self.canvas._image_rotate=False
+        self.canvas._image_rotate_angle=None
+        self.canvas._text_resize=self.canvas._text_resize_rect=None
+        self.canvas._image_resize=None
         if self._placement:
             self._cancel_placement()
             self._notice('Inserción cancelada. El PDF no se ha modificado.')
@@ -808,6 +984,7 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         self._last_search = text
         def found(result):
             self._search_matches = result["matches"]
+            self.reader.set_search_matches(self._search_matches)
             self._search_index = -1
             if not self._search_matches:
                 self._notice(f"No se encuentra «{text}» en el documento de trabajo.")
@@ -822,6 +999,10 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
         match = self._search_matches[self._search_index]
         self._notice(f"Coincidencia {self._search_index+1} de {len(self._search_matches)} · Página {match['page']+1}")
         self.page_number = match["page"]
+        if self.application_mode == 'reading':
+            self.reader.go_page(self.page_number)
+            self.reader.reveal_rect(self.page_number, match['rect'])
+            return
         self.pages.blockSignals(True)
         self.pages.setCurrentRow(self.page_number)
         self.pages.blockSignals(False)
@@ -842,6 +1023,8 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
             self._thumbnail_pages.discard(old)
 
     def _load_visible_thumbnail(self):
+        if self.application_mode == 'reading' and (self._reader_queue_v180 or self._reader_copy_v180 or self._reader_key_v180 is None):
+            return
         if (self.busy or not self.model or self.state.get("preview") or self._closed
                 or self.canvas.editor.isVisible() or self.canvas.pointer_gesture_pending()
                 or self._placement
@@ -952,14 +1135,21 @@ class MainWindow(AdvancedEditing,ExtendedEditing,QMainWindow):
             event.ignore()
             return
         if not self._closed:
+            self._close_workspace_v170()
+            self._finish_signature_placement(closing=True)
             self._closed = True
             self.poller.stop()
             self.thumbnail_timer.stop()
+            self.reader_timer_v180.stop()
             self.arrow_timer.stop()
             if self.state:
-                self.pool.submit(_dispatch,"close",{})
+                self.pool.submit(_dispatch,"close_all",{})
             self.pool.shutdown(wait=False,cancel_futures=False)
         event.accept()
+
+
+class MainWindow(WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
+    """New workspace interceptors precede the existing window implementation."""
 
 
 def main(argv=None):
@@ -971,20 +1161,64 @@ def main(argv=None):
     group.add_argument("--smoke-tagged",metavar="REPORT_JSON",help="Probar PDF etiquetado, doble clic, ajuste de línea, accesibilidad e historial")
     group.add_argument("--smoke-clipped",metavar="REPORT_JSON",help="Probar campos con recortes, cambios de longitud, historial y dos guardados")
     group.add_argument("--smoke-v08",metavar="REPORT_JSON",help="Probar OCR, reemplazos revisados, imágenes y organización de páginas")
+    group.add_argument("--smoke-v09",metavar="REPORT_JSON",help="Probar edición rica, formato por fragmentos, historial y guardado")
+    group.add_argument("--smoke-compat",metavar="REPORT_JSON",help="Probar etiquetas, recortes, páginas y estados gráficos neutros")
+    group.add_argument("--smoke-v150",metavar="REPORT_JSON",help="Probar Herramientas 1.5.0: texto nuevo, recorte, exportación, división y reapertura")
+    group.add_argument("--smoke-v160",metavar="REPORT_JSON",help="Prueba dirigida 1.6.0, incluida firma con certificado sintético efímero")
+    group.add_argument("--smoke-v161",metavar="REPORT_JSON",help="Prueba dirigida de firma visible con certificado sintético efímero")
+    group.add_argument("--smoke-v162",metavar="REPORT_JSON",help="Prueba de dibujo del recuadro y firma visible con certificado sintético")
+    group.add_argument("--smoke-v170",metavar="REPORT_JSON",help="Prueba dirigida de edición, propiedades, seguridad y herramientas 1.7.0")
+    group.add_argument("--smoke-v171",metavar="REPORT_JSON",help="Prueba de lectura, rueda, copia, herramientas y edición 1.7.1")
+    group.add_argument("--smoke-v180",metavar="REPORT_JSON",help="Prueba de lector continuo, selección entre páginas y edición 1.8.0")
+    group.add_argument("--smoke-v181",metavar="REPORT_JSON",help="Recorrido del ejecutable con actualizador corregido 1.8.1")
+    group.add_argument("--smoke-v200", "--smoke-v202", "--smoke-v203", dest="smoke_v200",metavar="REPORT_JSON",help="Prueba dirigida del ejecutable: compatibilidad, aceptación, pestañas, historial y guardado")
+    group.add_argument("--smoke-v201",metavar="REPORT_JSON",help="Prueba de edición e impresión con vista previa, sin enviar trabajos a impresoras físicas")
     args = parser.parse_args(argv)
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("PDF Modder")
     app.setOrganizationName("PDFModder")
     app.setStyle("Fusion")
+    application_icon = _application_icon()
+    if not application_icon.isNull():
+        app.setWindowIcon(application_icon)
     initial = args.pdf
-    smoke_report=args.smoke_test or args.smoke_extended or args.smoke_tagged or args.smoke_clipped or args.smoke_v08
+    smoke_report=args.smoke_test or args.smoke_extended or args.smoke_tagged or args.smoke_clipped or args.smoke_v08 or args.smoke_v09 or args.smoke_compat or args.smoke_v150 or args.smoke_v160 or args.smoke_v161 or args.smoke_v162 or args.smoke_v170 or args.smoke_v171 or args.smoke_v180 or args.smoke_v181 or args.smoke_v200 or args.smoke_v201
     if smoke_report and not initial:
         root = Path(getattr(sys,"_MEIPASS",Path(__file__).resolve().parents[1]))
-        initial = str(root/"examples"/("herramientas-v08.pdf" if args.smoke_v08 else "recortado.pdf" if args.smoke_clipped else "etiquetado.pdf" if args.smoke_tagged else "digital.pdf"))
-    window = MainWindow(initial)
+        initial = str(root/"examples"/("compat-etiquetado-v091.pdf" if args.smoke_compat else "herramientas-v08.pdf" if args.smoke_v08 else "recortado.pdf" if args.smoke_clipped else "etiquetado.pdf" if args.smoke_tagged else "digital.pdf"))
+    if args.smoke_v200 or args.smoke_v201:
+        smoke_folder=Path(args.smoke_v200 or args.smoke_v201).resolve().parent
+        smoke_folder.mkdir(parents=True,exist_ok=True)
+        window=MainWindow(config_path=smoke_folder/'v200-fonts.json',history_dir=smoke_folder/'v200-history')
+    else:
+        window = MainWindow(initial)
+    if not application_icon.isNull():
+        window.setWindowIcon(application_icon)
     window.show()
     if smoke_report:
-        if args.smoke_v08:
+        if args.smoke_v201:
+            from .smoke_v201 import SmokeV201 as Smoke
+        elif args.smoke_v200:
+            from .smoke_v200 import SmokeV200 as Smoke
+        elif args.smoke_v180 or args.smoke_v181:
+            from .smoke_v180 import SmokeV180 as Smoke
+        elif args.smoke_v171:
+            from .smoke_v171 import SmokeV171 as Smoke
+        elif args.smoke_v170:
+            from .smoke_v170 import SmokeV170 as Smoke
+        elif args.smoke_v162:
+            from .smoke_v162 import SmokeV162 as Smoke
+        elif args.smoke_v161:
+            from .smoke_v161 import SmokeV161 as Smoke
+        elif args.smoke_v160:
+            from .smoke_v160 import SmokeV160 as Smoke
+        elif args.smoke_v150:
+            from .smoke_v150 import ToolsSmokeV150 as Smoke
+        elif args.smoke_compat:
+            from .smoke_compat import CompatibilitySmoke as Smoke
+        elif args.smoke_v09:
+            from .smoke_v09 import RichSmoke as Smoke
+        elif args.smoke_v08:
             from .smoke_v08 import AdvancedSmoke as Smoke
         elif args.smoke_clipped:
             from .smoke_clipped import ClippedSmoke as Smoke

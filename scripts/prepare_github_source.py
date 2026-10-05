@@ -3,29 +3,21 @@ from pathlib import Path
 import hashlib
 import json
 import zipfile
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-ROOT_FILES = [".gitignore", "LICENSE", "README.md", "PDFModder.spec", "pyproject.toml",
-              "requirements.txt", "requirements-dev.txt", "run_pdfmodder.py"]
-DIRECTORIES = ["pdfmodder", "scripts", "tests", "docs", "examples", "assets", "installer"]
-IGNORED = {"__pycache__", ".pytest_cache", ".git", ".venv", "build", "dist", "output", "releases"}
+sys.path.insert(0,str(ROOT))
+from pdfmodder import __version__
+from scripts.collect_licenses import source_files
 
 
 def prepare():
-    paths = [ROOT / name for name in ROOT_FILES]
-    for name in DIRECTORIES:
-        paths.extend(path for path in (ROOT / name).rglob("*") if path.is_file())
-    selected = []
-    for path in sorted(set(paths)):
-        relative = path.relative_to(ROOT)
-        if set(relative.parts) & IGNORED or path.suffix in {".pyc", ".pyo"}:
-            continue
-        if path.is_symlink() or not path.resolve().is_relative_to(ROOT):
-            raise RuntimeError("No se admite un enlace externo: " + str(relative))
-        if path.suffix.lower() in {".exe", ".zip", ".dll", ".pyd", ".key", ".pem", ".log"}:
-            raise RuntimeError("Archivo no previsto para publicar: " + str(relative))
-        selected.append((path, relative.as_posix()))
-    target = ROOT / "releases/v0.8/PDFModder-v0.8-proyecto-actual.zip"
+    selected = [(path, relative.as_posix()) for path, relative in source_files()]
+    label = 'v'+__version__
+    target = ROOT / 'releases' / label / f'PDFModder-{label}-proyecto-actual.zip'
+    if target.exists():
+        raise FileExistsError("El archivo de fuentes de esta versión ya existe; no se sobrescribe: " + str(target))
+    target.parent.mkdir(parents=True,exist_ok=True)
     rows = []
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path, name in selected:
@@ -36,7 +28,7 @@ def prepare():
         assert archive.testzip() is None
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     target.with_suffix(".zip.sha256").write_text(digest + "  " + target.name + "\n", encoding="ascii")
-    inventory = {"project": "PDF Modder 0.8", "files": rows, "archive_sha256": digest,
+    inventory = {"project": "PDF Modder "+__version__, "files": rows, "archive_sha256": digest,
                  "published_to_github": False}
     (target.parent / "PROYECTO-ACTUAL.json").write_text(json.dumps(inventory, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps({"source_archive": str(target), "files": len(rows), "bytes": target.stat().st_size,

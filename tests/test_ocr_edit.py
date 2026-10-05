@@ -223,8 +223,14 @@ def test_hidden_text_covering_unselected_region_is_not_removed():
 def test_clipped_paragraph_properties_do_not_silently_disappear():
     data=corpus(clip=True)
     model,chosen=choose(data)
-    with pytest.raises(EditError,match='interlineado'):
-        edit_pdf(data,request(model,chosen,text='SOI',line_spacing=15))
+    output,report=edit_pdf(data,request(model,chosen,text='SOI\nSOL',width=30,height=32,reflow=True,line_spacing=15))
+    assert report['verified'] and report['line_spacing']==15
+    assert report['ocr_cleanup']['removed_characters']==3
+    with fitz.open(stream=output,filetype='pdf') as doc:
+        result=extract_page(doc,0,output)
+        visible=[g for g in result.glyphs if g.mode==0 and g.origin[0]<80 and g.origin[1]<120]
+        assert sorted({round(g.origin[1],3) for g in visible})==[80.,95.]
+        assert not any(g.mode==3 and g.origin[0]<80 and g.origin[1]<120 for g in result.glyphs)
 
 
 def test_majority_overlap_is_insufficient_to_delete_a_different_ocr_region():

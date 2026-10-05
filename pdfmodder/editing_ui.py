@@ -179,9 +179,14 @@ class ExtendedEditing:
         editable=ready and not self.state.get('issues') and not self.compare_action.isChecked()
         tagged=bool(self.state.get('tagged'))
         placing=bool(self._placement)
-        for action in (self.add_text_action,self.add_image_action,self.image_mode_action,self.delete_pages_action,self.extract_pages_action):
-            action.setEnabled(editable and not placing and not tagged)
-            action.setToolTip('PDF etiquetado: esta operación necesita asignar o remapear etiquetas y todavía no está disponible.' if tagged else action.text().replace('&',''))
+        for action in (self.add_text_action,self.add_image_action,self.image_mode_action):
+            action.setEnabled(editable and not placing)
+            action.setToolTip('El contenido nuevo requiere elegir su orden de lectura; las imágenes informativas necesitan una descripción.' if tagged and action is not self.image_mode_action else action.text().replace('&',''))
+        capabilities=self.state.get('page_capabilities',{})
+        for action,key in ((self.delete_pages_action,'delete'),(self.extract_pages_action,'extract')):
+            allowed=capabilities.get(key,not tagged)
+            action.setEnabled(editable and not placing and allowed)
+            action.setToolTip(capabilities.get('reason') or 'Se conservarán las etiquetas de las páginas restantes.' if tagged else action.text().replace('&',''))
         self.format_action.setEnabled(editable and bool(self.canvas.ids) and not placing)
         self.merge_action.setEnabled(not self.busy and not self.canvas.editor.isVisible() and not self.state.get('preview') and not placing and not tagged)
         self.merge_action.setToolTip('PDF etiquetado: combinar necesita remapear las etiquetas y todavía no está disponible.' if tagged else 'Combinar PDFs…')
@@ -279,6 +284,8 @@ class ExtendedEditing:
         self._cancel_placement()
         if kind=='text':
             self._catalog(lambda catalog:self.text_dialog(catalog,x,y))
+        elif kind=='copied_text':
+            self.place_copied_text(x,y)
         elif kind=='image':
             width=min(pt(60),page_width-x,(page_height-y)*self._image_ratio)
             dialog=ImageDialog((x,y,x+width,y+width/self._image_ratio),self)
@@ -305,9 +312,22 @@ class ExtendedEditing:
             self.insert_text(values)
 
     def insert_text(self,values):
-        request={**values,'page':self.page_number,'revision':self.model.revision}
+        accessibility=self._new_content_accessibility()
+        if accessibility is None:
+            return
+        request={**values,**accessibility,'page':self.page_number,'revision':self.model.revision}
         self._restore_ids=None
         self._submit('insert_text',{'request':request},self._previewed)
+
+    def _new_content_accessibility(self,*,image=False):
+        if not self.state.get('tagged'):
+            return {}
+        from .accessibility_ui import AccessibilityDialog
+        dialog=AccessibilityDialog(self,image=image)
+        if self._exec_edit_dialog(dialog)!=QDialog.Accepted:
+            self._notice('Contenido nuevo cancelado. El documento conserva su estado anterior.')
+            return None
+        return dialog.values()
 
     def format_selection(self):
         context=(self.page_number,self.model.revision,tuple(self.canvas.ids))
@@ -326,6 +346,7 @@ class ExtendedEditing:
             first=selected[0]
             rect=union(g.bbox for g in selected)
             dialog=TextDialog(catalog,self,text=self.model.text(self.canvas.ids),rect=rect,size=first.size,font_name=first.font,color=first.color,existing=True)
+            dialog.allow_overlap_box.setChecked(self.allow_overlap_box.isChecked())
             anchor=self.anchor_box.currentData()
             if anchor=='decimal':
                 dialog.align_box.addItem(f'Decimal ({self.decimal_box.currentText()})','decimal')
@@ -337,8 +358,10 @@ class ExtendedEditing:
                 # A deliberate typography dialog never redistributes the
                 # unselected remainder of a line as a side effect.
                 request=self._request(text=values['text'],formatting=True,adjust_line=False)
-                for field in ('width','height','size','font_name','font_file','color','reflow'):
+                for field in ('width','height','size','font_name','font_file','color','reflow','allow_overlap'):
                     setattr(request,field,values[field])
+                request.reflow=request.reflow or '\n' in request.text
+                request.auto_height=self.auto_height_box.isChecked() and (request.reflow or request.size is not None or bool(request.font_name or request.font_file))
                 request.anchor=values['align']
                 self._restore_ids=self.canvas.ids[:]
                 self._submit('preview',{'request':request},self._previewed)
@@ -365,9 +388,12 @@ class ExtendedEditing:
         self._refresh_actions()
 
     def add_image(self,data,rect):
+        accessibility=self._new_content_accessibility(image=True)
+        if accessibility is None:
+            return
         self.image_mode_action.setChecked(True)
         self.toggle_image_mode(True)
-        payload={'operation':'add','page':self.page_number,'image_bytes':data,'rect':rect,'revision':self.model.revision}
+        payload={'operation':'add','page':self.page_number,'image_bytes':data,'rect':rect,'revision':self.model.revision,**accessibility}
         self._submit('image',payload,self._previewed)
 
     def transform_image(self,image_id,rect,preview=False):

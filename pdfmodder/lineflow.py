@@ -8,6 +8,7 @@ Cada palabra conserva las posiciones relativas de sus glifos originales. Las
 regiones con separaciones ambiguas se rechazan antes de tocar el documento.
 """
 from dataclasses import replace
+from difflib import SequenceMatcher
 import math
 import statistics
 import unicodedata
@@ -17,6 +18,53 @@ from .model import EditError, LineWidthOverflow, union
 
 MIN_SPACE_RATIO = .75
 MAX_GAP_EM = 4.
+
+
+def _coherent_baselines(line):
+    """Accept exporter jitter within one measured span, never merge rows.
+
+    Some exporters position individual letters 0.12 / 0.24 pt above their
+    neighbours. The original y coordinates remain authoritative. This narrow
+    exception requires one extraction line, span and font; either one paint
+    operation or the consecutive one-glyph operations of a reconstructed line,
+    strongly overlapping vertical envelopes and at most 4% of an em (0.3 pt).
+    It does not relax the separate proof for joining reconstructed fragments.
+    """
+    spread = max(g.origin[1] for g in line) - min(g.origin[1] for g in line)
+    if spread <= .08:
+        return True
+    if spread > min(.3, min(g.size for g in line) * .04):
+        return False
+    if len({(g.line, g.span, g.font, round(g.size, 4)) for g in line}) != 1:
+        return False
+    same_operation = len({g.seqno for g in line}) == 1
+    rebuilt = all(b.id == a.id+1 and b.seqno == a.seqno+1 for a,b in zip(line,line[1:]))
+    if not (same_operation or rebuilt):
+        return False
+    heights = [g.trace_bbox[3] - g.trace_bbox[1] for g in line]
+    overlap = min(g.trace_bbox[3] for g in line) - max(g.trace_bbox[1] for g in line)
+    return min(heights) > 0 and overlap >= .95 * max(heights)
+
+
+def _replacement_baselines(selected, text):
+    """Keep surviving letters' baselines; new runs inherit their source start.
+
+    Equal-length replacements retain each replaced position's y coordinate.
+    With an insertion/deletion, unchanged characters retain theirs and new
+    characters use the first replaced character (or the insertion neighbour).
+    No other word is flattened onto a common baseline.
+    """
+    if len(text) == len(selected):
+        return [g.origin[1] for g in selected]
+    origins = []
+    matcher = SequenceMatcher(None, ''.join(g.text for g in selected), text, autojunk=False)
+    for tag, a0, a1, b0, b1 in matcher.get_opcodes():
+        if tag == 'equal' or (tag == 'replace' and a1-a0 == b1-b0):
+            origins.extend(g.origin[1] for g in selected[a0:a1])
+        elif b1 > b0:
+            source = selected[min(a0, len(selected)-1)]
+            origins.extend([source.origin[1]] * (b1-b0))
+    return origins
 
 
 def _continuous_rebuilt_line(left, right):
@@ -151,7 +199,7 @@ def expand_line(model, selected):
         raise EditError("La línea contiene una dirección o codificación que no puede ajustarse con garantías.")
     if any(b.origin[0] < a.origin[0] - .035 for a, b in zip(line, line[1:])):
         raise EditError("El orden de los caracteres de la línea es ambiguo; no se puede justificar.")
-    if max(g.origin[1] for g in line) - min(g.origin[1] for g in line) > .08:
+    if not _coherent_baselines(line):
         raise EditError("La línea mezcla líneas base distintas; no se puede ajustar con garantías.")
     return line
 
@@ -251,9 +299,11 @@ def plan_line(model, selected, request, resolved, target=None):
         desc = (first.bbox[3] - first.origin[1]) * size / first.size
     start = line.index(first)
     end = start + len(selected)
-    x, y = first.origin
+    x, _ = first.origin
+    baselines = _replacement_baselines(selected, request.text)
     replacement = []
     for index, char in enumerate(request.text):
+        y = baselines[index]
         cw = choice.width(char, size)
         replacement.append(replace(first, id=-1, text=char, origin=(x, y),
                                    font=target.name if target is not None else first.font,

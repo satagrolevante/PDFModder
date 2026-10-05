@@ -5,7 +5,7 @@ import pytest
 import pymupdf as fitz
 from PIL import Image,ImageDraw
 from pdfmodder.media import add_image_pdf,transform_image_pdf,delete_image_pdf,image_items
-from pdfmodder.validation import related,trace_chars
+from pdfmodder.validation import related,trace_chars,assert_pixels
 from pdfmodder.model import EditError
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -89,18 +89,39 @@ def test_image_coordinates_rotated_offset_cropbox(rotation):
         assert tuple(doc[0].cropbox)==(30,40,610,840)
         assert image_items(doc,0)[0]['rect']==pytest.approx((180,240,260,280),abs=.035)
 
-def test_complex_instance_blocked_but_inspection_and_opening_still_work():
+def test_rotated_instance_moves_without_resetting_rotation_or_shared_neighbour():
     with fitz.open() as doc:
         page=doc.new_page()
         page.insert_text((30,40),'Vecino')
-        page.insert_image((50,70,130,110),stream=picture(),rotate=90)
+        image_xref=page.insert_image((50,70,130,110),stream=picture(),rotate=90)
+        page.insert_image((220,70,300,110),xref=image_xref)
         # Rotation within the image differs from rotation of the whole page.
         page.clean_contents()
         source=doc.tobytes()
         items=image_items(doc,0)
-        assert len(items)==1 and not items[0]['editable']
-    with pytest.raises(EditError,match='aislado'):
-        transform_image_pdf(source,0,'0',(100,150,180,190))
+        assert len(items)==2 and items[0]['editable']
+        old_rect=items[0]['rect']
+    destination=tuple(value+(50 if index%2==0 else 80) for index,value in enumerate(old_rect))
+    output,report=transform_image_pdf(source,0,'0',destination)
+    assert report['verified']
+    with fitz.open(stream=source,filetype='pdf') as before,fitz.open(stream=output,filetype='pdf') as after:
+        original=before[0].get_image_info(hashes=True,xrefs=True)
+        moved=after[0].get_image_info(hashes=True,xrefs=True)
+        assert len(moved)==2
+        assert original[0]['xref']==original[1]['xref']
+        assert moved[0]['xref']==moved[1]['xref']
+        # The linear matrix retains the actual 90-degree rotation and scale.
+        assert original[0]['transform'][0]==original[0]['transform'][3]==0
+        assert abs(original[0]['transform'][1])>0 and abs(original[0]['transform'][2])>0
+        assert moved[0]['transform'][:4]==pytest.approx(original[0]['transform'][:4])
+        assert moved[0]['transform'][4:]==pytest.approx((original[0]['transform'][4]+50,original[0]['transform'][5]+80))
+        assert moved[0]['bbox']==pytest.approx(destination)
+        for key in ('bbox','transform','digest','width','height'):
+            assert moved[1][key]==original[1][key]
+        assert moved[0]['digest']==original[0]['digest']
+        assert trace_chars(after[0])==trace_chars(before[0])
+        assert before[0].get_pixmap(clip=fitz.Rect(old_rect)).samples==after[0].get_pixmap(clip=fitz.Rect(destination)).samples
+        assert assert_pixels(before[0],after[0],[old_rect,destination])['pixels_above_8']==0
 
 def test_image_remains_editable_after_text_redaction_merges_streams():
     from pdfmodder.engine import edit_pdf,extract_page

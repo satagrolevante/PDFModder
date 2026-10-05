@@ -16,9 +16,11 @@ class ClippedSmoke(VerticalSmoke):
         super().__init__(*args, **kwargs)
         self.output = self.report_path.parent / 'smoke-recortado-editado.pdf'
         self.final_output = self.report_path.parent / 'smoke-recortado-segunda-edicion.pdf'
-        self.timeout.start(30000)
+        self.moved_output = self.report_path.parent / 'smoke-recortado-movido.pdf'
+        self.paragraph_output = self.report_path.parent / 'smoke-recortado-parrafo.pdf'
+        self.timeout.start(55000)
         try:
-            for target in (self.output, self.final_output):
+            for target in (self.output, self.final_output, self.moved_output, self.paragraph_output):
                 self._require(target.resolve() != self.source and not (
                     target.exists() and os.path.samefile(target, self.source)),
                     'La prueba recortada no puede guardar sobre el PDF original.')
@@ -26,13 +28,13 @@ class ClippedSmoke(VerticalSmoke):
             QTimer.singleShot(0, lambda error=str(exc): self.fail(error))
 
     def _timed_out(self):
-        self.finish(error=f'Tiempo límite de 30 segundos excedido en el paso {self.stage}.', terminate=True)
+        self.finish(error=f'Tiempo límite de 55 segundos excedido en el paso {self.stage}.', terminate=True)
 
     def _begin_edit(self, old, new, stage):
         self._select(old)
         self.window.line_reflow_box.setChecked(False)
         self.window.width_box.setValue(mm(80.))
-        self.window.start_edit()
+        self.window.start_legacy_edit()
         self._require(self.window.canvas.editor.isVisible(), 'No se abrió el editor de texto en la página.')
         self.window.canvas.editor.setPlainText(new)
         self._require(self.window.preview_step_button.isEnabled(), 'El botón Ver vista previa no está habilitado.')
@@ -139,6 +141,99 @@ class ClippedSmoke(VerticalSmoke):
             self._require(self.window.save_as(self.output), 'No se inició el guardado final.')
         elif self.stage == 'save_final' and command == 'save':
             self._step('guardar_segunda_edicion', source_unchanged=_digest(self.source.read_bytes()) == self.source_hash)
+            selected = self._select('SOL')
+            self.before_move = [g.origin for g in selected]
+            self.before_move_revision = self.window.model.revision
+            self.window.snap_box.setChecked(False)
+            self.stage = 'move_clipped'
+            self.window.move_selection(9., 3.)
+        elif self.stage == 'move_clipped' and main:
+            self._verify_word('SOL')
+            selected = self._select('SOL')
+            self._require(all(abs(g.origin[0]-p[0]-9.) < .035 and abs(g.origin[1]-p[1]-3.) < .035
+                              for g, p in zip(selected, self.before_move)), 'El texto no llegó al destino solicitado.')
+            self._require(self.window.last_report.get('verified'), 'Falta validar el movimiento recortado.')
+            self.moved_revision = self.window.model.revision
+            self.moved_hash = _digest(result['png'])
+            self._step('mover_texto_con_recorte', dx=9., dy=3., neighbours_unchanged=True)
+            self.stage = 'undo_move'
+            self.window.history('undo')
+        elif self.stage == 'undo_move' and main:
+            self._require(self.window.model.revision == self.before_move_revision, 'Deshacer movimiento no recuperó los bytes originales.')
+            self._step('deshacer_movimiento_recortado', exact_revision=True)
+            self.stage = 'redo_move'
+            self.window.history('redo')
+        elif self.stage == 'redo_move' and main:
+            self._require(self.window.model.revision == self.moved_revision and _digest(result['png']) == self.moved_hash,
+                          'Rehacer movimiento no recuperó bytes y render.')
+            self._step('rehacer_movimiento_recortado', exact_revision_and_render=True)
+            self.stage = 'save_moved'
+            self.output = self.moved_output
+            self._require(self.window.save_as(self.output), 'No se inició el guardado del movimiento.')
+        elif self.stage == 'save_moved' and command == 'save':
+            self._step('guardar_movimiento_recortado')
+            self.stage = 'reopen_moved'
+            self._require(self.window.open_document(self.output), 'No se inició la reapertura del movimiento.')
+        elif self.stage == 'reopen_moved' and main:
+            self._verify_word('SOL')
+            self._require(_digest(result['png']) == self.moved_hash, 'El movimiento cambia de apariencia al reabrir.')
+            self._step('reabrir_movimiento_recortado', render_equal=True)
+            self._begin_edit('SOL', 'SÓL', 'preview_accent')
+        elif self.stage == 'preview_accent' and main:
+            self._verify_word('SÓL')
+            self._require(self.window.state['preview'] and self.window.last_report.get('verified') and
+                          self.window.last_report.get('font_resources_unchanged'),
+                          'El carácter nuevo no se validó con el recurso original.')
+            self._step('previsualizar_caracter_no_usado', original_font_preserved=True)
+            self.stage = 'cancel_accent'
+            self.window.cancel()
+        elif self.stage == 'cancel_accent' and main:
+            self._verify_word('SOL')
+            self._require(_digest(result['png']) == self.moved_hash, 'Cancelar alteró el PDF movido.')
+            self._step('cancelar_caracter_no_usado', render_equal=True)
+            self._begin_edit('SOL', 'SOL\nSOL', 'preview_paragraph')
+        elif self.stage == 'preview_paragraph' and main:
+            self._require(self.window.state['preview'] and self.window.last_report.get('verified') and
+                          self.window.last_report.get('auto_height'), 'No se previsualizaron las nuevas líneas con altura automática.')
+            self._require(self._text(self.window.model).count('SOL') == 2, 'Falta una línea o hay texto duplicado.')
+            self._step('previsualizar_intro_recortado', auto_height=True)
+            self.stage = 'commit_paragraph'
+            self.window.commit()
+        elif self.stage == 'commit_paragraph' and main:
+            self._require(not self.window.state['preview'], 'No se aplicaron las nuevas líneas.')
+            self.paragraph_revision=self.window.model.revision
+            self.paragraph_hash=_digest(result['png'])
+            self._step('aplicar_intro_recortado')
+            self.stage='save_paragraph';self.output=self.paragraph_output
+            self._require(self.window.save_as(self.output), 'No comenzó el guardado del párrafo.')
+        elif self.stage == 'save_paragraph' and command == 'save':
+            self._step('guardar_parrafo_recortado')
+            self.stage='reopen_paragraph'
+            self._require(self.window.open_document(self.output), 'No comenzó la reapertura del párrafo.')
+        elif self.stage == 'reopen_paragraph' and main:
+            self._require(_digest(result['png'])==self.paragraph_hash and self._text(self.window.model).count('SOL')==2,
+                          'La composición cambió al guardar y reabrir.')
+            self._step('reabrir_parrafo_recortado', render_equal=True)
+            self.paragraph_revision=self.window.model.revision
+            text=self._text(self.window.model)
+            first=text.index('SOL');selected=self.window.model.glyphs[first:first+3]
+            self.window.canvas.set_selection([g.id for g in selected])
+            start=text.index('LUNA')
+            target=self.window.model.glyphs[start]
+            self.window.allow_overlap_box.setChecked(True)
+            self.stage='move_overlap'
+            self.window.move_selection(target.origin[0]-selected[0].origin[0],target.origin[1]-selected[0].origin[1])
+        elif self.stage == 'move_overlap' and main:
+            self._require(self.window.last_report.get('overlap_count') and self.window.last_report.get('verified'),
+                          'El movimiento superpuesto no conservó ambos textos.')
+            self._require(self._text(self.window.model).count('SOL')==2 and 'LUNA' in self._text(self.window.model),
+                          'Se perdieron caracteres en la superposición.')
+            self._step('mover_con_solapamiento_explicito', neighbors_preserved=True)
+            self.stage='undo_overlap';self.window.history('undo')
+        elif self.stage == 'undo_overlap' and main:
+            self._require(self.window.model.revision==self.paragraph_revision and _digest(result['png'])==self.paragraph_hash,
+                          'Deshacer no recuperó el párrafo antes de superponerlo.')
+            self._step('deshacer_solapamiento_exacto', exact_revision_and_render=True)
             self.stage = 'control_final'
             self._request_control(False)
         elif self.stage == 'control_final' and page and result['number'] == 1:

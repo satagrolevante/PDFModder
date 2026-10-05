@@ -29,6 +29,7 @@ class AddTextRequest:
     revision: str | None = None
     allow_overlap: bool = False
     reflow: bool = True
+    accessibility_order: str | None = None
 
 
 def _lines(text, face, size, width, reflow):
@@ -55,8 +56,6 @@ def _lines(text, face, size, width, reflow):
 
 
 def insert_text_pdf(data: bytes, request: AddTextRequest, resolver=None):
-    from .tagged import require_untagged
-    require_untagged(data,'Añadir texto')
     """Return a full-write PDF and validation report, without modifying input.
 
     x/y are the top-left of the area in unrotated CropBox-local PDF points.
@@ -65,6 +64,8 @@ def insert_text_pdf(data: bytes, request: AddTextRequest, resolver=None):
     links or annotations whose interaction regions could become misleading.
     """
     started = time.perf_counter()
+    from .tagged_insert import TaggedAddition
+    tagged = TaggedAddition(data, request.page, '/P', request.accessibility_order, text=request.text)
     if request.revision and request.revision != hashlib.sha256(data).hexdigest():
         raise EditError("El documento cambió desde la selección del área. Elige el área de nuevo.")
     values = (request.x, request.y, request.width, request.height, request.size)
@@ -117,8 +118,17 @@ def insert_text_pdf(data: bytes, request: AddTextRequest, resolver=None):
         if not isinstance(request.page, int) or not 0 <= request.page < doc.page_count:
             raise EditError("La página seleccionada ya no existe.")
         model = extract_page(doc, request.page, data)
-        if model.issues:
-            raise EditError('\n'.join(model.issues))
+        from .clipping import CLIP_ISSUE
+        issues = [issue for issue in model.issues if issue != CLIP_ISSUE]
+        if issues:
+            raise EditError('\n'.join(issues))
+        clipped = CLIP_ISSUE in model.issues
+        if clipped or tagged.structure is not None:
+            # Adding a new stream does not reconstruct or redact clipped text.
+            # Verify balanced scopes before containing the complete old content
+            # in q/Q; the new text must not inherit its clip or transformation.
+            from .media import _graphics_scan, _isolate_existing_content
+            _graphics_scan(doc, request.page, [])
         page = doc[request.page]
         visible = fitz.Rect(0, 0, page.cropbox.width, page.cropbox.height)
         area = fitz.Rect(request.x, request.y, request.x + request.width, request.y + request.height)
@@ -143,13 +153,20 @@ def insert_text_pdf(data: bytes, request: AddTextRequest, resolver=None):
                 if any(_stroke_hits(drawing, glyph.bbox) for drawing in strokes):
                     raise EditError("El texto cruza una línea vectorial. Mueve el área o permite el solapamiento explícitamente.")
         expected = [(g.text, g.origin, g.font, g.size) for g in model.glyphs + planned]
+        if clipped or tagged.structure is not None:
+            _isolate_existing_content(doc, page)
+            page = doc.reload_page(page)
+        old_contents = page.get_contents()
         _insert(page, planned, {face.name: face})
+        tagged_expected = tagged.apply(doc, old_contents)
         output = full_write(doc)
     regions = [g.bbox for g in planned]
-    report = validate_transition(data, output, request.page, expected, regions)
+    report = validate_transition(data, output, request.page, expected, regions, tagged_expected)
     report.update(page=request.page, source_regions=[], destination_regions=regions,
                   fonts={face.name: face.source}, operation='add_text',
                   elapsed_seconds=round(time.perf_counter() - started, 3),
                   manual_format={'font': face.name, 'size': request.size, 'color': request.color},
-                  allowed_overlap=request.allow_overlap)
+                  allowed_overlap=request.allow_overlap, existing_clip_isolated=clipped)
+    if tagged.structure is not None:
+        report['accessibility'] = tagged.report()
     return output, report

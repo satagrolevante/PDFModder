@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt,QByteArray,QBuffer,QIODevice,QRectF,Signal,QSignalBlocker
 from PySide6.QtGui import QColor,QImage,QImageReader,QPainter,QPen,QPixmap,QTransform
 from PySide6.QtWidgets import (QDialog,QDialogButtonBox,QDoubleSpinBox,QFileDialog,
-    QGridLayout,QHBoxLayout,QLabel,QPushButton,QComboBox,QVBoxLayout,QWidget)
+    QGridLayout,QHBoxLayout,QLabel,QPushButton,QComboBox,QVBoxLayout,QWidget,QCheckBox)
 
 
 class CropCanvas(QWidget):
@@ -111,16 +111,20 @@ class ImageEditorDialog(QDialog):
     """Returns an operation, not a PDF or a simulated successful edit.
 
     operation(): replacement_bytes is None until a file is explicitly chosen;
-    crop is normalized in the selected asset before a clockwise 90-degree turn.
+    crop is normalized in the original asset before a clockwise arbitrary turn.
     Caller must preview the resulting PDF and obtain the normal Apply action.
     """
-    def __init__(self,image_bytes,parent=None):
+    def __init__(self,image_bytes,parent=None,*,frame_rect=None,initial_operation=None):
         super().__init__(parent)
         self.setWindowTitle('Recortar, girar o reemplazar imagen')
         self.setObjectName('imageEditorDialog')
         self.resize(850,630)
         self.replacement_bytes=None
         self._image=self._read_image(image_bytes)
+        self._frame_ratio=((frame_rect[2]-frame_rect[0])/(frame_rect[3]-frame_rect[1])
+                           if frame_rect is not None and frame_rect[3]>frame_rect[1]
+                           else self._image.width()/self._image.height())
+        self._frame_size=((frame_rect[2]-frame_rect[0],frame_rect[3]-frame_rect[1]) if frame_rect else None)
         self._proxy=self._image.scaled(1200,900,Qt.KeepAspectRatio,Qt.SmoothTransformation)
         self._error=''
         self._invalid_crop=False
@@ -137,17 +141,34 @@ class ImageEditorDialog(QDialog):
         self.status_label.setObjectName('imageOperationStatus')
         self.status_label.setWordWrap(True)
         self.status_label.setTextFormat(Qt.PlainText)
-        self.notice=QLabel('Se conserva la posición y el tamaño de la caja en el PDF. El recorte o giro se ajusta a esa caja y puede cambiar las proporciones. Revisa después la vista previa real del documento.')
+        self.notice=QLabel('Encajar y Rellenar conservan las proporciones. El marco mantiene su posición y dimensiones; el recorte conserva los píxeles originales y puede recuperarse. El giro se guarda como transformación PDF, sin remuestrear la foto. Revisa después el resultado en el PDF.')
         self.notice.setWordWrap(True)
         self.notice.setStyleSheet('background:#fff4ce;padding:8px')
         self.rotation_box=QComboBox()
         self.rotation_box.setObjectName('imageRotation')
         for value in (0,90,180,270):
             self.rotation_box.addItem(f'{value}° horario',value)
+        self.rotation_spin=QDoubleSpinBox()
+        self.rotation_spin.setObjectName('imageFreeRotation')
+        self.rotation_spin.setRange(-360,360)
+        self.rotation_spin.setDecimals(2)
+        self.rotation_spin.setSuffix('°')
+        self.rotation_spin.setToolTip('Giro libre en sentido horario, conservando los píxeles.')
+        self.fit_box=QComboBox()
+        self.fit_box.setObjectName('imageFitMode')
+        for label,value in (('Encajar — imagen completa','fit'),('Rellenar recortando','fill'),('Estirar — cambia proporciones','stretch')):
+            self.fit_box.addItem(label,value)
+        self.flip_horizontal=QCheckBox('Voltear horizontal')
+        self.flip_horizontal.setObjectName('imageFlipHorizontal')
+        self.flip_vertical=QCheckBox('Voltear vertical')
+        self.flip_vertical.setObjectName('imageFlipVertical')
         self.replace_button=QPushButton('Elegir otra imagen…')
         self.replace_button.setObjectName('imageReplaceFile')
         self.reset_button=QPushButton('Restablecer recorte y giro')
         self.reset_button.setObjectName('imageResetCrop')
+        self.proportions_button=QPushButton('Restablecer proporciones')
+        self.proportions_button.setObjectName('imageResetProportions')
+        self.proportions_button.setToolTip('Encajar la imagen con escala uniforme, manteniendo el marco y el giro elegidos.')
         self.crop_spins=[]
         grid=QGridLayout()
         for column,(label,value) in enumerate(zip(('Izquierda','Arriba','Derecha','Abajo'),(0,0,100,100))):
@@ -164,9 +185,16 @@ class ImageEditorDialog(QDialog):
         tools=QHBoxLayout()
         tools.addWidget(QLabel('Giro'))
         tools.addWidget(self.rotation_box)
+        tools.addWidget(self.rotation_spin)
         tools.addStretch()
         tools.addWidget(self.reset_button)
+        tools.addWidget(self.proportions_button)
         tools.addWidget(self.replace_button)
+        arrangement=QHBoxLayout()
+        arrangement.addWidget(QLabel('Ajuste al marco'))
+        arrangement.addWidget(self.fit_box,1)
+        arrangement.addWidget(self.flip_horizontal)
+        arrangement.addWidget(self.flip_vertical)
         images=QHBoxLayout()
         images.addWidget(self.canvas,1)
         right=QVBoxLayout()
@@ -186,23 +214,40 @@ class ImageEditorDialog(QDialog):
         layout.addLayout(images,1)
         layout.addLayout(grid)
         layout.addLayout(tools)
+        layout.addLayout(arrangement)
         layout.addWidget(self.notice)
         layout.addWidget(self.status_label)
         layout.addWidget(self.buttons)
         self.canvas.cropChanged.connect(self._visual_changed)
-        self.rotation_box.currentIndexChanged.connect(self._refresh)
+        self.rotation_box.currentIndexChanged.connect(lambda *_:self.rotation_spin.setValue(self.rotation_box.currentData()))
+        self.rotation_spin.valueChanged.connect(self._refresh)
+        self.fit_box.currentIndexChanged.connect(self._refresh)
+        self.flip_horizontal.toggled.connect(self._refresh)
+        self.flip_vertical.toggled.connect(self._refresh)
         self.reset_button.clicked.connect(self._reset)
+        self.proportions_button.clicked.connect(lambda:self.fit_box.setCurrentIndex(self.fit_box.findData('fit')))
         self.replace_button.clicked.connect(self._replace)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         self.canvas.set_image(self._image)
+        if initial_operation:
+            self.rotation_spin.setValue(initial_operation.get('rotation',0))
+            self.flip_horizontal.setChecked(initial_operation.get('flip_horizontal',False))
+            self.flip_vertical.setChecked(initial_operation.get('flip_vertical',False))
+            index=self.fit_box.findData(initial_operation.get('fit_mode','fit'))
+            self.fit_box.setCurrentIndex(max(0,index))
+            self.canvas.set_crop(initial_operation.get('crop',(0,0,1,1)))
+            self._visual_changed(self.canvas.crop)
         self._refresh()
 
     def operation(self):
         if not self.preview_button.isEnabled():
             raise ValueError(self.status_label.text())
         return {'replacement_bytes':self.replacement_bytes,
-                'crop':self.canvas.crop,'rotation':self.rotation_box.currentData()}
+                'crop':self.canvas.crop,'rotation':self.rotation_spin.value(),
+                'fit_mode':self.fit_box.currentData(),
+                'flip_horizontal':self.flip_horizontal.isChecked(),
+                'flip_vertical':self.flip_vertical.isChecked()}
 
     def _visual_changed(self,crop):
         self._invalid_crop=False
@@ -239,13 +284,47 @@ class ImageEditorDialog(QDialog):
         pl,pt=math.floor(x0*self._proxy.width()),math.floor(y0*self._proxy.height())
         pr,pb=math.ceil(x1*self._proxy.width()),math.ceil(y1*self._proxy.height())
         cropped=self._proxy.copy(pl,pt,pr-pl,pb-pt)
-        cropped=cropped.transformed(QTransform().rotate(self.rotation_box.currentData()))
-        preview=QPixmap.fromImage(cropped).scaled(270,270,Qt.KeepAspectRatio,Qt.SmoothTransformation)
+        # Draw the bounded proxy using the same frame geometry as the PDF. Only
+        # this preview is rasterized; export transforms the original resource.
+        angle=self.rotation_spin.value()
+        mode=self.fit_box.currentData()
+        fw,fh=(270.,270./self._frame_ratio) if self._frame_ratio>=1 else (270.*self._frame_ratio,270.)
+        preview=QPixmap(max(1,round(fw)),max(1,round(fh)))
+        preview.fill(QColor('#fafafa'))
+        painter=QPainter(preview)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.setClipRect(QRectF(0,0,fw,fh))
+        radians=math.radians(angle)
+        c,s=abs(math.cos(radians)),abs(math.sin(radians))
+        cw,ch=cropped.width(),cropped.height()
+        if mode=='fill':
+            sx=sy=max((c*fw+s*fh)/cw,(s*fw+c*fh)/ch)
+        elif mode=='fit':
+            sx=sy=min(fw/(c*cw+s*ch),fh/(s*cw+c*ch))
+        else:
+            sx,sy=fw/(c*cw+s*ch),fh/(s*cw+c*ch)
+        painter.translate(fw/2,fh/2)
+        painter.scale(sx,sy)
+        painter.rotate(angle)
+        painter.scale(-1 if self.flip_horizontal.isChecked() else 1,-1 if self.flip_vertical.isChecked() else 1)
+        painter.drawImage(QRectF(-cw/2,-ch/2,cw,ch),cropped)
+        painter.end()
         self.preview_label.setPixmap(preview)
         width,height=right-left,bottom-top
-        if self.rotation_box.currentData() in (90,270):
-            width,height=height,width
-        self.size_label.setText(f'Original: {self._image.width()} × {self._image.height()} px\nResultado: {width} × {height} px')
+        self.size_label.setText(f'Recurso conservado: {self._image.width()} × {self._image.height()} px\nRecorte elegido: {width} × {height} px\nGiro: {angle:g}° · Marco: {self._frame_ratio:.3f}:1')
+        if self._frame_size:
+            frame_width,frame_height=self._frame_size
+            # Scale uses exactly the same source-pixel geometry as the PDF
+            # frame builder, so crop and free rotation do not inflate DPI.
+            pc,ps=abs(math.cos(radians)),abs(math.sin(radians))
+            if mode=='fill':
+                scale_x=scale_y=max((pc*frame_width+ps*frame_height)/width,(ps*frame_width+pc*frame_height)/height)
+            elif mode=='fit':
+                scale_x=scale_y=min(frame_width/(pc*width+ps*height),frame_height/(ps*width+pc*height))
+            else:
+                scale_x,scale_y=frame_width/(pc*width+ps*height),frame_height/(ps*width+pc*height)
+            dx,dy=72/scale_x,72/scale_y
+            self.size_label.setText(self.size_label.text()+f'\nResolución efectiva: {dx:.0f} × {dy:.0f} ppp'+('\nAmpliación de baja resolución (<150 ppp).' if min(dx,dy)<150 else ''))
         self.status_label.setText('La previsualización del PDF comprobará las demás imágenes, texto, enlaces y elementos de la página.')
         self.preview_button.setEnabled(True)
 
@@ -253,6 +332,11 @@ class ImageEditorDialog(QDialog):
         self.canvas.set_crop((0.,0.,1.,1.))
         with QSignalBlocker(self.rotation_box):
             self.rotation_box.setCurrentIndex(0)
+        with QSignalBlocker(self.rotation_spin):
+            self.rotation_spin.setValue(0)
+        with QSignalBlocker(self.flip_horizontal),QSignalBlocker(self.flip_vertical):
+            self.flip_horizontal.setChecked(False)
+            self.flip_vertical.setChecked(False)
         self._visual_changed(self.canvas.crop)
 
     def set_replacement(self,image_bytes):

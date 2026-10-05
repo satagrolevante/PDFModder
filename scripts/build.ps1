@@ -1,9 +1,10 @@
 ﻿[CmdletBinding()]
-param([switch]$SkipTests)
+param([switch]$SkipTests, [string]$PythonExecutable)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $pythonPath = Join-Path $projectRoot '.venv/Scripts/python.exe'
+if ($PythonExecutable) { $pythonPath = [IO.Path]::GetFullPath($PythonExecutable) }
 if (-not (Test-Path -LiteralPath $pythonPath)) { throw 'Ejecute primero .\scripts\install.ps1 -Development.' }
 function Assert-Exit([string]$Operation) {
     if ($LASTEXITCODE -ne 0) { throw "$Operation falló (código $LASTEXITCODE)." }
@@ -22,6 +23,10 @@ try {
     Assert-Exit 'La recopilación de licencias y código'
     & $pythonPath -m PyInstaller --noconfirm --clean 'PDFModder.spec'
     Assert-Exit 'PyInstaller'
+    & $pythonPath (Join-Path $PSScriptRoot 'build_uninstaller.py')
+    Assert-Exit 'La compilación del desinstalador'
+    & $pythonPath (Join-Path $PSScriptRoot 'build_signing_bridge.py')
+    Assert-Exit 'La compilación del acceso a certificados de Windows'
     $executable = Join-Path $projectRoot 'dist/PDFModder/PDFModder.exe'
     if (-not (Test-Path -LiteralPath $executable)) { throw 'La compilación no ha producido PDFModder.exe.' }
     Write-Host "Paquete creado: $executable"

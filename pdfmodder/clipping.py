@@ -82,6 +82,17 @@ def operator_glyph_map(data,number,model):
     fonts = page.get('/Resources',{}).get('/Font',{})
     fonts = fonts.get_object() if hasattr(fonts,'get_object') else fonts
     stack,resource,shows = [],None,{}
+    # Unselected Forms retain their original Do and shared resources. Their
+    # text must not be mistaken for the last page-level SHOW in this probe.
+    objects = page.get('/Resources',{}).get('/XObject',{})
+    objects = objects.get_object() if hasattr(objects,'get_object') else objects
+    reserved = {0}
+    for glyph in model.glyphs:
+        if len(glyph.color)==3:
+            rgb=[round(value*255) for value in glyph.color]
+            reserved.add((rgb[0]<<16)|(rgb[1]<<8)|rgb[2])
+    marker = 0
+    form_probed = False
     render_mode = 0
     probing = []
     for index,(args,op) in enumerate(operations):
@@ -95,10 +106,19 @@ def operator_glyph_map(data,number,model):
             resource = args[0]
         elif op == b'Tr':
             render_mode = int(args[0])
+        if op == b'Do' and args and args[0] in objects:
+            obj=objects[args[0]].get_object()
+            if obj.get('/Subtype')=='/Form':
+                form_probed=True
+                black=[FloatObject(0),FloatObject(0),FloatObject(0)]
+                probing.extend([([],b'q'),(black,b'rg'),(black,b'RG'),(args,op),([],b'Q')])
+                continue
         if op in SHOW:
             if resource not in fonts:
                 _fail('no se puede identificar el recurso de una operación de texto.')
-            marker = len(shows)+1
+            marker += 1
+            while marker in reserved:
+                marker += 1
             if marker >= 0xffffff:
                 _fail('la página contiene demasiadas operaciones de texto para verificarla.')
             rgb = [FloatObject(v/255) for v in ((marker>>16)&255,(marker>>8)&255,marker&255)]
@@ -130,6 +150,10 @@ def operator_glyph_map(data,number,model):
         if text != glyph.text or any(abs(a-b)>.035 for a,b in zip(point,glyph.origin)) or len(color)!=3:
             _fail('el sondeo no conserva texto y posiciones; no se puede identificar la fuente exacta.')
         marker = (round(color[0]*255)<<16)|(round(color[1]*255)<<8)|round(color[2]*255)
+        if marker not in shows and form_probed:
+            # No page-level operator/resource binding is claimed for a Form.
+            # Its glyphs still participate in the final content/pixel checks.
+            continue
         if marker not in shows:
             _fail('un carácter no pertenece a una operación de texto verificable.')
         show = shows[marker]
@@ -148,7 +172,8 @@ def annotate_font_resources(data,number,model):
     except Exception:
         return model
     return replace(model,glyphs=[replace(g,font_xref=mapping[g.id]['font_xref'],
-                                           font_resource=mapping[g.id]['font_resource']) for g in model.glyphs])
+                                           font_resource=mapping[g.id]['font_resource']) if g.id in mapping else g
+                                for g in model.glyphs])
 
 
 def _advance(font,code,text):
@@ -174,7 +199,13 @@ def edit_clipped_text(data,request,model):
     selected = model.selected(request.ids)
     if not selected or len(selected) != len(set(request.ids)):
         _fail('selecciona una palabra o fecha de la versión actual.')
-    if request.text is not None and len(request.text)!=len(selected):
+    if request.text is None or ((request.dx or request.dy) and request.text==''.join(g.text for g in selected)):
+        from .clipped_layout import move_clipped_text
+        return move_clipped_text(data,request,model)
+    if request.font_name or request.font_file or request.color is not None or (request.size is not None and any(abs(request.size-g.size)>.001 for g in selected)):
+        from .native_layout import edit_native_layout
+        return edit_native_layout(data,request,model)
+    if request.text is not None and (len(request.text)!=len(selected) or '\n' in request.text or '\r' in request.text or request.reflow or request.line_spacing is not None or request.paragraph_spacing):
         from .clipped_layout import edit_clipped_layout
         return edit_clipped_layout(data,request,model)
     if request.text is None or len(request.text) != len(selected) or '\n' in request.text or request.reflow:
@@ -189,7 +220,7 @@ def edit_clipped_text(data,request,model):
     if len({g.line for g in selected})!=1 or any(b.id!=a.id+1 for a,b in zip(selected,selected[1:])):
         _fail('selecciona un fragmento contiguo de una sola línea.')
     with fitz.open(stream=data,filetype='pdf') as source:
-        _safe_selection(source[request.page],replace(model,issues=[i for i in model.issues if i!=CLIP_ISSUE]),selected)
+        _safe_selection(source[request.page],replace(model,issues=[i for i in model.issues if i!=CLIP_ISSUE]),selected,preserve_paint_order=True)
     selected_ids = {g.id for g in selected}
     changed = {g.id:text for g,text in zip(selected,request.text) if g.text!=text}
     if any(g.mode!=0 or g.opacity<=0 for g in selected):
@@ -217,6 +248,17 @@ def edit_clipped_text(data,request,model):
                 locations[glyph.id] = (show,index,offset,code)
                 codes.setdefault((show['resource'],show['xref'],glyph.text),set()).add(code)
                 position += 1
+    # Missing from this page does not mean missing from this same PDF font.
+    # Resolve only declared and independently probed codes, never guesses.
+    from .native_codes import verified_catalog
+    for show in shows:
+        key=(show['resource'],show['xref'])
+        needed={changed[g.id] for g in selected if g.id in changed and g.id in locations
+                and (locations[g.id][0]['resource'],locations[g.id][0]['xref'])==key}
+        if not needed:continue
+        observed={char:values for (resource,xref,char),values in codes.items() if (resource,xref)==key}
+        for char,values in verified_catalog(data,request.page,show,observed,needed).items():
+            codes[(*key,char)]=values
     result = copy.deepcopy(operations)
     replacements = {}
     resources = {}
@@ -230,7 +272,8 @@ def edit_clipped_text(data,request,model):
             _fail('el glifo usa un modo de pintura o recorte de texto Tr='+str(show['render_mode'])+'; sólo se sustituyen glifos con Tr=0.')
         candidates = codes.get((show['resource'],show['xref'],changed[glyph.id]),set())
         if len(candidates)!=1:
-            _fail('el carácter «'+changed[glyph.id]+'» no tiene un código único ya verificado en este mismo recurso de fuente.')
+            from .native_layout import edit_native_layout
+            return edit_native_layout(data,request,model)
         code = next(iter(candidates))
         if abs(_advance(show['font'],old_code,glyph.text)-_advance(show['font'],code,changed[glyph.id]))>.001:
             from .clipped_layout import edit_clipped_layout

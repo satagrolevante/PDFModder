@@ -55,6 +55,12 @@ def main():
                       'aplicar_campo_largo','guardar_copia_recortada','reabrir_texto_real_recortado',
                       'previsualizar_campo_corto','aplicar_campo_corto','deshacer_segunda_edicion',
                       'rehacer_segunda_edicion','guardar_segunda_edicion','verificar_pagina_control'}
+    required_clipped.update({'mover_texto_con_recorte','deshacer_movimiento_recortado',
+                             'rehacer_movimiento_recortado','guardar_movimiento_recortado',
+                             'reabrir_movimiento_recortado','previsualizar_caracter_no_usado',
+                             'cancelar_caracter_no_usado'})
+    required_clipped.update({'previsualizar_intro_recortado','aplicar_intro_recortado','guardar_parrafo_recortado',
+                             'reabrir_parrafo_recortado','mover_con_solapamiento_explicito','deshacer_solapamiento_exacto'})
     assert required_clipped.issubset({s['step'] for s in clipped['steps'] if s['ok']})
     assert len(clipped['engine_validation_reports'])==2
     assert all(r['verified'] and r['font_resources_unchanged'] and r['operators_preserved']
@@ -105,6 +111,8 @@ def main():
                      'packaged-tagged-smoke.json','packaged-tagged-smoke.png','smoke-etiquetado-editado.pdf',
                      'packaged-clipped-smoke.json','packaged-clipped-smoke.png',
                      'smoke-recortado-editado.pdf','smoke-recortado-segunda-edicion.pdf',
+                     'smoke-recortado-movido.pdf',
+                     'smoke-recortado-parrafo.pdf',
                      'packaged-v08-smoke.json','packaged-v08-smoke.png',
                      'smoke-v08-editado.pdf','smoke-v08-imagen.png',
                      'acceptance-v08/report.json','acceptance-v08/final.pdf',

@@ -1,12 +1,14 @@
-# Instalar PDF Modder 0.8 en otro ordenador
+# Instalar PDF Modder 0.8.2 en otro ordenador
 
-Use `PDFModder-v0.8-Instalar.exe` en Windows 11 x64. Copia todos los archivos
+Use `PDFModder-v0.8.2-Instalar.exe` en Windows 11 x64. Copia todos los archivos
 del programa y comprueba su tamaño y SHA-256 antes de terminar. No necesita
 Python, conexión, permisos de administrador ni instalar Qt por separado.
 La carpeta predeterminada se encuentra dentro de los programas de su usuario.
 
-El editor conserva el mismo ejecutable y dependencias del ZIP verificado 0.8.
-Este instalador cambia la forma de copiarlo al equipo; no cambia su motor PDF.
+La revisión 0.8.2 incluye las [correcciones de edición y movimiento](CORRECCIONES_V082.md).
+El instalador incluye el mismo editor que su ZIP portable verificado.
+Se instala en una carpeta 0.8.2 independiente y crea un acceso directo con esa versión;
+conserve la instalación 0.8 anterior hasta comprobar la nueva.
 Las DLL de Qt siguen siendo archivos separados y reemplazables. El código y
 las licencias de la aplicación y del instalador están incluidos en `_internal`.
 
@@ -34,14 +36,15 @@ carpeta con espacios, con un directorio de trabajo distinto y sin las variables
 de entorno de Python/Qt; PATH contenía sólo Windows. Es una prueba en el equipo
 de desarrollo bajo esas condiciones, no una ejecución en el ordenador afectado.
 Los informes del instalador y de la aplicación instalada se guardan en
-`output/portability/`; consulte `releases/v0.8/INSTALADOR.json` para el estado final.
+`output/portability/`; consulte `releases/v0.8.2/INSTALADOR.json` para el estado final de 0.8.2.
+Los resultados de 0.8 citados arriba son históricos y no sustituyen la comprobación del nuevo paquete.
 
 Construcción offline desde Windows con .NET Framework y el ZIP verificado:
 
 ```powershell
 .venv\Scripts\python.exe scripts\build_installer.py
 .venv\Scripts\python.exe scripts\verify_installer.py
-powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File scripts\verify_installer_ui.ps1
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File scripts\verify_installer_ui.ps1 -Version 0.8.2
 ```
 
 El instalador permite pruebas automatizadas con `--silent --dir RUTA`

@@ -41,12 +41,15 @@ def test_select_zone_lists_exact_text_and_auto_width_accepts_longer(qtbot,line_w
     assert window.model.text(window.canvas.ids)=='SOL'
     old_width=window.width_box.value()
     double_click_sequence(qtbot,window.canvas,(50,74))
-    assert window.canvas.editor.isVisible()
+    qtbot.waitUntil(lambda:window.canvas.editor.isVisible(),timeout=30000)
+    assert not window.canvas.editor.textCursor().hasSelection()
+    qtbot.keyClick(window.canvas.editor,Qt.Key_A,Qt.ControlModifier)
     qtbot.keyClicks(window.canvas.editor,'ESTRELLA')
-    qtbot.mouseClick(window.preview_step_button,Qt.LeftButton);settled(qtbot,window)
-    assert window.state['preview'] and window.last_report['auto_width']
+    qtbot.mouseClick(window.canvas.editor.toolbar.accept,Qt.LeftButton)
+    qtbot.waitUntil(lambda:not window.canvas.editor.isVisible(),timeout=30000)
+    settled(qtbot,window)
+    assert window.state['history_index']==1 and window.last_report['auto_width']
     assert window.width_box.value()>old_width
-    qtbot.mouseClick(window.apply_step_button,Qt.LeftButton);settled(qtbot,window)
     assert 'ESTRELLA' in ''.join(g.text for g in window.model.glyphs)
     assert source.read_bytes()==original
 

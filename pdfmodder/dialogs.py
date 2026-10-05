@@ -217,9 +217,8 @@ class TextDialog(QDialog):
         self.reflow_box = QCheckBox('Redistribuir palabras entre líneas dentro del área')
         self.reflow_box.setObjectName('text_reflow')
         self.reflow_box.setChecked(not existing)
-        self.allow_overlap_box = QCheckBox('Permitir solapamiento sobre texto, imágenes o líneas')
+        self.allow_overlap_box = QCheckBox('Permitir superponer texto' if existing else 'Permitir solapamiento sobre texto, imágenes o líneas')
         self.allow_overlap_box.setObjectName('text_overlap')
-        self.allow_overlap_box.setVisible(not existing)
         self.allow_overlap_box.setChecked(False)
         self.error_label = QLabel()
         self.error_label.setTextFormat(Qt.PlainText)
@@ -293,7 +292,7 @@ class TextDialog(QDialog):
                     color=None if self.existing and not self._color_changed else self._color,
                     align=self.align_box.currentData(),
                     reflow=self.reflow_box.isChecked(),
-                    allow_overlap=self.allow_overlap_box.isChecked() if not self.existing else False,
+                    allow_overlap=self.allow_overlap_box.isChecked(),
                     **choice)
 
     def accept(self):

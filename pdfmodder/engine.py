@@ -61,8 +61,8 @@ def extract_page(doc, number, data=None):
                                 tuple(span['dir']),int(span['type']),span.get('layer',''),span['seqno'],
                                 bool(found) and not span.get('wmode') and not span.get('bidi_lvl')))
     issues = page_issues(data,number) if data else []
-    if page.get_xobjects():
-        issues.append("Página con Form XObjects: las instancias compartidas no se editan en esta versión.")
+    # Form presence is not a page-wide incompatibility. Selected invocations
+    # are isolated before editing; untouched Forms retain their own resources.
     if any(a.type[0]==fitz.PDF_ANNOT_REDACT for a in page.annots() or []):
         issues.append("La página contiene redacciones pendientes; se bloquea para no aplicarlas accidentalmente.")
     model=PageModel(number,page.rect.width,page.rect.height,page.rotation,tuple(page.rotation_matrix),
@@ -108,13 +108,13 @@ def _stroke_hits(drawing, rect):
     return False
 
 
-def _safe_selection(page, model, selected):
+def _safe_selection(page, model, selected, *, preserve_paint_order=False):
     if model.issues:
         raise EditError('\n'.join(model.issues))
     if not selected:
         raise EditError("Selecciona caracteres, una palabra o una línea.")
-    paint_log=page.get_bboxlog()
-    drawings={d['seqno']:d for d in page.get_drawings()}
+    paint_log=[] if preserve_paint_order else page.get_bboxlog()
+    drawings={} if preserve_paint_order else {d['seqno']:d for d in page.get_drawings()}
     for g in selected:
         if not g.reliable or g.text=='\ufffd' or (unicodedata.category(g.text).startswith('C') and g.text!='\u00ad'):
             raise EditError("Codificación, ligadura o dirección del texto no reconstruible con garantías.")
@@ -124,7 +124,7 @@ def _safe_selection(page, model, selected):
             raise EditError("Texto invisible, trazado, recortado o en capas: propiedad no reproducible.")
         for index,item in enumerate(paint_log):
             # Painting after text may obscure it. Reinsertion on top would alter z order.
-            if index>g.seqno and item[0] not in ('fill-text','ignore-text') and intersects(item[1],g.bbox):
+            if not preserve_paint_order and index>g.seqno and item[0] not in ('fill-text','ignore-text') and intersects(item[1],g.bbox):
                 if item[0]=='stroke-path' and index in drawings and not _stroke_hits(drawings[index],g.bbox):
                     continue
                 raise EditError("Hay un objeto dibujado encima del texto; no puede conservarse su orden visual.")
@@ -132,6 +132,39 @@ def _safe_selection(page, model, selected):
             raise EditError("La selección forma parte de un enlace. No se puede cambiar texto y área activa conjuntamente.")
         if any(intersects(tuple(a.rect),g.bbox) for a in page.annots() or []):
             raise EditError("La selección toca una anotación; edita un fragmento que pueda aislarse.")
+
+
+def _safe_native_consolidation(page, selected, planned):
+    """Composing at the first SHOW must not cross an intervening paint item.
+
+    A native edit retains later/earlier artwork in its original order, unlike
+    redaction followed by overlay insertion. Consolidating several SHOWs can
+    still cross intervening objects, so verify that narrower condition.
+    """
+    first, last = min(g.seqno for g in selected), max(g.seqno for g in selected)
+    chosen={g.id for g in selected}
+    low,high=min(chosen),max(chosen)
+    if high-low+1!=len(chosen):
+        # Selected and unselected characters can share a SHOW, including the
+        # first/last one. Consolidating may not cross those neighbours either.
+        model=extract_page(page.parent,page.number)
+        for glyph in model.glyphs:
+            if low<glyph.id<high and glyph.id not in chosen and any(intersects(glyph.bbox,g.bbox) for g in selected+planned):
+                raise EditError('La selección atraviesa texto vecino intercalado. Edita cada fragmento por separado para conservar el orden visual.')
+    if first == last:
+        return
+    drawings = {d['seqno']: d for d in page.get_drawings()}
+    for index, item in enumerate(page.get_bboxlog()):
+        if not first < index < last or item[0] == 'ignore-text':
+            continue
+        if item[0] == 'fill-text' and any(g.seqno == index for g in selected):
+            continue
+        for glyph in selected + planned:
+            if not intersects(item[1], glyph.bbox):
+                continue
+            if item[0] == 'stroke-path' and index in drawings and not _stroke_hits(drawings[index], glyph.bbox):
+                continue
+            raise EditError('La selección atraviesa un objeto intercalado entre sus fragmentos. Edita cada fragmento por separado para conservar el orden visual.')
 
 
 def _redact(page, model, selected):
@@ -264,7 +297,7 @@ def _plan(selected, request, resolved, target=None):
     if request.line_spacing is not None:lineheight=request.line_spacing
     from .paragraphs import layout_lines
     laid_out=layout_lines(request.text,measure,width,request.reflow,lineheight,request.paragraph_spacing)
-    if laid_out and laid_out[-1][1]+(asc+desc)>height+.035:
+    if laid_out and not request.auto_height and laid_out[-1][1]+(asc+desc)>height+.035:
         raise EditError("El texto supera la altura disponible. Amplía el área de edición.")
     result=[]
     for li,(line,line_offset) in enumerate(laid_out):
@@ -293,6 +326,32 @@ def _plan(selected, request, resolved, target=None):
 
 
 def edit_pdf(data:bytes, request:EditRequest, resolver=None):
+    if request.revision and request.revision!=hashlib.sha256(data).hexdigest():
+        raise EditError("El documento cambió desde la selección. Selecciona el texto de nuevo.")
+    if request.text is not None:
+        canonical=unicodedata.normalize('NFC',request.text)
+        if canonical!=request.text:
+            output,report=edit_pdf(data,replace(request,text=canonical),resolver)
+            report['unicode_normalization']={'form':'NFC','requested':request.text,'inserted':canonical,
+                'detail':'Se han compuesto las letras y sus acentos Unicode equivalentes; no se ha cambiado su contenido.'}
+            return output,report
+    with fitz.open(stream=data,filetype='pdf') as source:
+        if source[request.page].get_xobjects():
+            issues=document_issues(data,source)
+            if issues:
+                raise EditError('\n'.join(issues))
+            from .form_instances_v200 import isolate_selected_forms
+            isolated=isolate_selected_forms(data,request)
+            if isolated is not None:
+                local,current,isolation=isolated
+                output,report=edit_pdf(local,current,resolver)
+                report['form_isolation']=isolation
+                return output,report
+    if (request.text is None and request.size is None and not request.font_name and
+            not request.font_file and request.color is None and not request.reflow):
+        from .richtext import has_rich_metadata,move_rich_pdf
+        if has_rich_metadata(data,request.page):
+            return move_rich_pdf(data,request,resolver)
     started=time.perf_counter()
     resolver=resolver or FontResolver()
     validate_rgb(request.color)
@@ -326,11 +385,26 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
                 report['ocr_cleanup']=ocr_report
                 report['warning']=ocr_report['warning']
                 return output,report
+        # CID subsets need their exact resource identity, not a family-name
+        # lookup through the regional-redaction font resolver. Both UI paths
+        # share the native compositor and its per-character validation.
+        def partial_cid(glyph):
+            if not glyph.font_xref or doc.xref_get_key(glyph.font_xref,'Subtype')[1]!='/Type0':
+                return False
+            base=doc.xref_get_key(glyph.font_xref,'BaseFont')[1].lstrip('/')
+            return len(base)>7 and base[6]=='+' and base[:6].isalpha() and base[:6].isupper()
+        if any(partial_cid(g) for g in selected):
+            from .native_panel import edit_native_panel
+            return edit_native_panel(data,request,model,resolver)
         from .clipping import CLIP_ISSUE,edit_clipped_text
         if CLIP_ISSUE in model.issues:
-            if getattr(request,'line_spacing',None) is not None or getattr(request,'paragraph_spacing',0):
-                raise EditError("Texto recortado: el interlineado y la separación entre párrafos requieren reconstruir el área; no se aplicarán silenciosamente.")
             return edit_clipped_text(data,request,model)
+        if (request.allow_overlap and request.text is None and request.size is None
+                and not request.font_name and not request.font_file and request.color is None):
+            # Original text operators allow a later move to isolate the same
+            # glyphs even after an exact overlap; regional redaction cannot.
+            from .clipped_layout import move_clipped_text
+            return move_clipped_text(data,request,model)
         page=doc[request.page]
         _safe_selection(page,model,selected)
         original_selection=selected[:]
@@ -370,11 +444,14 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
         allowed=fitz.Rect(0,0,page.cropbox.width,page.cropbox.height)
         images=page.get_image_info()
         strokes=[d for d in page.get_drawings() if d['type'] in ('s','fs')]
+        overlaps=set()
         for g in planned:
             if not allowed.contains(fitz.Rect(g.bbox)):
                 raise EditError("El destino queda fuera del área visible de la página.")
-            if any(intersects(g.bbox,n.bbox,.12) for n in others):
-                raise EditError("El texto se solapa con caracteres no seleccionados. Mueve el área o amplía una selección coherente.")
+            collisions={n.id for n in others if intersects(g.bbox,n.bbox,.12)}
+            overlaps.update(collisions)
+            if collisions and not request.allow_overlap:
+                raise EditError("El texto se solapa con caracteres no seleccionados. Mueve el área o activa «Permitir superponer texto» para conservar ambos contenidos en esa posición.")
             if any(intersects(g.bbox,tuple(x['from'])) for x in page.get_links()):
                 raise EditError("El destino se solapa con un enlace existente.")
             if any(intersects(g.bbox,tuple(a.rect)) for a in page.annots() or []):
@@ -416,6 +493,11 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
     report['fonts']={k:v.source for k,v in output_resolved.items()}
     report['page']=request.page
     report['manual_format']={'font':target.name if target is not None else None,'size':request.size,'color':request.color}
+    if request.auto_height:
+        bounds=union(g.bbox for g in planned)
+        report.update(auto_height=True,area_height=max(.1,bounds[3]-bounds[1]))
+    if overlaps:
+        report.update(overlap_count=len(overlaps),warning=f'Superposición permitida sobre {len(overlaps)} caracteres vecinos; su contenido y posición se conservan.')
     return output,report
 
 

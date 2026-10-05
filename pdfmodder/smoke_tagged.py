@@ -114,6 +114,7 @@ class TaggedSmoke(VerticalSmoke):
         self._require(self.window.line_reflow_box.isChecked() and self.window.line_reflow_box.isEnabled(),
                       "El ajuste del resto de la línea no está disponible y activado por defecto.")
         self._step("doble_clic_nativo_etiquetado", selection_preserved=True, characters=len(ids), zoom=self.window.zoom)
+        self._send_key(editor, Qt.Key_A, modifiers=Qt.ControlModifier)
         for char in "VOZ":
             self._send_key(editor, ord(char), char)
         self._require(editor.toPlainText() == "VOZ", "Los eventos de teclado no sustituyeron PALABRA por VOZ.")

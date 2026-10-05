@@ -5,9 +5,10 @@ import pymupdf as fitz
 from PySide6.QtCore import Qt
 from pdfmodder.model import Glyph,PageModel
 from test_ui_line_edit import line_window,settled,double_click_sequence,center,glyph_for
+from test_ui import ready_editor
 
 
-def test_visible_buttons_preview_then_apply_and_cancel(qtbot,line_window,tmp_path):
+def test_visible_inline_accept_commits_once_and_cancel_preserves_document(qtbot,line_window,tmp_path):
     window,_=line_window
     source=tmp_path/'aceptar.pdf'
     with fitz.open() as pdf:
@@ -18,25 +19,24 @@ def test_visible_buttons_preview_then_apply_and_cancel(qtbot,line_window,tmp_pat
     window.canvas.set_selection(window.model.group(glyph_for(window,'10/09/2026'),'word'))
     window.canvas.ensureVisible(window.canvas.scene_rect(window.model.selected(window.canvas.ids)[0].bbox),20,20)
     window.start_edit()
+    ready_editor(qtbot,window)
     assert window.edit_steps.isVisible()
-    assert window.preview_step_button.isEnabled()
-    assert not window.apply_step_button.isEnabled()
+    assert window.canvas.editor.toolbar.accept.isVisible()
+    assert window.canvas.editor.toolbar.cancel.isVisible()
+    qtbot.keyClick(window.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
     qtbot.keyClicks(window.canvas.editor,'11/09/2026')
-    qtbot.mouseClick(window.preview_step_button,Qt.LeftButton)
-    settled(qtbot,window)
-    assert window.state['preview'] and window.state['history_index']==0
-    assert window.apply_step_button.isEnabled()
-    assert not window.preview_step_button.isEnabled()
-    region=window.last_report['destination_regions'][0]
-    assert window.canvas.viewport().rect().contains(window.canvas.viewport_point(((region[0]+region[2])/2,(region[1]+region[3])/2)))
-    qtbot.mouseClick(window.apply_step_button,Qt.LeftButton)
+    qtbot.mouseClick(window.canvas.editor.toolbar.accept,Qt.LeftButton)
     settled(qtbot,window)
     assert not window.state['preview'] and window.state['history_index']==1
+    region=window.last_report['destination_regions'][0]
+    assert window.canvas.viewport().rect().contains(window.canvas.viewport_point(((region[0]+region[2])/2,(region[1]+region[3])/2)))
     assert not window.edit_steps.isVisible()
     window.canvas.set_selection(window.model.group(glyph_for(window,'11/09/2026'),'word'))
     window.start_edit()
+    ready_editor(qtbot,window)
+    qtbot.keyClick(window.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
     qtbot.keyClicks(window.canvas.editor,'12/09/2026')
-    qtbot.mouseClick(window.cancel_step_button,Qt.LeftButton)
+    qtbot.mouseClick(window.canvas.editor.toolbar.cancel,Qt.LeftButton)
     assert not window.canvas.editor.isVisible()
     assert window.state['history_index']==1
     assert '11/09/2026' in ''.join(g.text for g in window.model.glyphs)
