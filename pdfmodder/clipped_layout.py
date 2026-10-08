@@ -99,7 +99,7 @@ def edit_clipped_layout(data,request,model):
     else:area_left=bounds[0]
     area=(area_left,bounds[1],area_left+width,bounds[1]+height)
     with fitz.open(stream=data,filetype='pdf') as doc:
-        issues=document_issues(data,doc)
+        issues=document_issues(data,doc,operation="content")
         if issues:raise EditError('\n'.join(issues))
         _safe_selection(doc[request.page],replace(model,issues=[i for i in model.issues if i!=CLIP_ISSUE]),selected,preserve_paint_order=True)
         rotation=doc[request.page].rotation
@@ -278,7 +278,7 @@ def move_clipped_text(data,request,model):
     selected_ids={g.id for g in selected}
     others=[g for g in model.glyphs if g.id not in selected_ids]
     with fitz.open(stream=data,filetype='pdf') as doc:
-        issues=document_issues(data,doc)
+        issues=document_issues(data,doc,operation="content")
         if issues:raise EditError('\n'.join(issues))
         _safe_selection(doc[request.page],clean,selected,preserve_paint_order=True)
         _safe_selection(doc[request.page],clean,planned,preserve_paint_order=True)

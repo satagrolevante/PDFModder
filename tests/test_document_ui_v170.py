@@ -4,7 +4,8 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QApplication
 from pdfmodder.document_ui_v170 import DocumentPropertiesDialog, DocumentSecurityDialog
-from test_ui import editor, settled
+from test_ui import editor
+from test_ui_line_edit import settled
 
 
 def test_document_properties_dialog_review_commit_undo(qtbot,editor):

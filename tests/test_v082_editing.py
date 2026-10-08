@@ -91,7 +91,7 @@ def test_overlap_checkbox_applies_to_moves(qtbot,line_window,tmp_path):
 
 def test_clipped_typography_dialog_newline_bold_size_preview(qtbot,line_window,tmp_path):
     from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication,QStyle,QStyleOptionButton
     from pdfmodder.dialogs import TextDialog
     from test_native_layout import fragmented_fixture
     window,_=line_window
@@ -105,7 +105,10 @@ def test_clipped_typography_dialog_newline_bold_size_preview(qtbot,line_window,t
         if not isinstance(dialog,TextDialog):return
         timer.stop()
         try:
-            qtbot.mouseClick(dialog.change_font,Qt.LeftButton)
+            option=QStyleOptionButton();dialog.change_font.initStyleOption(option)
+            indicator=dialog.change_font.style().subElementRect(QStyle.SE_CheckBoxIndicator,option,dialog.change_font)
+            qtbot.mouseClick(dialog.change_font,Qt.LeftButton,pos=indicator.center())
+            assert dialog.change_font.isChecked() and dialog.font_picker.isEnabled()
             dialog.font_picker.family_box.setCurrentIndex(dialog.font_picker.family_box.findData('Courier'))
             dialog.font_picker.bold_box.setChecked(True)
             dialog.size_box.setValue(11.25)

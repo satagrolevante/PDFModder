@@ -88,6 +88,71 @@ def _gs_issue(values):
     return ''
 
 
+def _image_occurrence_indices(doc, page_number, infos):
+    """Map direct image operators to the renderer's paint-order occurrences.
+
+    Geometry is not an identity: two placements may deliberately coincide, or
+    coincide halfway through a batch move. Count nested Form and inline images
+    as well, so they cannot shift the identity of a later direct placement.
+    An incomplete/unsupported traversal provides no ordinal evidence.
+    """
+    if not infos:
+        return {}
+    occurrences=[]
+    operations={}
+    budget=250_000
+
+    def resource_owner(owner, inherited=None):
+        seen=set()
+        while doc.xref_get_key(owner,'Resources')[0]=='null':
+            kind,parent=doc.xref_get_key(owner,'Parent')
+            if kind!='xref':
+                return inherited
+            if owner in seen:
+                raise ValueError('Recursive resource inheritance')
+            seen.add(owner)
+            owner=int(parent.split()[0])
+        return owner
+
+    def walk(xref, owner, position=None, ancestors=()):
+        nonlocal budget
+        if len(ancestors)>=32 or xref in ancestors:
+            raise ValueError('Recursive Form invocation')
+        if xref not in operations:
+            operations[xref]=_ops(doc.xref_stream(xref)).operations
+        for offset,(operands,operator) in enumerate(operations[xref]):
+            budget-=1
+            if budget<0:
+                raise ValueError('Image occurrence traversal limit')
+            if operator==b'INLINE IMAGE':
+                occurrences.append((position,offset) if position is not None else None)
+            elif operator==b'Do':
+                if owner is None or len(operands)!=1:
+                    raise ValueError('Unresolved XObject invocation')
+                kind,reference=doc.xref_get_key(owner,'Resources/XObject/'+str(operands[0]).lstrip('/'))
+                if kind!='xref':
+                    raise ValueError('Unresolved XObject resource')
+                target=int(reference.split()[0])
+                subtype=doc.xref_get_key(target,'Subtype')
+                if subtype==('name','/Image'):
+                    occurrences.append((position,offset) if position is not None else None)
+                elif subtype==('name','/Form'):
+                    walk(target,resource_owner(target,owner),ancestors=(*ancestors,xref))
+                else:
+                    raise ValueError('Unsupported XObject subtype')
+
+    try:
+        page=doc[page_number]
+        owner=resource_owner(page.xref)
+        for position,xref in enumerate(page.get_contents()):
+            walk(xref,owner,position)
+    except (ValueError,TypeError,KeyError,IndexError,RuntimeError):
+        return {}
+    if len(occurrences)!=len(infos):
+        return {}
+    return {location:index for index,location in enumerate(occurrences) if location is not None}
+
+
 def _graphics_scan(doc,page_number,infos):
     """Track inherited CTM/clip/state while leaving every original operator intact.
 
@@ -109,6 +174,7 @@ def _graphics_scan(doc,page_number,infos):
     finally:
         page.set_rotation(rotation)
     used=set()
+    occurrence_indices=None
     stack=[]
     ctm=fitz.Matrix(1,0,0,1,0,0)
     clip=None
@@ -156,8 +222,13 @@ def _graphics_scan(doc,page_number,infos):
                 resource_xref=resources.get(name)
                 matching=[i for i,info in enumerate(infos) if i not in used and resource_xref
                           and all(abs(a-b)<.035 for a,b in zip(info['bbox'],bbox))]
-                preferred=[i for i in matching if infos[i].get('xref')==resource_xref]
-                target=(preferred[0] if len(preferred)==1 else matching[0] if len(matching)==1 else None)
+                target=matching[0] if len(matching)==1 else None
+                if len(matching)>1:
+                    if occurrence_indices is None:
+                        occurrence_indices=_image_occurrence_indices(doc,page_number,infos)
+                    ordinal=occurrence_indices.get((position,do_index))
+                    if ordinal in matching:
+                        target=ordinal
                 if target is not None:
                     resource_meta=doc.extract_image(resource_xref)
                     if not resource_meta or any(infos[target][key]!=resource_meta[key] for key in ('width','height')):

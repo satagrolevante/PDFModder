@@ -11,6 +11,8 @@ Este documento registra las decisiones de la entrega y las fuentes oficiales con
 | [PyMuPDF / MuPDF](https://pypi.org/project/PyMuPDF/1.26.7/) | 1.26.7 | AGPL v3 o contrato comercial de Artifex. Lectura, render y edición del PDF. |
 | [PySide6, Essentials, Addons y Shiboken6](https://pypi.org/project/PySide6/6.10.2/) | 6.10.2 | Qt for Python Community: LGPLv3/GPLv3 según componente; alternativa comercial. La aplicación usa QtCore, QtGui y QtWidgets. |
 | [fontTools](https://pypi.org/project/fonttools/4.61.1/) | 4.61.1 | MIT. Inspección tipográfica. |
+| [uharfbuzz](https://pypi.org/project/uharfbuzz/0.52.0/) | 0.52.0 | Apache-2.0 para los bindings; conserva los avisos de HarfBuzz incluidos en la rueda. Composición OpenType incorporada en 3.0.0. |
+| [python-bidi](https://pypi.org/project/python-bidi/0.6.7/) | 0.6.7 | LGPL-3.0-or-later declarada por el paquete y avisos de componentes incluidos en la rueda. Orden bidireccional Unicode incorporado en 3.0.0. |
 | [pypdf](https://pypi.org/project/pypdf/6.6.0/) | 6.6.0 | BSD-3-Clause. Inspección, análisis de operadores de imagen y clonación de páginas. Contrasta texto escrito por MuPDF; Poppler aporta el contraste visual independiente de la cadena completa. |
 | [Pillow](https://pypi.org/project/Pillow/12.1.0/) | 12.1.0 | MIT-CMU; sus ruedas contienen además avisos de bibliotecas nativas. |
 | [NumPy](https://pypi.org/project/numpy/2.4.1/) | 2.4.1 | BSD-3-Clause y avisos de bibliotecas incluidas en su rueda. |

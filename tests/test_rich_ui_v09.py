@@ -10,7 +10,13 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def idle(qtbot,window):
-    qtbot.waitUntil(lambda:not window.busy and window._rich_pending is None and not window._rich_timer.isActive(),timeout=60000)
+    qtbot.waitUntil(lambda:not window.busy and window._rich_pending is None and not window._rich_timer.isActive()
+                   and getattr(window,'_save_transaction_v300',None) is None,timeout=60000)
+    if window.application_mode=='reading' and window.model is not None:
+        window._tools_mode_v171(True)
+        qtbot.waitUntil(lambda:window.application_mode=='editing' and not window.busy
+                       and not window._mode_preparing_v171 and window.model is not None
+                       and bool(window.model.revision),timeout=60000)
 
 
 def select(window,text):

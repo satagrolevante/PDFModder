@@ -30,7 +30,7 @@ def test_reading_defers_analyses_and_prepare_materialises_full_page_without_new_
         def __init__(self,config_path=None):calls.append(('resolver',config_path))
         def inspect(self,document,page):calls.append(('fonts',page));return [{'name':'Synthetic font'}]
     monkeypatch.setattr(worker,'FontResolver',Resolver)
-    monkeypatch.setattr(worker,'document_issues',lambda data,doc:calls.append(('document',len(data))) or [])
+    monkeypatch.setattr(worker,'document_issues',lambda data,doc,**kwargs:calls.append(('document',len(data))) or [])
     monkeypatch.setattr(engine,'page_issues',lambda data,page:calls.append(('page_checks',page)) or [])
     monkeypatch.setattr('pdfmodder.clipping.annotate_font_resources',lambda data,page,model:calls.append(('resources',page)) or model)
     monkeypatch.setattr(media,'image_items',lambda doc,page:calls.append(('images',page)) or [{'id':'synthetic'}])
@@ -79,11 +79,14 @@ def test_dispatch_reading_and_prepare_protect_mutations_and_plain_copy(source,tm
         for command,payload in (
                 ('preview',{'request':{'page':0,'ids':ids,'text':'Must not edit'}}),
                 ('edit_document_metadata',{'metadata':{'title':'Must not edit'}}),
-                ('export_secure_pdf',{'path':str(tmp_path/'blocked.pdf'),'password':'test'}),
-                ('save',{'path':str(tmp_path/'blocked.pdf')})):
+                ('export_secure_pdf',{'path':str(tmp_path/'blocked.pdf'),'password':'test'})):
             with pytest.raises(EditError,match='Activa las herramientas'):
                 worker.dispatch(command,payload)
         assert not (tmp_path/'blocked.pdf').exists()
+        exact_copy=tmp_path/'unchanged-copy.pdf'
+        saved=worker.dispatch('save',{'path':str(exact_copy)})
+        assert saved['unchanged_copy'] and exact_copy.read_bytes()==source.read_bytes()
+        assert worker._session.resolver is None
         prepared=worker.dispatch('prepare_editing',{'number':0})
         assert prepared['state']['editing_prepared'] and prepared['model'].revision==sha256(source.read_bytes()).hexdigest()
         assert not prepared['reading'] and prepared['fonts']
@@ -117,7 +120,9 @@ def test_reading_does_not_bypass_password_signatures_or_edit_checks(source,tmp_p
     try:
         assert session.page(0,reading=True)['model'].glyphs
         with pytest.raises(EditError,match='Activa las herramientas'):session.preview({'page':0,'ids':[0],'text':'X'})
-        with pytest.raises(EditError,match='Activa las herramientas'):session.save(tmp_path/'blocked.pdf')
+        exact_copy=tmp_path/'unchanged-copy.pdf'
+        assert session.save(exact_copy)['unchanged_copy']
+        assert exact_copy.read_bytes()==data  # Ciphers, permissions and signatures are byte-identical.
         if password:
             with pytest.raises(EditError,match='permisos'):session.copy_reading_selection(0,ids=[0])
         prepared=session.prepare_editing(0)

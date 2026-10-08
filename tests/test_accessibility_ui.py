@@ -10,7 +10,8 @@ from pdfmodder.accessibility_ui import AccessibilityDialog
 from pdfmodder.dialogs import TextDialog
 from pdfmodder.tagged import TaggedStructure
 from tagged_corpus import make_tagged_pdf, audit_tagged
-from test_ui import editor, settled
+from test_ui import editor
+from test_ui_line_edit import settled
 
 
 def test_explicit_order_description_or_decorative(qtbot):

@@ -1,9 +1,10 @@
 """API de proceso único. La GUI sólo intercambia valores y PNG, nunca Document."""
 from collections import OrderedDict
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 import hashlib
 import os
+import tempfile
 import uuid
 import pymupdf as fitz
 from .engine import extract_page, edit_pdf, atomic_save
@@ -19,23 +20,26 @@ class Session:
         self.session_id=session_id or uuid.uuid4().hex
         self.recovery_id=uuid.uuid4().hex
         self.path=str(Path(path).resolve())
-        self.original=Path(path).read_bytes()
         self.password=password
         self._editing_prepared=not bool(reading)
         self._config_path=config_path
-        with self._open(self.original) as doc:
-            self.page_count=doc.page_count
-            self.copy_allowed=bool(doc.permissions & fitz.PDF_PERM_COPY)
-            if not self.page_count:
-                raise EditError('El documento no contiene páginas.')
-            self.issues=[] if reading else document_issues(self.original,doc)
-            self.tagged=doc.xref_get_key(doc.pdf_catalog(),'StructTreeRoot')[0]!='null'
         from .recovery_v200 import recovery_path
-        original_digest=hashlib.sha256(self.original).hexdigest()
-        self.history=History(self.original,directory=history_dir,
+        self.history=History.from_file(self.path,directory=history_dir,
             persistent_root=recovery_path(self.recovery_id,recovery_root or (Path(history_dir)/'recovery' if history_dir else None)),
-            metadata={'path':self.path,'saved_digest':original_digest,
-                      'original_digest':original_digest,'protected_paths':[self.path]})
+            metadata={'path':self.path,'protected_paths':[self.path]})
+        try:
+            with self._open(self.history.original_source) as doc:
+                self.page_count=doc.page_count
+                self.copy_allowed=bool(doc.permissions & fitz.PDF_PERM_COPY)
+                self._has_form_fields_v300=bool(doc.is_form_pdf)
+                if not self.page_count:
+                    raise EditError('El documento no contiene páginas.')
+                self.issues=[] if reading else document_issues(self.original,doc,operation="content")
+                self.tagged=doc.xref_get_key(doc.pdf_catalog(),'StructTreeRoot')[0]!='null'
+        except Exception:
+            self.history.close()
+            raise
+        original_digest=self.history.revision
         self._initial_original=None
         self.resolver=None if reading else FontResolver(config_path=config_path)
         self.pending=None
@@ -54,6 +58,11 @@ class Session:
         self._model_bytes=0
         self.workspace={}
         self.recovered_draft=None
+
+    def _view_source(self,original=False):
+        """Immutable file-backed input for navigation, never the live source PDF."""
+        if original:return self.history.original_source
+        return self.pending if self.pending is not None else self.history.current_source
 
     @property
     def original(self):
@@ -82,7 +91,7 @@ class Session:
     def update_workspace(self,workspace):
         # Only UI state is accepted. Do not persist caller dictionaries containing secrets.
         self.workspace={key:workspace[key] for key in ('page','zoom','reading','scroll','selection') if key in workspace}
-        if self.history.root.exists():self._checkpoint()
+        if self.history.has_checkpoint:self._checkpoint()
         return {'state':self.state()}
 
     def store_draft(self,draft=None,workspace=None):
@@ -96,11 +105,18 @@ class Session:
             kind=draft.get('kind')
             if kind=='legacy':
                 clean={key:draft[key] for key in ('kind','page','ids','revision','text') if key in draft}
+                if 'request' in draft:
+                    try:request=EditRequest(**draft['request'])
+                    except (TypeError,ValueError) as exc:
+                        raise EditError('El borrador contiene una solicitud de edición no válida.') from exc
+                    if any(getattr(request,key)!=clean.get(key) for key in ('page','ids','revision','text')):
+                        raise EditError('Las opciones del borrador no corresponden a su texto y selección.')
+                    clean['request']=asdict(request)
             elif kind=='rich':
                 source=draft.get('payload',{})
                 payload={key:source[key] for key in ('page','ids','rect','revision','width','height','allow_overlap','auto_width','auto_height') if key in source}
-                styles=('text','font_name','font_file','font_xref','font_resource','size','color','opacity','char_spacing','underline','bold','italic','_complementary_source')
-                settings=('index','alignment','left_indent','right_indent','first_indent','line_spacing','space_before','space_after','tab_stops','tab_interval')
+                styles=('text','font_name','font_file','font_xref','font_resource','size','color','opacity','char_spacing','underline','bold','italic','_complementary_source','font_axes','font_features','direction')
+                settings=('index','alignment','left_indent','right_indent','first_indent','line_spacing','space_before','space_after','tab_stops','tab_interval','direction')
                 payload['runs']=[{key:run[key] for key in styles if key in run} for run in source.get('runs',[])]
                 payload['paragraphs']=[{key:p[key] for key in settings if key in p} for p in source.get('paragraphs',[])]
                 clean={'kind':'rich','payload':payload}
@@ -110,7 +126,7 @@ class Session:
             if len(serialized)>8*1024*1024:raise EditError('El borrador supera 8 MB; acepta por fragmentos más pequeños.')
         changed=(clean!=self.history.metadata.get('draft') or workspace!=self.workspace)
         self.workspace=workspace
-        if changed and (clean is not None or self.history.root.exists()):
+        if changed and (clean is not None or self.history.has_checkpoint):
             self.history.checkpoint({'path':self.path,'saved_digest':self.saved_digest,
                 'protected_paths':sorted(self.protected_paths),'workspace':workspace,'draft':clean},self.pending,self.pending_report)
         self.recovered_draft=None
@@ -139,6 +155,7 @@ class Session:
     def suspend(self):
         self._cleanup_print()
         self._clear_cache();self._close_documents()
+        self._reading_info_cache.clear();self._page_caps_cache.clear()
         self.history.suspend()
         if self.pending is not None:
             self._checkpoint();self._pending=None
@@ -162,7 +179,8 @@ class Session:
         try:
             with obj._open(history.current) as doc:
                 count=doc.page_count;copy_allowed=bool(doc.permissions & fitz.PDF_PERM_COPY)
-                issues=document_issues(history.current,doc)
+                issues=document_issues(history.current,doc,operation="content")
+                obj._has_form_fields_v300=bool(doc.is_form_pdf)
                 tagged=doc.xref_get_key(doc.pdf_catalog(),'StructTreeRoot')[0]!='null'
             with obj._open(history.original) as doc:original_count=doc.page_count
         except Exception:
@@ -188,25 +206,33 @@ class Session:
                 except EditError:pass  # Text remains recoverable even when its original font is unavailable.
         return obj
 
-    def reading_info(self,original=False):
-        data=self.original if original else (self.pending or self.history.current)
+    def reading_info(self,original=False,pages=None,progressive=False):
+        data=self._view_source(original)
         revision=self._revision(original)
         keys=self._page_keys()
         cache_key=(revision,bool(original),tuple(keys))
         if cache_key not in self._reading_info_cache:
-            with self._open(data) as document:
-                geometries=[]
-                for index in range(len(keys)):
-                    source=keys[index] if original else index
-                    rect=document[source].rect if source>=0 else fitz.Rect(0,0,595,842)
-                    geometries.append({'width':rect.width,'height':rect.height})
-                self._reading_info_cache[cache_key]={'page_geometries':geometries,'revision':revision}
+            self._reading_info_cache[cache_key]={}
             while len(self._reading_info_cache)>3:self._reading_info_cache.popitem(last=False)
-        return dict(self._reading_info_cache[cache_key])
+        geometries=self._reading_info_cache[cache_key]
+        requested=list(range(len(keys))) if not progressive else list(dict.fromkeys(int(p) for p in (pages if pages is not None else [0])))
+        if any(not 0<=number<len(keys) for number in requested):
+            raise EditError('La página solicitada no existe en el documento.')
+        document=self._document(data,revision)
+        for index in requested:
+            if index in geometries:continue
+            source=keys[index] if original else index
+            rect=document[source].rect if source>=0 else fitz.Rect(0,0,595,842)
+            geometries[index]={'width':rect.width,'height':rect.height}
+        result={'revision':revision,'page_count':len(keys),'geometries':{number:geometries[number] for number in requested},
+                'default_geometry':dict(geometries.get(requested[0] if requested else 0,{'width':595.,'height':842.})),
+                'geometry_ready_count':len(geometries),'geometry_complete':len(geometries)==len(keys)}
+        if not progressive:result['page_geometries']=[dict(geometries[number]) for number in range(len(keys))]
+        return result
 
     def reading_copy_range(self,start,end,revision,original=False):
         from .reading_order_v180 import selection_text
-        data=self.original if original else (self.pending or self.history.current)
+        data=self._view_source(original)
         if revision!=self._revision(original):
             raise EditError('El documento cambió después de seleccionar. Selecciona de nuevo el texto.')
         keys=self._page_keys()
@@ -247,6 +273,14 @@ class Session:
             if report and '_instance_keys' in report:
                 return report['_instance_keys'][:]
         return [f'original:{index}' for index in range(self.original_page_count)]
+
+    def _instance_key_at(self,page,pending=True):
+        """Reading one page does not allocate an identity string for all pages."""
+        reports=self.history.base_reports+self.history.reports[:self.history.index+1]
+        if pending and self.pending_report:reports=reports+[self.pending_report]
+        for report in reversed(reports):
+            if report and '_instance_keys' in report:return report['_instance_keys'][page]
+        return f'original:{page}'
 
     def _instance_changes(self, pending=True, original=False):
         """Replay only highlight metadata; duplicated pages inherit a timed snapshot.
@@ -294,7 +328,7 @@ class Session:
         return changed
 
     def _mark_page_edit(self,report,page):
-        report.update(_page_key=self._page_keys(False)[page],_instance_key=self._instance_keys(False)[page])
+        report.update(_page_key=self._page_keys(False)[page],_instance_key=self._instance_key_at(page,False))
 
     def _clear_cache(self):
         self.cache.clear()
@@ -323,7 +357,8 @@ class Session:
         """Materialise edit checks once; retain the document and its history."""
         if not self._editing_prepared:
             with self._open(self.history.current) as document:
-                issues=document_issues(self.history.current,document)
+                issues=document_issues(self.history.current,document,operation="content")
+                self._has_form_fields_v300=bool(document.is_form_pdf)
             resolver=FontResolver(config_path=self._config_path)
             self.issues=issues
             self.resolver=resolver
@@ -333,7 +368,7 @@ class Session:
 
     def copy_reading_selection(self,page,ids=None,image_id=None,revision=None):
         """Copy selected plain text without resolving portable font programs."""
-        data=self.history.current
+        data=self._view_source()
         digest=self.history.revision
         if revision and revision!=digest:
             raise EditError('El documento cambió. Selecciona el texto de nuevo antes de copiar.')
@@ -362,7 +397,7 @@ class Session:
                 raise EditError('El destino no puede sobrescribir un PDF original usado en este trabajo.')
 
     def _open(self,data):
-        doc=fitz.open(stream=data,filetype='pdf')
+        doc=fitz.open(filename=str(data)) if isinstance(data,(Path,str)) else fitz.open(stream=data,filetype='pdf')
         if not doc.is_pdf:
             doc.close()
             raise EditError('Selecciona un archivo PDF digital.')
@@ -376,7 +411,7 @@ class Session:
         current_digest=self.history.revision
         tagged_revision=self._revision()
         if tagged_revision!=self._tagged_revision:
-            with self._open(self.pending or self.history.current) as document:
+            with self._open(self._view_source()) as document:
                 self.tagged=document.xref_get_key(document.pdf_catalog(),'StructTreeRoot')[0]!='null'
             self._tagged_revision=tagged_revision
         page_caps={key:True for key in ('supported','delete','extract','reorder','rotate','duplicate','insert_blank','insert_pdf')}
@@ -387,6 +422,9 @@ class Session:
         elif self.issues:
             page_caps={key:False for key in page_caps if key!='reason'}
             page_caps['reason']='\n'.join(self.issues)
+        elif getattr(self,'_has_form_fields_v300',False):
+            page_caps={key:False for key in page_caps if key!='reason'}
+            page_caps['reason']='Las operaciones de páginas de este documento necesitan conservar su árbol de campos. Puedes editar el texto exterior y los campos con sus herramientas.'
         elif self.tagged:
             candidate=self.pending if self.pending is not None else self.history.current
             digest=tagged_revision
@@ -402,16 +440,20 @@ class Session:
             install_session_tools_v200(Session)
             special_only=self.form_only_save_v200()
         return {'path':self.path,'session_id':self.session_id,'recovery_id':self.recovery_id,
+                'last_save_path':self.history.metadata.get('last_save_path'),
+                'draft_pending':bool(self.history.metadata.get('draft') or getattr(self,'recovered_draft',None)),
                 'recovered_draft':getattr(self,'recovered_draft',None),
                 'workspace':self.workspace,'page_count':len(keys),'original_pages':[k if k>=0 else None for k in keys],'undo':self.history.index>0,
                 'redo':self.history.index+1<len(self.history.states),'issues':self.issues,'tagged':self.tagged,
                 'page_capabilities':page_caps,
                 'document_revision':tagged_revision,
-                'comparison_geometry_changed':[key in geometry_changed for key in self._instance_keys()],
+                'comparison_geometry_changed':([key in geometry_changed for key in self._instance_keys()]
+                                               if geometry_changed else [False]*len(keys)),
                 'preview':self.pending is not None,'dirty':current_digest!=self.saved_digest,
                 'history_index':self.history.index,'history_dropped':self.history.dropped,
                 'reading':not self._editing_prepared,'editing_prepared':self._editing_prepared,
                 'copy_allowed':self.copy_allowed,
+                'has_form_fields':getattr(self,'_has_form_fields_v300',False),
                 'validation_pending':not self._editing_prepared,
                 'metadata_only_save':bool(self.issues) and self._metadata_only_history(),
                 'special_only_save':special_only}
@@ -422,7 +464,7 @@ class Session:
 
     def page(self,number,zoom=1.,original=False,thumbnail=False,reading=False):
         reading=bool(reading or not self._editing_prepared)
-        data=self.original if original else (self.pending or self.history.current)
+        data=self._view_source(original) if reading else (self.original if original else (self.pending or self.history.current))
         keys=self._page_keys()
         if not 0<=number<len(keys):
             raise EditError('La página seleccionada ya no está en el documento.')
@@ -432,24 +474,31 @@ class Session:
         zoom=max(.1,min(float(zoom),4.))
         revision=self._revision(original)
         key=(revision,number,round(zoom,3),thumbnail,bool(original),reading)
+        model_key=(revision,source_number,reading)
+        cached_png=None
         if key in self.cache:
-            result=self.cache.pop(key)
-            self.cache[key]=result
-            return {**result,'state':self.state()}
+            result=self.cache.pop(key);self.cache[key]=result
+            if thumbnail:return {**result,'model':None,'fonts':[],'images':[],'state':self.state()}
+            if model_key in self._model_cache:
+                cached=self._model_cache.pop(model_key);self._model_cache[model_key]=cached
+                model,fonts,images,_=cached
+                return {**result,'model':model,'fonts':fonts,'images':images,'state':self.state()}
+            cached_png=result['png']
         doc=self._document(data,revision)
         page=doc[source_number]
         if page.rect.width*page.rect.height*zoom*zoom>16_000_000:
             zoom=(16_000_000/(page.rect.width*page.rect.height))**.5
-        display_key=(revision,source_number)
-        if display_key in self._displaylists:
-            display=self._displaylists.pop(display_key)
-        else:display=page.get_displaylist(annots=1)
-        self._displaylists[display_key]=display
-        while len(self._displaylists)>4:self._displaylists.popitem(last=False)
-        png=display.get_pixmap(matrix=fitz.Matrix(zoom,zoom),alpha=False,colorspace=fitz.csRGB).tobytes('png')
+        png=cached_png
+        if png is None:
+            display_key=(revision,source_number)
+            if display_key in self._displaylists:
+                display=self._displaylists.pop(display_key)
+            else:display=page.get_displaylist(annots=1)
+            self._displaylists[display_key]=display
+            while len(self._displaylists)>4:self._displaylists.popitem(last=False)
+            png=display.get_pixmap(matrix=fitz.Matrix(zoom,zoom),alpha=False,colorspace=fitz.csRGB).tobytes('png')
         model=None;fonts=[];images=[]
         if not thumbnail:
-            model_key=(revision,source_number,reading)
             if model_key in self._model_cache:
                 cached=self._model_cache.pop(model_key);self._model_cache[model_key]=cached
                 model,fonts,images,_=cached
@@ -460,19 +509,22 @@ class Session:
                 if not reading:
                     from .media import image_items
                     images=image_items(doc,source_number)
-                estimate=2048+len(model.glyphs)*512+len(fonts)*2048+len(images)*2048
+                estimate=(2048+len(model.glyphs)*512+len(fonts)*2048+len(images)*2048
+                          +len(getattr(model,'selection_boundaries',()))*192)
                 self._model_cache[model_key]=(model,fonts,images,estimate);self._model_bytes+=estimate
                 while self._model_bytes>16*1024*1024 or len(self._model_cache)>12:
                     _,removed=self._model_cache.popitem(last=False);self._model_bytes-=removed[3]
-        instance=self._instance_keys()[number]
+        instance=self._instance_key_at(number)
         changes=self._instance_changes(original=original).get(instance,[])
         geometry_changed=instance in self._geometry_changed_instances()
         result={'png':png,'number':number,'zoom':zoom,'model':model,'fonts':fonts,'images':images,'changes':changes,
                 'reading':reading,
                 'comparison_geometry_changed':geometry_changed,
                 'comparison_warning':('El recorte cambió el área visible. El original conserva sus dimensiones; los resaltados se muestran en las coordenadas de cada vista.' if geometry_changed else '')}
-        self.cache[key]=result
-        self.cache_bytes+=len(png)
+        # PNG entries must not retain a model evicted from its own bounded
+        # cache. Rehydrate text/font/image metadata on a later cache hit.
+        self.cache[key]={name:value for name,value in result.items() if name not in ('model','fonts','images')}
+        self.cache_bytes+=len(png)-(len(cached_png) if cached_png is not None else 0)
         while self.cache_bytes>32*1024*1024 or len(self.cache)>12:
             _,removed=self.cache.popitem(last=False)
             self.cache_bytes-=len(removed['png'])
@@ -827,7 +879,44 @@ class Session:
         self.page_count=len(self._page_keys(False))
         return {'state':self.state()}
 
-    def save(self,path):
+    def _save_reading_copy_v300(self,path):
+        """Publish unchanged snapshot bytes, preserving encryption and signatures."""
+        self._safe_destination(path)
+        destination=Path(path).resolve()
+        source=self.history.states[self.history.index]
+        if source is None:
+            self.history.materialize();source=self.history.states[self.history.index]
+        temporary=None
+        try:
+            fd,temporary=tempfile.mkstemp(prefix='.pdfmodder-',suffix='.pdf',dir=destination.parent)
+            digest=hashlib.sha256();size=0
+            with os.fdopen(fd,'wb') as outgoing,source.open('rb') as incoming:
+                while True:
+                    block=incoming.read(1024*1024)
+                    if not block:break
+                    outgoing.write(block);digest.update(block);size+=len(block)
+                outgoing.flush();os.fsync(outgoing.fileno())
+            if digest.hexdigest()!=self.history.revision or size!=self.history.sizes[self.history.index]:
+                raise EditError('La copia no coincide con el documento abierto; el destino no se ha modificado.')
+            with self._open(temporary) as check:
+                if check.page_count!=len(self._page_keys(False)):
+                    raise EditError('Falló la verificación de páginas de la copia; el destino no se ha modificado.')
+            os.replace(temporary,destination);temporary=None
+        finally:
+            if temporary and Path(temporary).exists():Path(temporary).unlink()
+        self.history.metadata['last_save_path']=str(destination)
+        result={'path':str(destination),'state':self.state(),'unchanged_copy':True}
+        try:self._checkpoint()
+        except OSError:result['notice']='PDF guardado; no se pudo actualizar la recuperación local.'
+        return result
+
+    def save(self,path,reading_copy=False):
+        clean=(self.history.revision==self.saved_digest and self.pending is None
+               and not self.history.metadata.get('draft') and not self.recovered_draft)
+        if reading_copy or not self._editing_prepared:
+            if not clean:
+                raise EditError('El documento tiene cambios pendientes. Activa las herramientas y revísalos antes de guardar.')
+            return self._save_reading_copy_v300(path)
         self._require_editing()
         if self.issues:
             from .forms_redaction_v200 import install_session_tools_v200
@@ -835,6 +924,7 @@ class Session:
             if self.form_only_save_v200():
                 result=self.save_form_v200(path)
                 self.saved_digest=self.history.revision
+                self.history.metadata['last_save_path']=str(Path(path).resolve())
                 try:self._checkpoint()
                 except OSError:result['notice']='PDF guardado; no se pudo actualizar la recuperación local.'
                 result['state']=self.state();return result
@@ -850,6 +940,7 @@ class Session:
         else:
             result=atomic_save(self.history.current,path,self.path)
         self.saved_digest=self.history.revision
+        self.history.metadata['last_save_path']=str(Path(path).resolve())
         try:self._checkpoint()
         except OSError:
             # The PDF was saved successfully; retain work and report the recovery issue.
@@ -994,6 +1085,8 @@ def dispatch(command,payload=None):
         return {'state':new.state()}
     if command=='list_sessions':
         return {'sessions':[{'session_id':s.session_id,'path':s.path,
+            'last_save_path':s.history.metadata.get('last_save_path'),
+            'draft_pending':bool(s.history.metadata.get('draft') or getattr(s,'recovered_draft',None)),
             'dirty':s.history.revision!=s.saved_digest,'preview':bool(s.pending is not None or getattr(s,'_suspended_pending',False)),
             'reading':not s._editing_prepared,'active':s is _session} for s in _sessions.values()]}
     if command=='close_all':
@@ -1042,6 +1135,17 @@ def dispatch(command,payload=None):
         raise EditError('Abre primero un PDF.')
     if command=='update_workspace':return _session.update_workspace(**payload)
     if command=='store_draft':return _session.store_draft(**payload)
+    if command=='apply_stored_draft_v300':
+        from .saving_worker_v300 import apply_stored_draft_v300
+        return apply_stored_draft_v300(_session)
+    if command in ('object_graph_v300','object_edit_v300'):
+        from .objects_v300 import install_object_tools_v300
+        install_object_tools_v300(Session)
+        return getattr(_session,command)(**payload)
+    if command=='selection_capabilities_v300':
+        _session._require_editing()
+        from .compatibility_v300 import selection_capabilities_v300
+        return selection_capabilities_v300(_session,**payload)
     if command in ('form_fields_v200','preview_form_v200','preview_redaction_v200','save_form_v200','redaction_page_v200',
                    'selection_capabilities_v200','cell_selection_v200','print_pages_v200','snapshot_v200'):
         _install_v200_tools(command)
@@ -1066,7 +1170,7 @@ def dispatch(command,payload=None):
                    'find_replacements','preview_replacements','review_page','organizer_info','organizer_thumbnail',
                    'organize_pages','image_apply','delete_pages','extract_pages','preview_replace_pages_v150',
                    'preview_crop_pages_v150','split_document_v150','export_document_v150','merge',
-                   'commit','apply','save','sign_pdf','signature_preview','associate','font_evidence'):
+                   'commit','apply','sign_pdf','signature_preview','associate','font_evidence'):
         _session._require_editing()
     if command=='document_properties':
         from .document_ops_v170 import document_properties
@@ -1128,7 +1232,7 @@ def dispatch(command,payload=None):
         return _session.commit()
     if command=='undo': return _session.navigate_history()
     if command=='redo': return _session.navigate_history(True)
-    if command=='save': return _session.save(payload['path'])
+    if command=='save': return _session.save(**payload)
     if command=='sign_pdf': return _session.sign_pdf(**payload)
     if command=='signature_preview': return _session.signature_preview(**payload)
     if command=='search': return _session.search(payload['text'])

@@ -25,15 +25,21 @@ def tools_window(qtbot, monkeypatch):
     import pdfmodder.app as application
     monkeypatch.setattr(application, 'ProcessPoolExecutor', NoPdfPool)
     window = application.MainWindow()
-    qtbot.addWidget(window)
+    def close_without_document(widget):
+        # Qt closes registered widgets before this yield fixture finalizes.
+        # These synthetic states have no worker session to save or discard.
+        widget.state = {}
+        widget._allow_close = True
+    qtbot.addWidget(window, before_close_func=close_without_document)
     window.poller.stop()
     window.thumbnail_timer.stop()
+    window.reader_timer_v180.stop()
     # This fixture exercises editing tools. Startup reading has its own tests.
     window.tools_action.setChecked(True)
     window.show()
+    assert window.application_mode == 'editing'
     yield window
-    window.state = {}
-    window._allow_close = True
+    close_without_document(window)
     window.close()
 
 
@@ -66,7 +72,7 @@ def test_page_buttons_dispatch_real_entrypoints_and_respect_busy(tools_window, m
     for method, value in [('choose_export_v150', 'export'), ('choose_replace_pages_v150', 'replace'),
                           ('choose_crop_pages_v150', 'crop'), ('choose_split_v150', 'split')]:
         monkeypatch.setattr(window, method, lambda operation=value:called.append(operation))
-    window.state = {'page_capabilities': {'rotate': True, 'insert_pdf': True, 'delete': True, 'extract': True}}
+    window.state = {'page_count': 1, 'page_capabilities': {'rotate': True, 'insert_pdf': True, 'delete': True, 'extract': True}}
     window._refresh_tools_v150()
     for action in (window.export_document_action, window.replace_pages_action,
                    window.crop_pages_action, window.split_document_action):
@@ -160,7 +166,7 @@ def test_side_format_applies_only_current_range(tools_window):
     assert not window.side_format_controls.isEnabled()
 
 
-def test_image_quick_tools_preserve_crop_and_other_transform_properties(tools_window, monkeypatch):
+def test_image_quick_tools_preserve_crop_and_other_transform_properties(tools_window, monkeypatch, qtbot):
     window = tools_window
     _canvas_document(window)
     item = window.canvas.images[0]
@@ -168,7 +174,8 @@ def test_image_quick_tools_preserve_crop_and_other_transform_properties(tools_wi
                                'flip_horizontal': False, 'flip_vertical': True}
     window.canvas.image_id = item['id']
     window.canvas.image_mode = True
-    window.state = {'page_capabilities': {}}
+    window.state = {'page_count': 1, 'page_capabilities': {}}
+    qtbot.mouseClick(window.format_tools_section.header, Qt.LeftButton)
     window._refresh_tools_v150()
     assert window.image_quick_controls.isVisible()
     assert not window.side_format_controls.isVisible()

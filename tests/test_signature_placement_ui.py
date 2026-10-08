@@ -6,7 +6,8 @@ from PySide6.QtWidgets import QApplication
 
 from pdfmodder.signing_ui import SignatureDialog
 from test_signature_ui import CERTIFICATE
-from test_ui import editor, settled
+from test_ui import editor
+from test_ui_line_edit import settled
 
 
 def test_rectangle_on_another_page_cancel_restores_dialog_and_document(qtbot, editor):

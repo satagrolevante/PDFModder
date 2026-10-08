@@ -42,20 +42,12 @@ def install_editor_tools_v200(Session):
             if not fitz.Rect(0,0,p.cropbox.width,p.cropbox.height).contains(fitz.Rect(values)):
                 raise EditError('La celda debe estar dentro de la página.')
             model=extract_page(doc,page,data)
-        selected=[]
-        for glyph in model.glyphs:
-            if glyph.mode==3 or glyph.opacity<=0:
-                continue
-            b=glyph.bbox
-            if x0<=((b[0]+b[2])/2)<=x1 and y0<=((b[1]+b[3])/2)<=y1:
-                if not fitz.Rect(values).contains(fitz.Rect(b)):
-                    raise EditError('El borde corta caracteres. Amplía el área para incluirlos completos.')
-                selected.append(glyph)
-        if not selected:
-            raise EditError('No hay texto visible dentro del área elegida.')
+        from .selection_v300 import selected_in_area
+        selected=selected_in_area(model,values)
         payload=self.rich_selection(page,[g.id for g in selected])
         payload.update(rect=list(inner),width=inner[2]-inner[0],height=inner[3]-inner[1],
-                       auto_width=False,auto_height=False,allow_overlap=False)
+                       auto_width=False,auto_height=False,allow_overlap=False,
+                       _explicit_area_v300=True)
         paragraphs=payload.get('paragraphs') or [{'index':0}]
         payload['paragraphs']=[dict(p,alignment=alignment) for p in paragraphs]
         return {'payload':payload,'cell_rect':list(values),'padding':margin,

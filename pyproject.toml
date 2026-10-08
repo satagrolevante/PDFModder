@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdfmodder"
-version = "2.0.3"
+version = "3.0.0"
 description = "Editor local de texto PDF con conservación estricta y validación"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

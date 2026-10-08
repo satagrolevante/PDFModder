@@ -32,6 +32,8 @@ EXPECTED_RUNTIME = {
     "pyhanko": "0.33.0",
     "pyhanko-certvalidator": "0.29.1",
     "cryptography": "50.0.1",
+    "uharfbuzz": "0.52.0",
+    "python-bidi": "0.6.7",
 }
 APP_ROOT_FILES = (
     ".gitignore", "LICENSE", "README.md", "requirements.txt", "requirements-dev.txt",
@@ -42,6 +44,20 @@ APP_DIRECTORIES = ("pdfmodder", "scripts", "tests", "docs", "examples", "assets"
 EXCLUDE_PARTS = {"__pycache__", ".pytest_cache", ".git", ".venv", "dist", "build", "output", "releases", "tmp"}
 FORBIDDEN_SOURCE_SUFFIXES = {".exe", ".zip", ".dll", ".pyd", ".key", ".pem", ".pfx", ".p12", ".log"}
 LICENSE_NAMES = re.compile(r"^(?:licen[sc]e|copying|copyright|notice|authors)(?:[._-].*)?$", re.I)
+QT_NOTICE_FALLBACK_VERSION = "6.10.2"
+QT_NOTICE_FALLBACK_PACKAGES = frozenset({"pyside6", "pyside6-addons", "pyside6-essentials", "shiboken6"})
+QT_LICENSE_DECLARATION = "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+# These complete standard texts are already distributed in docs/licenses. Check
+# their content with CRLF normalised to LF so Windows checkout does not alter the
+# verification. Inventory hashes always describe the exact bytes copied.
+QT_STANDARD_LICENSES = (
+    ("GPL-2.0.txt", "https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt",
+     "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6"),
+    ("GPL-3.0.txt", "https://www.gnu.org/licenses/gpl-3.0.txt",
+     "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"),
+    ("LGPL-3.0.txt", "https://www.gnu.org/licenses/lgpl-3.0.txt",
+     "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118"),
+)
 
 
 def normalized(name: str) -> str:
@@ -63,6 +79,43 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def qt_standard_notice_fallback(distribution, licenses: Path, target_root: Path) -> list[dict]:
+    """Supply standard texts only for the identified Qt 6.10.2 wheel omission.
+
+    Original attribution and project links remain in METADATA.txt. This does not
+    invent copyright notices or claim to supply source for Qt or bundled native
+    components. Every other package/version retains the ordinary notice guard.
+    """
+    if (normalized(distribution.metadata.get("Name", "")) not in QT_NOTICE_FALLBACK_PACKAGES
+            or distribution.version != QT_NOTICE_FALLBACK_VERSION):
+        return []
+    declaration = distribution.metadata.get("License-Expression") or distribution.metadata.get("License")
+    projects = distribution.metadata.get_all("Project-URL") or []
+    if (declaration != QT_LICENSE_DECLARATION
+            or distribution.metadata.get("Author-email") != "Qt for Python Team <pyside@qt-project.org>"
+            or "Repository, https://code.qt.io/cgit/pyside/pyside-setup.git/" not in projects):
+        raise RuntimeError("Los metadatos no identifican la rueda Qt 6.10.2 prevista para el respaldo de licencias.")
+    checked = []
+    for filename, origin, expected in QT_STANDARD_LICENSES:
+        source = ROOT / "docs/licenses" / filename
+        if not source.is_file() or source.is_symlink():
+            raise RuntimeError(f"Falta el texto estándar de licencia Qt: {source}")
+        canonical = source.read_bytes().replace(b"\r\n", b"\n")
+        if hashlib.sha256(canonical).hexdigest() != expected:
+            raise RuntimeError(f"El texto estándar de licencia Qt no coincide: {source}")
+        checked.append((source, origin, expected))
+    rows = []
+    for source, origin, canonical_digest in checked:
+        target = target_root / "standard-license-fallback" / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        rows.append({"path": target.relative_to(licenses).as_posix(), "sha256": sha256(target),
+                     "source": source.relative_to(ROOT).as_posix(), "source_url": origin,
+                     "lf_normalized_sha256": canonical_digest,
+                     "provenance": "standard_text_fallback_for_missing_qt_6.10.2_wheel_notices"})
+    return rows
 
 
 def source_files() -> list[tuple[Path, Path]]:
@@ -141,7 +194,12 @@ def collect(destination: Path) -> None:
         raw_metadata = distribution.read_text("METADATA") or distribution.read_text("PKG-INFO")
         if raw_metadata is None:
             raise RuntimeError(f"No se encontraron los metadatos originales de {name}.")
-        (target_root / "METADATA.txt").write_text(raw_metadata, encoding="utf-8")
+        metadata_path = target_root / "METADATA.txt"
+        metadata_path.write_text(raw_metadata, encoding="utf-8")
+        fallback = False
+        if not copied:
+            copied = qt_standard_notice_fallback(distribution, licenses, target_root)
+            fallback = bool(copied)
         rows.append({
             "name": name,
             "version": distribution.version,
@@ -151,6 +209,8 @@ def collect(destination: Path) -> None:
             "project_urls": distribution.metadata.get_all("Project-URL") or [],
             "requires_dist": distribution.metadata.get_all("Requires-Dist") or [],
             "notice_files": copied,
+            "metadata_file": {"path": metadata_path.relative_to(licenses).as_posix(), "sha256": sha256(metadata_path)},
+            "standard_license_fallback": fallback,
             "pypi_version": f"https://pypi.org/project/{name}/{distribution.version}/",
         })
     for name in EXPECTED_RUNTIME:

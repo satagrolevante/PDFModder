@@ -76,6 +76,9 @@ def test_import_pages_at_selected_position_and_protect_inserted_source(qtbot,lin
     with fitz.open(target) as doc:
         assert len(doc)==3 and 'PAGINA INSERTADA' in doc[1].get_text()
         assert doc[1].rect.width==300
-    window.save_as(external);qtbot.waitUntil(lambda:not window.busy,timeout=30000)
+    # This programmatic attempt bypasses the new existing-copy confirmation
+    # so it exercises the worker's imported-source protection itself.
+    window.save_as(external,overwrite_confirmed=True)
+    qtbot.waitUntil(lambda:not window.busy and getattr(window,'_save_transaction_v300',None) is None,timeout=30000)
     assert window.last_error and external.read_bytes()==original
     assert window.state['page_count']==3

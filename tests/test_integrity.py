@@ -46,16 +46,23 @@ def test_redaction_never_runs_pending_annotations():
     assert 'VECINO' in doc[0].get_text()
 
 
-def test_shared_form_instances_are_explicitly_blocked():
-    source=fitz.open(stream=sample(),filetype='pdf')
-    target=fitz.open()
-    for _ in range(2):
-        page=target.new_page()
-        page.show_pdf_page(page.rect,source,0)
-    data=target.tobytes()
+def test_shared_form_edit_isolates_selected_occurrence():
+    with fitz.open(stream=sample(),filetype='pdf') as source, fitz.open() as target:
+        for _ in range(2):
+            page=target.new_page()
+            page.show_pdf_page(page.rect,source,0)
+        data=target.tobytes()
     model,ids=ids_at(data,100)
-    with pytest.raises(EditError,match='Form XObjects'):
-        edit_pdf(data,EditRequest(0,ids,text='11/09/2026'))
+    changed,report=edit_pdf(data,EditRequest(0,ids,text='11/09/2026',revision=model.revision))
+    assert report['form_isolation']['shared_objects_unchanged']
+    assert report['form_isolation']['selected_instance_count']==1
+    with fitz.open(stream=data,filetype='pdf') as before, fitz.open(stream=changed,filetype='pdf') as after:
+        assert '11/09/2026' in after[0].get_text()
+        assert '10/09/2026' not in after[0].get_text()
+        assert 'VECINO' in after[0].get_text()
+        assert after[0].get_text().count('OTRO')==2
+        assert after[1].get_text()==before[1].get_text()
+        assert after[1].get_pixmap(matrix=fitz.Matrix(2,2)).samples==before[1].get_pixmap(matrix=fitz.Matrix(2,2)).samples
 
 
 def test_neighbours_verified_even_inside_changed_envelope():
@@ -71,18 +78,22 @@ def test_neighbours_verified_even_inside_changed_envelope():
 
 
 def test_exact_history_and_redo_branch_survive_disk_error(tmp_path,monkeypatch):
+    import pdfmodder.history as history
     hist=History(b'original',directory=tmp_path)
     hist.push(b'second',{'page':0})
     hist.push(b'third',{'page':0})
     hist.undo()
-    original_write=Path.write_bytes
-    def fail(path,data):
-        if path.parent==hist.root:
-            raise OSError('disk full')
-        return original_write(path,data)
+    states_before=list(hist.states)
+    def fail(fd):
+        raise OSError('disk full')
     with monkeypatch.context() as patch:
-        patch.setattr(Path,'write_bytes',fail)
+        # Snapshots now use atomic writes through a file descriptor. Fail the
+        # durability step after the bytes have actually been written, before
+        # the replacement snapshot or redo branch can be published.
+        patch.setattr(history.os,'fsync',fail)
         with pytest.raises(OSError): hist.push(b'fourth',None)
+    assert hist.states==states_before
+    assert not list(hist.root.glob('.checkpoint-*'))
     assert hist.current==b'second'
     assert hist.redo()==b'third'
     assert hist.undo()==b'second'

@@ -37,7 +37,7 @@ def preflight_text(data, page, ids, new_text=None, resolver=None):
     result['unicode_normalization']=bool(new_text is not None and text!=new_text)
     try:
         with fitz.open(stream=data,filetype='pdf') as doc:
-            problems=document_issues(data,doc)
+            problems=document_issues(data,doc,operation='content')
             if problems:
                 result['reasons']=problems
                 result['actions']=['Abrir una copia con permisos legítimos o conservar el documento firmado.']

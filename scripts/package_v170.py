@@ -19,6 +19,8 @@ SUITE = 'v' + __version__.replace('.', '')
 
 
 def prepare():
+    if int(__version__.split('.')[0])>=3:
+        raise SystemExit('Utiliza scripts/package_v300.py; este protocolo histórico no acredita las mejoras 3.0.0.')
     binding = read(ROOT / f'output/{SUITE}-source-tests.json')
     xml = ROOT / f'output/pytest-{SUITE}-results.xml'
     assert binding['exit_code'] == 0 and binding['source_unchanged']

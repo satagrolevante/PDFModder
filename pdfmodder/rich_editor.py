@@ -11,7 +11,7 @@ from hashlib import sha256
 from PySide6.QtCore import QByteArray, Qt, Signal, QSignalBlocker
 from PySide6.QtGui import (QColor, QFont, QFontDatabase, QKeySequence, QRawFont, QShortcut, QTextBlockFormat,
                           QTextCharFormat, QTextCursor, QTextFormat, QTextOption)
-from PySide6.QtWidgets import (QColorDialog, QComboBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox,
     QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QToolButton,
     QVBoxLayout, QStyle)
 
@@ -153,7 +153,7 @@ class PageEditor(QTextEdit):
         toolbar=self.toolbar
         for control in (toolbar.font_box,toolbar.size_box,toolbar.bold,toolbar.italic,
                         toolbar.underline,toolbar.color,toolbar.spacing,toolbar.paragraph_panel,
-                        toolbar.pdf_button,toolbar.accept):
+                        toolbar.typography_panel,toolbar.typography_toggle,toolbar.pdf_button,toolbar.accept):
             control.setEnabled(not accepting)
 
     def load_payload(self, payload, catalog=None, zoom=1.):
@@ -213,6 +213,37 @@ class PageEditor(QTextEdit):
         name = style.get('font_name')
         key = (name, style.get('font_xref'))
         face = self._faces.get(key)
+        if style.get('font_axes') and style.get('font_file'):
+            # Freeze the same coordinates used by the worker instead of asking
+            # Qt to choose a nearby named variation.
+            axis_key = (name, style.get('font_file'), tuple(sorted(style['font_axes'].items())))
+            face = self._faces.get(axis_key)
+            if face is None:
+                try:
+                    from pathlib import Path
+                    from io import BytesIO
+                    from fontTools.ttLib import TTFont
+                    from .fonts import instantiate_variable_font, _font_metadata
+                    data, _ = instantiate_variable_font(Path(style['font_file']).read_bytes(), style['font_axes'])
+                    # QFont selects by family/style, so two static instances
+                    # with identical names would otherwise share one preview.
+                    # Rename only these Qt preview bytes; the worker embeds the
+                    # verified original instance with its declared identity.
+                    with TTFont(BytesIO(data)) as preview:
+                        suffix = ' PMV' + sha256(data).hexdigest()[:10]
+                        for item in list(preview['name'].names):
+                            if item.nameID in (1, 4, 6, 16):
+                                value = item.toUnicode() + suffix
+                                preview['name'].setName(value.replace(' ', '') if item.nameID == 6 else value,
+                                                        item.nameID, item.platformID, item.platEncID, item.langID)
+                        output = BytesIO()
+                        preview.save(output)
+                        data = output.getvalue()
+                    face = register_face(dict(buffer=data, metadata=_font_metadata(data, name)))
+                    if face:
+                        self._faces[axis_key] = face
+                except (ValueError, OSError, RuntimeError):
+                    self._missing_fonts.add(str(name or 'sin identificar'))
         if face is None and not style.get('font_xref'):
             entry = next((e for e in self._catalog if e.get('name') == name), None)
             face = register_face(entry) if entry else None
@@ -242,6 +273,7 @@ class PageEditor(QTextEdit):
     def paragraph_format(self, values):
         fmt = QTextBlockFormat()
         fmt.setProperty(PARAGRAPH_PROPERTY, deepcopy(values))
+        fmt.setLayoutDirection({'ltr': Qt.LeftToRight, 'rtl': Qt.RightToLeft}.get(values.get('direction'), Qt.LayoutDirectionAuto))
         fmt.setAlignment({'left': Qt.AlignLeft, 'center': Qt.AlignHCenter,
                           'right': Qt.AlignRight, 'justify': Qt.AlignJustify}.get(values.get('alignment'), Qt.AlignLeft))
         for name, setter in [('left_indent', fmt.setLeftMargin), ('right_indent', fmt.setRightMargin),
@@ -267,7 +299,7 @@ class PageEditor(QTextEdit):
         return result
 
     def merge_style(self, **values):
-        if not self.rich_mode:
+        if not self.rich_mode or self.isReadOnly():
             return
         cursor = self.textCursor()
         start, end = cursor.selectionStart(), cursor.selectionEnd()
@@ -312,10 +344,12 @@ class PageEditor(QTextEdit):
             self.notice.emit('No se puede cargar la variante exacta para mostrarla. Elige una fuente TTF/OTF disponible.'); return False
         self._faces[(entry['name'], None)] = face
         self.merge_style(font_name=entry['name'], font_file=entry.get('path') or entry.get('font_file'),
-                         font_xref=None, font_resource=None)
+                         font_xref=None, font_resource=None, font_axes=deepcopy(entry.get('font_axes') or {}))
         return True
 
     def merge_paragraph(self, **values):
+        if not self.rich_mode or self.isReadOnly():
+            return
         cursor = self.textCursor()
         cursor.beginEditBlock()
         block = self.document().findBlock(cursor.selectionStart())
@@ -374,7 +408,15 @@ class PageEditor(QTextEdit):
             return max(r[0]-x, 0, x-r[2]) ** 2 + 4 * max(r[1]-y, 0, y-r[3]) ** 2
         closest = min(self._original_carets, key=distance)
         rect = closest['bbox']
-        index = int(closest['index']) + (1 if x > (rect[0]+rect[2])/2 else 0)
+        if 'cluster_start' in closest:
+            # A ligature/combining sequence has one geometric hit region;
+            # preserve the cluster boundary rather than split a PDF code.
+            after = x > (rect[0]+rect[2])/2
+            if closest.get('rtl'):
+                after = not after
+            index = int(closest['cluster_end'] if after else closest['cluster_start'])
+        else:
+            index = int(closest['index']) + (1 if x > (rect[0]+rect[2])/2 else 0)
         # Engine indices count Unicode code points; Qt cursor positions count
         # UTF-16 units (a non-BMP character consumes two).
         text=''.join(run.get('text','') for run in self._payload.get('runs',[]))
@@ -429,6 +471,8 @@ class EditorToolbar(QFrame):
         row.addWidget(self.spacing)
         self.paragraph_toggle = self._button('¶', self._toggle_paragraph, 'Sangrías, tabulaciones e interlineado')
         row.addWidget(self.paragraph_toggle)
+        self.typography_toggle = self._button('Tipografía', self._toggle_typography, 'Ligaduras, kerning y ejes de fuentes variables')
+        row.addWidget(self.typography_toggle)
         layout.addLayout(row)
         self.paragraph_panel = QFrame()
         grid = QGridLayout(self.paragraph_panel)
@@ -450,6 +494,12 @@ class EditorToolbar(QFrame):
             self.align.addItem(label, value)
         self.align.activated.connect(lambda _: editor.merge_paragraph(alignment=self.align.currentData()))
         grid.addWidget(self.align, 2, 0, 1, 2)
+        self.direction = QComboBox()
+        self.direction.setObjectName('inlineTextDirection')
+        for label, value in [('Dirección automática', 'auto'), ('Izquierda a derecha', 'ltr'), ('Derecha a izquierda', 'rtl')]:
+            self.direction.addItem(label, value)
+        self.direction.activated.connect(lambda _: editor.merge_paragraph(direction=self.direction.currentData()))
+        grid.addWidget(self.direction, 3, 0, 1, 3)
         from PySide6.QtWidgets import QLineEdit
         self.tabs = QLineEdit()
         self.tabs.setObjectName('inlineTabStops')
@@ -458,6 +508,28 @@ class EditorToolbar(QFrame):
         grid.addWidget(self.tabs, 2, 2, 1, 4)
         layout.addWidget(self.paragraph_panel)
         self.paragraph_panel.hide()
+        self.typography_panel = QFrame()
+        advanced = QVBoxLayout(self.typography_panel)
+        advanced.setContentsMargins(0, 2, 0, 2)
+        features = QHBoxLayout()
+        self.ligatures = QCheckBox('Ligaduras')
+        self.ligatures.setObjectName('inlineLigatures')
+        self.kerning = QCheckBox('Kerning')
+        self.kerning.setObjectName('inlineKerning')
+        for checkbox, tag in ((self.ligatures, 'liga'), (self.kerning, 'kern')):
+            checkbox.setChecked(True)
+            checkbox.setToolTip('Composición OpenType con fuente TTF/OTF completa; se valida al aplicar')
+            checkbox.toggled.connect(lambda checked, feature=tag: self._feature_changed(feature, checked))
+            features.addWidget(checkbox)
+        advanced.addLayout(features)
+        self.axes_panel = QFrame()
+        self.axes_grid = QGridLayout(self.axes_panel)
+        self.axes_grid.setContentsMargins(0, 0, 0, 0)
+        self.axis_controls = {}
+        self._axes_signature = None
+        advanced.addWidget(self.axes_panel)
+        layout.addWidget(self.typography_panel)
+        self.typography_panel.hide()
         actions = QHBoxLayout()
         self.accept = QPushButton('Aceptar · Ctrl+Intro')
         self.accept.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
@@ -492,7 +564,7 @@ class EditorToolbar(QFrame):
             shortcut.activated.connect(callback)
 
     def accept_draft(self):
-        for control in (self.size_box,self.spacing,*self.paragraph_controls.values()):
+        for control in (self.size_box,self.spacing,*self.paragraph_controls.values(),*self.axis_controls.values()):
             # Clicking Aceptar may already have moved focus off the edited
             # spinbox; commit pending numeric text regardless of focus owner.
             control.interpretText()
@@ -529,7 +601,9 @@ class EditorToolbar(QFrame):
         if not self.editor.rich_mode:
             return
         style = self.editor.current_style()
-        entry = next((e for e in self.editor._catalog if e.get('name') == style.get('font_name')), {})
+        path = style.get('font_file')
+        entry = next((e for e in self.editor._catalog if e.get('name') == style.get('font_name')
+                      and (not path or (e.get('path') or e.get('font_file')) == path)), {})
         for control, value in [(self.size_box, style.get('size', 12)), (self.spacing, style.get('char_spacing', 0))]:
             with QSignalBlocker(control):
                 control.setValue(float(value or 0))
@@ -537,7 +611,8 @@ class EditorToolbar(QFrame):
                                 (self.underline, style.get('underline', False))]:
             with QSignalBlocker(control):
                 control.setChecked(bool(value))
-        index = next((i for i in range(self.font_box.count()) if self.font_box.itemData(i).get('name') == style.get('font_name')), -1)
+        index = next((i for i in range(self.font_box.count()) if self.font_box.itemData(i).get('name') == style.get('font_name')
+                      and (not path or (self.font_box.itemData(i).get('path') or self.font_box.itemData(i).get('font_file')) == path)), -1)
         with QSignalBlocker(self.font_box):
             self.font_box.setCurrentIndex(index)
             self.font_box.setPlaceholderText(style.get('font_name') or 'Fuente original')
@@ -547,6 +622,12 @@ class EditorToolbar(QFrame):
                 control.setValue(float(paragraph.get(key) or 0))
         with QSignalBlocker(self.align):
             self.align.setCurrentIndex(max(0, self.align.findData(paragraph.get('alignment', 'left'))))
+        with QSignalBlocker(self.direction):
+            self.direction.setCurrentIndex(max(0, self.direction.findData(paragraph.get('direction', 'auto'))))
+        for checkbox, feature in ((self.ligatures, 'liga'), (self.kerning, 'kern')):
+            with QSignalBlocker(checkbox):
+                checkbox.setChecked(bool((style.get('font_features') or {}).get(feature, True)))
+        self._sync_axes(entry, style)
         if not self.tabs.hasFocus():
             self.tabs.setText('; '.join(f'{x:g}' for x in paragraph.get('tab_stops') or []))
         self.mode_label.setText('Formato del tramo' if self.editor.textCursor().hasSelection() else 'Escribir')
@@ -578,6 +659,41 @@ class EditorToolbar(QFrame):
     def _toggle_paragraph(self):
         self.paragraph_panel.setVisible(not self.paragraph_panel.isVisible())
         self.adjustSize()
+
+    def _toggle_typography(self):
+        self.typography_panel.setVisible(not self.typography_panel.isVisible())
+        self.adjustSize()
+
+    def _feature_changed(self, tag, checked):
+        features = dict(self.editor.current_style().get('font_features') or {})
+        features[tag] = int(checked)
+        self.editor.merge_style(font_features=features)
+
+    def _sync_axes(self, entry, style):
+        axes = entry.get('variation_axes') or []
+        signature = tuple((a['tag'], a['minimum'], a['default'], a['maximum']) for a in axes)
+        if signature != self._axes_signature:
+            while self.axes_grid.count():
+                item = self.axes_grid.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self.axis_controls = {}
+            for index, axis in enumerate(axes):
+                tag = axis['tag']
+                spin = self._spin(axis['minimum'], axis['maximum'], 3, '', 'inlineFontAxis_' + tag)
+                spin.valueChanged.connect(lambda value, field=tag: self._axis_changed(field, value))
+                self.axes_grid.addWidget(QLabel(tag), index // 3, (index % 3)*2)
+                self.axes_grid.addWidget(spin, index // 3, (index % 3)*2+1)
+                self.axis_controls[tag] = spin
+            self._axes_signature = signature
+        for axis in axes:
+            with QSignalBlocker(self.axis_controls[axis['tag']]):
+                self.axis_controls[axis['tag']].setValue(float((style.get('font_axes') or {}).get(axis['tag'], axis['default'])))
+
+    def _axis_changed(self, tag, value):
+        axes = dict(self.editor.current_style().get('font_axes') or {})
+        axes[tag] = value
+        self.editor.merge_style(font_axes=axes)
 
     def _tabs_changed(self):
         try:

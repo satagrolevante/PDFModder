@@ -68,16 +68,42 @@ def extract_page(doc, number, data=None):
     model=PageModel(number,page.rect.width,page.rect.height,page.rotation,tuple(page.rotation_matrix),
                     tuple(page.derotation_matrix),tuple(page.cropbox),glyphs,issues,
                     hashlib.sha256(data).hexdigest() if data else None)
+    if data is not None:
+        from .selection_v300 import boundaries_from_drawings
+        model.selection_boundaries = boundaries_from_drawings(page.get_drawings())
     from .lineflow import normalize_rebuilt_lines
     model=normalize_rebuilt_lines(model)
     if data and model.glyphs:
         from .clipping import annotate_font_resources
         model=annotate_font_resources(data,number,model)
+    from .typography_v300 import normalize_typography_model
+    model=normalize_typography_model(doc,number,model)
     return model
 
 
 def full_write(doc):
     return doc.tobytes(garbage=4, deflate=True, incremental=False, no_new_id=True)
+
+
+def _native_text_wrappers(page):
+    """Keep text graphics scopes intact instead of cleaning them by redaction.
+
+    MuPDF can leave an orphan ET when regional redaction removes a SHOW from
+    text wrapped in q/cm/Q inside BT. Detect the actual operators, including
+    documents without PDFModder metadata, and use the native compositor.
+    """
+    from pypdf.generic import ContentStream, DecodedStreamObject
+    stream = DecodedStreamObject()
+    stream.set_data(page.read_contents())
+    inside = False
+    for _, operator in ContentStream(stream, None).operations:
+        if operator == b'BT':
+            inside = True
+        elif operator == b'ET':
+            inside = False
+        elif inside and operator in (b'q', b'Q', b'cm'):
+            return True
+    return False
 
 
 def _style(g):
@@ -108,7 +134,7 @@ def _stroke_hits(drawing, rect):
     return False
 
 
-def _safe_selection(page, model, selected, *, preserve_paint_order=False):
+def _safe_selection(page, model, selected, *, preserve_paint_order=False, owned_auxiliary_ids=()):
     if model.issues:
         raise EditError('\n'.join(model.issues))
     if not selected:
@@ -116,7 +142,8 @@ def _safe_selection(page, model, selected, *, preserve_paint_order=False):
     paint_log=[] if preserve_paint_order else page.get_bboxlog()
     drawings={} if preserve_paint_order else {d['seqno']:d for d in page.get_drawings()}
     for g in selected:
-        if not g.reliable or g.text=='\ufffd' or (unicodedata.category(g.text).startswith('C') and g.text!='\u00ad'):
+        if not g.reliable or ((g.text=='\ufffd' or (unicodedata.category(g.text).startswith('C') and g.text!='\u00ad'))
+                              and g.id not in owned_auxiliary_ids):
             raise EditError("Codificación, ligadura o dirección del texto no reconstruible con garantías.")
         if abs(g.direction[0]-1)>1e-5 or abs(g.direction[1])>1e-5:
             raise EditError("Texto con orientación propia: sólo se edita texto horizontal; la rotación de página sí se admite.")
@@ -337,7 +364,7 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
             return output,report
     with fitz.open(stream=data,filetype='pdf') as source:
         if source[request.page].get_xobjects():
-            issues=document_issues(data,source)
+            issues=document_issues(data,source,operation="content")
             if issues:
                 raise EditError('\n'.join(issues))
             from .form_instances_v200 import isolate_selected_forms
@@ -361,7 +388,7 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
     if request.revision and request.revision!=hashlib.sha256(data).hexdigest():
         raise EditError("El documento cambió desde la selección. Selecciona el texto de nuevo.")
     with fitz.open(stream=data,filetype='pdf') as doc:
-        issues=document_issues(data,doc)
+        issues=document_issues(data,doc,operation="content")
         if issues:
             raise EditError('\n'.join(issues))
         model=extract_page(doc,request.page,data)
@@ -393,7 +420,7 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
                 return False
             base=doc.xref_get_key(glyph.font_xref,'BaseFont')[1].lstrip('/')
             return len(base)>7 and base[6]=='+' and base[:6].isalpha() and base[:6].isupper()
-        if any(partial_cid(g) for g in selected):
+        if any(partial_cid(g) for g in selected) or _native_text_wrappers(doc[request.page]):
             from .native_panel import edit_native_panel
             return edit_native_panel(data,request,model,resolver)
         from .clipping import CLIP_ISSUE,edit_clipped_text
@@ -510,7 +537,7 @@ def atomic_save(data, destination, source=None):
     temporary=None
     try:
         with fitz.open(stream=data,filetype='pdf') as doc:
-            issues=document_issues(data,doc)
+            issues=document_issues(data,doc,operation="content")
             if issues:
                 raise EditError('\n'.join(issues))
             output=full_write(doc)

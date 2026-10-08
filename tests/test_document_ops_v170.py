@@ -100,14 +100,17 @@ def test_form_metadata_session_save_preserves_fields_and_original(document,tmp_p
     (tmp_path/'history').mkdir()
     session=Session(source,config_path=tmp_path/'fonts.json',history_dir=tmp_path/'history')
     try:
-        assert session.issues and not session.state()['metadata_only_save']
+        assert not session.issues and not session.state()['metadata_only_save']
         candidate,report=update_document_metadata(session.history.current,{'title':'Propiedades sin tocar campos'})
         session._put_preview(candidate,report);session.commit()
-        assert session.state()['metadata_only_save']
+        assert session._metadata_only_history()
+        assert not session.state()['metadata_only_save']
         target=tmp_path/'metadata-copy.pdf'
         session.save(target)
         assert source.read_bytes()==document and not session.state()['dirty']
         _assert_preserved(document,target.read_bytes())
+        from pdfmodder.validation import assert_form_preservation
+        assert_form_preservation(document,target.read_bytes())
         assert document_properties(target.read_bytes())['metadata']['title']=='Propiedades sin tocar campos'
         session.navigate_history()
         assert not session.state()['metadata_only_save']

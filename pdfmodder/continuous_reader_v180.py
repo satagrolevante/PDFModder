@@ -1,6 +1,6 @@
 """Bounded, page-continuous reading surface. It never edits PDF content."""
 from collections import OrderedDict
-from math import sqrt
+from math import isfinite, sqrt
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPen, QPixmap
@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 
 from .model import transform, transform_rect, union
 from .reading_order_v180 import ordered_glyphs, ordered_lines, selection_text
+from .page_layout_v300 import PageLayoutV300, PageTopsV300
 
 
 class ContinuousReader(QGraphicsView):
@@ -35,7 +36,9 @@ class ContinuousReader(QGraphicsView):
         self.zoom = 1.25
         self._geometries = []
         self._rects = []
-        self._placeholders = []
+        self._placeholders = {}
+        self._page_tops = []
+        self._exact_geometries = set()
         self._images = OrderedDict()
         self._models = OrderedDict()
         self._loaded_zooms = {}
@@ -80,43 +83,79 @@ class ContinuousReader(QGraphicsView):
         self._search_matches = []
         self._pending_reveal = None
         self.scene().clear()
-        self._placeholders = []
-        self._geometries = [(float(p["width"]), float(p["height"])) for p in page_geometries]
-        if any(width <= 0 or height <= 0 for width, height in self._geometries):
+        self._placeholders = {}
+        self._exact_geometries = set()
+        if isinstance(page_geometries,dict):
+            default=page_geometries.get('default_geometry',{'width':595.,'height':842.})
+            self._geometries=[(float(default['width']),float(default['height']))]*int(page_geometries['page_count'])
+            for number,geometry in page_geometries.get('geometries',{}).items():
+                number=int(number)
+                self._geometries[number]=(float(geometry['width']),float(geometry['height']))
+                self._exact_geometries.add(number)
+        else:
+            self._geometries = [(float(p["width"]), float(p["height"])) for p in page_geometries]
+            self._exact_geometries=set(range(len(self._geometries)))
+        if any(not isfinite(width) or not isfinite(height) or width <= 0 or height <= 0
+               for width, height in self._geometries):
             raise ValueError("Dimensiones de página no válidas.")
         self.zoom = max(.1, float(zoom))
         self._current_page = 0
         self._last_requested = None
-        for number in range(len(self._geometries)):
-            rectangle = self.scene().addRect(QRectF(), QPen(QColor("#bac1ca")), QColor("white"))
-            rectangle.setZValue(-2)
-            label = self.scene().addText(f"Página {number + 1}")
-            label.setDefaultTextColor(QColor("#7b8795"))
-            label.setZValue(-1)
-            self._placeholders.append((rectangle, label))
         self._layout_pages()
         self.verticalScrollBar().setValue(self.verticalScrollBar().minimum())
         self.selection_changed.emit(None)
         self._schedule_update()
 
     def _layout_pages(self):
-        self._rects = []
-        largest = max((width for width, _ in self._geometries), default=0.) * self.zoom
-        top = self.MARGIN
-        for number, (width, height) in enumerate(self._geometries):
-            rect = QRectF(self.MARGIN + (largest - width * self.zoom) / 2., top,
-                          width * self.zoom, height * self.zoom)
-            self._rects.append(rect)
-            rectangle, label = self._placeholders[number]
-            rectangle.setRect(rect)
-            label.setPos(rect.left() + 12., rect.top() + 10.)
-            top = rect.bottom() + self.GUTTER
-            if number in self._images:
-                self._place_image(number)
-        self.setSceneRect(QRectF(0., 0., largest + 2. * self.MARGIN,
-                                 max(0., top - self.GUTTER + self.MARGIN)))
+        self._rects=PageLayoutV300(self._geometries,self.zoom,self.MARGIN,self.GUTTER)
+        self._page_tops=PageTopsV300(self._rects)
+        self._refresh_layout_v300()
+
+    def _refresh_layout_v300(self):
+        for number in self._images:self._place_image(number)
+        self.setSceneRect(self._rects.bounds)
+        self._sync_placeholders_v300()
         self._draw_selection()
         self._draw_search()
+
+    def _sync_placeholders_v300(self):
+        """Keep graphics items for the viewport, not for every page in the PDF."""
+        visible=self.visible_page_numbers()[:self.MAX_VISIBLE_PAGES]
+        needed=set(visible)
+        for number in visible:
+            needed.update(range(max(0,number-1),min(len(self._rects),number+2)))
+        for number in set(self._placeholders)-needed:
+            for item in self._placeholders.pop(number):self.scene().removeItem(item)
+        for number in needed:
+            rect=self._rects[number]
+            if number not in self._placeholders:
+                rectangle=self.scene().addRect(QRectF(),QPen(QColor('#bac1ca')),QColor('white'))
+                rectangle.setZValue(-2)
+                label=self.scene().addText(f'Página {number+1}')
+                label.setDefaultTextColor(QColor('#7b8795'));label.setZValue(-1)
+                self._placeholders[number]=(rectangle,label)
+            rectangle,label=self._placeholders[number]
+            rectangle.setRect(rect);label.setPos(rect.left()+12.,rect.top()+10.)
+
+    def update_page_geometry_v300(self,number,width,height):
+        if not 0<=number<len(self._geometries):return
+        geometry=(float(width),float(height))
+        if any(not isfinite(value) or value<=0 for value in geometry):
+            raise ValueError('Dimensiones de página no válidas.')
+        self._exact_geometries.add(number)
+        if self._geometries[number]==geometry:return
+        # Correct estimates while keeping the user's visible PDF position.
+        center=self.mapToScene(self.viewport().rect().center())
+        anchor_page=self._page_at(center,nearest=True)
+        rect=self._rects[anchor_page] if anchor_page is not None else None
+        relative=((center.x()-rect.left())/self.zoom,(center.y()-rect.top())/self.zoom) if rect else None
+        self._rects.update(number,geometry)
+        self._refresh_layout_v300()
+        if relative is not None:
+            rect=self._rects[anchor_page]
+            self.centerOn(rect.left()+relative[0]*self.zoom,rect.top()+relative[1]*self.zoom)
+        self._last_requested=None
+        self._schedule_update()
 
     def _place_image(self, number):
         pixmap, item, _ = self._images[number]
@@ -128,6 +167,7 @@ class ContinuousReader(QGraphicsView):
     def set_page(self, number, png, model, zoom):
         if number < 0 or number >= len(self._geometries):
             return
+        if model is not None:self.update_page_geometry_v300(number,model.width,model.height)
         pixmap = QPixmap()
         if not pixmap.loadFromData(png, "PNG"):
             raise ValueError("No se pudo mostrar la página renderizada.")
@@ -212,10 +252,14 @@ class ContinuousReader(QGraphicsView):
             self._update_timer.start(0)
 
     def visible_page_numbers(self):
+        if not self._rects:return []
         visible = self.mapToScene(self.viewport().rect()).boundingRect()
-        return [number for number, rect in enumerate(self._rects) if rect.intersects(visible)]
+        first=max(0,self._rects.page_at_y(visible.top()))
+        last=min(len(self._rects),self._rects.page_at_y(visible.bottom())+1)
+        return [number for number in range(first,last) if self._rects[number].intersects(visible)]
 
     def _viewport_changed(self):
+        self._sync_placeholders_v300()
         visible = self.mapToScene(self.viewport().rect()).boundingRect()
         pages = self.visible_page_numbers()
         if pages:
@@ -273,11 +317,12 @@ class ContinuousReader(QGraphicsView):
             del self._models[min(candidates, key=priority)]
 
     def _page_at(self, point, nearest=False):
-        for number, rect in enumerate(self._rects):
-            if rect.contains(point):
-                return number
+        if not self._rects:return None
+        number=self._rects.page_at_y(point.y())
+        if 0<=number<len(self._rects) and self._rects[number].contains(point):return number
         if nearest and self._rects:
-            return min(range(len(self._rects)),
+            candidates={max(0,min(len(self._rects)-1,number)),max(0,min(len(self._rects)-1,number+1))}
+            return min(candidates,
                        key=lambda n: max(self._rects[n].top() - point.y(), 0.,
                                          point.y() - self._rects[n].bottom()))
         return None
@@ -343,7 +388,8 @@ class ContinuousReader(QGraphicsView):
     def selected_ids(self, number):
         endpoints = self.selection_endpoints()
         model = self._models.get(number)
-        if endpoints is None or model is None or number not in self.selected_page_numbers():
+        if (endpoints is None or model is None or
+            not endpoints['start']['page']<=number<=endpoints['end']['page']):
             return []
         glyphs = ordered_glyphs(model)
         positions = {g.id: i for i, g in enumerate(glyphs)}
@@ -518,9 +564,9 @@ class ContinuousReader(QGraphicsView):
         endpoints = self.selection_endpoints()
         if not endpoints:
             return
-        for page in self.selected_page_numbers():
+        for page in self.visible_page_numbers():
             model = self._models.get(page)
-            if model is None or page not in self.visible_page_numbers():
+            if model is None or not endpoints['start']['page']<=page<=endpoints['end']['page']:
                 continue
             selected = set(self.selected_ids(page))
             rect = self._rects[page]

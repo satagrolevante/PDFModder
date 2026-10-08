@@ -109,12 +109,21 @@ def line_window(qtbot,tmp_path):
     window.close()
 
 
-def settled(qtbot,window):
+def settled(qtbot,window,*,allow_document_issues=False):
     qtbot.waitUntil(lambda:not window.busy and not getattr(window,'_rich_loading',False)
                    and not getattr(window,'_rich_accept_pending',False)
                    and getattr(window,'_rich_pending',None) is None
+                   and getattr(window,'_save_transaction_v300',None) is None
                    and not (getattr(window,'_rich_active',False) and window._rich_timer.isActive()),timeout=30000)
-    assert not window.last_error,window.last_error
+    if window.last_error:
+        assert allow_document_issues and window.last_error in window.state.get('issues',[]),window.last_error
+    if window.application_mode=='reading' and window.model is not None:
+        window._tools_mode_v171(True)
+        qtbot.waitUntil(lambda:window.application_mode=='editing' and not window.busy
+                       and not window._mode_preparing_v171 and window.model is not None
+                       and bool(window.model.revision),timeout=30000)
+        if window.last_error:
+            assert allow_document_issues and window.last_error in window.state.get('issues',[]),window.last_error
 
 
 def glyph_for(window,word):
@@ -158,7 +167,7 @@ def test_line_adjustment_request_scope_and_explicit_full_line_area(qtbot,line_wi
     assert not window._request(text="otro texto",formatting=True,adjust_line=True).line_reflow
 
 
-def test_legacy_line_preview_cancel_then_word_preview_during_thumbnail_commit_save(qtbot,line_window,tmp_path):
+def test_legacy_line_draft_cancel_then_word_accept_during_thumbnail_save(qtbot,line_window,tmp_path):
     window,source=line_window
     original=source.read_bytes()
     original_revision=window.model.revision
@@ -166,18 +175,17 @@ def test_legacy_line_preview_cancel_then_word_preview_during_thumbnail_commit_sa
     line=window.model.group(first,"line")
     original_bounds=union(g.bbox for g in window.model.selected(line))
     window.canvas.set_selection(line)
-    # The explicit legacy route retains justified-line redistribution and
-    # its two-step preview. Rich editing is exercised by test_ui.py.
+    # The legacy route retains justified-line redistribution. Cancel a draft
+    # before acceptance, then accept a word as one operation while busy.
     window.start_legacy_edit()
     assert window.canvas.ids==line
     assert window.canvas.editor.isVisible()
     assert window.line_reflow_box.isEnabled()  # Can opt out while typing.
     qtbot.keyClick(window.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
     qtbot.keyClicks(window.canvas.editor,"Inicio amplio final")
-    qtbot.keyClick(window.canvas.editor,Qt.Key_Return,modifier=Qt.ControlModifier)
-    settled(qtbot,window)
-    assert window.state["preview"] and window.state["history_index"]==0
-    assert "amplio" in "".join(g.text for g in window.model.glyphs)
+    assert window.canvas.editor.toPlainText()=="Inicio amplio final"
+    assert not window.state["preview"] and window.state["history_index"]==0
+    assert "breve" in "".join(g.text for g in window.model.glyphs)
     qtbot.mouseClick(window.cancel_button,Qt.LeftButton)
     settled(qtbot,window)
     assert not window.state["preview"] and window.model.revision==original_revision
@@ -214,12 +222,9 @@ def test_legacy_line_preview_cancel_then_word_preview_during_thumbnail_commit_sa
     window.poller.start()
     settled(qtbot,window)
     assert window._pending_text_preview is None
-    assert window.state["preview"] and window.state["history_index"]==0
-    assert "extenso" in "".join(g.text for g in window.model.glyphs)
-    qtbot.mouseClick(window.commit_button,Qt.LeftButton)
-    settled(qtbot,window)
     assert window.state["history_index"]==1
     assert not window.state["preview"]
+    assert "extenso" in "".join(g.text for g in window.model.glyphs)
     output=tmp_path/"line-edited.pdf"
     window.save_as(output)
     settled(qtbot,window)
@@ -280,13 +285,10 @@ def test_tagged_justified_word_can_be_edited_again_after_save_and_reopen(qtbot,l
         qtbot.keyClicks(window.canvas.editor,new)
         qtbot.keyClick(window.canvas.editor,Qt.Key_Return,modifier=Qt.ControlModifier)
         settled(qtbot,window)
-        assert window.state["preview"] and window.state["history_index"]==0
+        assert not window.state["preview"] and window.state["history_index"]==1
         assert window.last_report["line_reflow"]
         assert window.last_report["accessibility"]["verified"]
         assert window.last_report["accessibility"]["logical_text_verified"]
-        qtbot.mouseClick(window.commit_button,Qt.LeftButton)
-        settled(qtbot,window)
-        assert window.state["history_index"]==1 and not window.state["preview"]
         output=tmp_path/f"tagged-line-edit-{number}.pdf"
         window.save_as(output)
         settled(qtbot,window)

@@ -45,6 +45,8 @@ def run(name, args, *, clean=False):
 
 
 def main():
+    if int(__version__.split('.')[0])>=3:
+        raise SystemExit('Utiliza scripts/release_v300.py para comprobar y construir PDF Modder 3.0.0.')
     global QA_HEADLESS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--start', choices=PHASES, default='source')

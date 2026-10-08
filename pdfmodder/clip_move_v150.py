@@ -81,7 +81,7 @@ def move_text_with_clip(data, request, model, mapped, tagged_move=None):
     others = [g for g in model.glyphs if g.id not in ids]
     clean = replace(model, issues=[i for i in model.issues if i != CLIP_ISSUE])
     with fitz.open(stream=data, filetype='pdf') as doc:
-        issues = document_issues(data, doc)
+        issues = document_issues(data, doc,operation="content")
         if issues:
             raise EditError('\n'.join(issues))
         _safe_selection(doc[request.page], clean, selected, preserve_paint_order=True)

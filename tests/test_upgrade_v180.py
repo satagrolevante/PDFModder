@@ -1,6 +1,7 @@
 """Update handoff and one-click UI, without network or launching installers."""
 import hashlib
 import json
+from types import SimpleNamespace
 
 from PySide6.QtWidgets import QWidget
 
@@ -38,6 +39,9 @@ def test_installed_and_portable_copies_are_distinguished(tmp_path):
 
 
 def test_handoff_targets_only_this_installation_and_verifies_installer_again(tmp_path, monkeypatch, qtbot):
+    # Exercise Windows handoff on every host without changing os.name globally
+    # (which would also change pathlib and pytest's own path handling).
+    monkeypatch.setattr(updates, 'os', SimpleNamespace(name='nt', fdopen=updates.os.fdopen))
     directory = installed(tmp_path / 'Anterior')
     updater = ready_updater(tmp_path)
     calls = []
@@ -57,6 +61,7 @@ def test_handoff_targets_only_this_installation_and_verifies_installer_again(tmp
 
 
 def test_portable_update_never_requests_removal_of_other_versions(tmp_path, monkeypatch, qtbot):
+    monkeypatch.setattr(updates, 'os', SimpleNamespace(name='nt', fdopen=updates.os.fdopen))
     updater = ready_updater(tmp_path)
     calls = []
     monkeypatch.setattr(updates.subprocess, 'Popen', lambda *args, **kwargs: calls.append(args[0]))

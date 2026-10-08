@@ -6,7 +6,8 @@ from PIL import Image
 from PySide6.QtCore import Qt,QTimer
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import QApplication,QFileDialog
-from test_ui_line_edit import line_window,settled
+from test_ui_line_edit import line_window
+from test_ui import settled
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -31,7 +32,7 @@ def test_visible_text_with_ocr_preview_has_no_stale_hidden_date(qtbot,line_windo
     assert window.last_report['ocr_cleanup']['verified']
     assert 'duplicado OCR' in window.message.text()
     assert '10/09/2026' not in ''.join(g.text for g in window.model.glyphs)
-    qtbot.mouseClick(window.apply_step_button,Qt.LeftButton);settled(qtbot,window)
+    assert not window.state['preview'] and window.state['history_index']==1
     target=tmp_path/'visible-ocr.pdf';window.save_as(target);settled(qtbot,window)
     with fitz.open(target) as doc:
         assert doc[0].search_for('11/09/2026') and not doc[0].search_for('10/09/2026')
@@ -56,7 +57,7 @@ def test_hidden_ocr_element_requires_explicit_mode_and_preserves_scan_pixels(qtb
     assert window.last_report['appearance_unchanged']
     assert window.last_report['ocr_mode']=='searchable'
     assert 'imagen' in window.message.text().lower()
-    qtbot.mouseClick(window.apply_step_button,Qt.LeftButton);settled(qtbot,window)
+    assert not window.state['preview'] and window.state['history_index']==1
     target=tmp_path/'ocr-buscable.pdf';window.save_as(target);settled(qtbot,window)
     with fitz.open(source) as old,fitz.open(target) as new:
         assert old[0].get_pixmap().samples==new[0].get_pixmap().samples
@@ -75,11 +76,17 @@ def test_image_context_exports_then_dialog_crops_rotates_replaces_one_instance(q
     errors=[]
     def choose_export():
         menu=QApplication.activePopupWidget()
-        try:qtbot.mouseClick(menu,Qt.LeftButton,pos=menu.actionGeometry(menu.actions()[0]).center())
-        except Exception as exc:errors.append(exc);menu.close()
+        try:
+            assert menu is not None and menu.objectName()=='imageContextMenu'
+            action=next(action for action in menu.actions() if action.text()=='Guardar / exportar imagen…')
+            qtbot.mouseClick(menu,Qt.LeftButton,pos=menu.actionGeometry(action).center())
+        except Exception as exc:
+            errors.append(exc)
+            if menu is not None:menu.close()
     QTimer.singleShot(0,choose_export)
     event=QContextMenuEvent(QContextMenuEvent.Mouse,point,window.canvas.viewport().mapToGlobal(point))
     QApplication.sendEvent(window.canvas.viewport(),event)
+    qtbot.waitUntil(lambda:export.is_file() or bool(errors) or bool(window.last_error),timeout=30000)
     settled(qtbot,window)
     assert not errors and export.is_file()
     assert Image.open(export).size==(180,120)

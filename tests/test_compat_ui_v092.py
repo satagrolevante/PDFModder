@@ -61,10 +61,6 @@ def test_table_text_is_editable_by_page_and_properties(qtbot, compatibility_wind
         assert window.preview_button.isEnabled()
         qtbot.mouseClick(window.preview_button, Qt.LeftButton)
         settled(qtbot, window)
-        assert window.state['preview'] and window.state['history_index'] == 0
-        assert window.commit_button.isEnabled()
-        qtbot.mouseClick(window.commit_button, Qt.LeftButton)
-        settled(qtbot, window)
     assert window.state['history_index'] == 1 and not window.state['preview']
     assert window.last_report['verified']
     saved = tmp_path / f'edited-{route}.pdf'

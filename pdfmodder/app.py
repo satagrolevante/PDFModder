@@ -38,6 +38,10 @@ from .continuous_reader_v180 import ContinuousReader
 from .workspace_v200 import WorkspaceV200Mixin
 from .printing_v200 import PrintingV200Mixin
 from .tools_v200 import FormsRedactionMixin
+from .progressive_ui_v300 import PageListV300, ProgressiveOpeningV300Mixin
+from .saving_ui_v300 import SavingV300Mixin
+from .object_ui_v300 import ObjectEditorV300Mixin
+from .compatibility_ui_v300 import CompatibilityUiV300Mixin
 from . import __version__
 
 
@@ -196,7 +200,7 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
         self.edit_steps.hide()
         outer.addWidget(self.edit_steps)
         splitter = QSplitter()
-        self.pages = QListWidget()
+        self.pages = PageListV300()
         self.pages.setObjectName("pageList")
         self.pages.setMinimumWidth(110)
         self.pages.setMaximumWidth(200)
@@ -360,6 +364,9 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
             self.toolbar.insertAction(clipboard_anchor,action)
         self._create_reading_ui_v171()
         self._init_workspace_v200()
+        self._init_saving_v300()
+        self._init_object_editor_v300()
+        self._init_compatibility_v300()
         self._init_printing_v200()
         self.setup_forms_redaction_v200()
 
@@ -548,15 +555,7 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
             self.compare_action.setChecked(False)
             self._search_matches = []
             self.canvas.search_rects = []
-            self.pages.blockSignals(True)
-            self.pages.clear()
-            for index in range(self.state["page_count"]):
-                item = QListWidgetItem(f"Página {index+1}")
-                item.setSizeHint(QSize(118,158))
-                item.setTextAlignment(Qt.AlignHCenter)
-                self.pages.addItem(item)
-            self.pages.setCurrentRow(0)
-            self.pages.blockSignals(False)
+            self._populate_pages_v300(self.state['page_count'],0)
             if self.state.get('issues'):
                 self._error('\n'.join(self.state['issues']))
             elif self.application_mode == 'reading':
@@ -750,10 +749,14 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
 
     def start_edit(self):
         from .clipping import CLIP_ISSUE
+        from .ocr import overlapping_hidden_ids
         tagged_clipped = bool(self.state.get('tagged') and self.model and CLIP_ISSUE in self.model.issues)
-        if (self.state.get('tagged') and not tagged_clipped) or (self.model and any(g.mode==3 for g in self.model.glyphs)):
+        selected=self.model.selected(self.canvas.ids) if self.model else []
+        has_ocr=bool(selected and (any(g.mode==3 for g in selected)
+            or overlapping_hidden_ids(self.model,selected)))
+        if (self.state.get('tagged') and not tagged_clipped) or has_ocr:
             self.start_legacy_edit()
-            self._notice('Esta selección utiliza la edición conservadora de etiquetas/OCR. Ctrl+Intro genera la vista previa y «Aplicar» confirma; el formato por fragmentos no se aplica a esta capa.')
+            self._notice('Esta selección conserva sus etiquetas o corrige la capa OCR existente. «Aceptar» valida y aplica el cambio; el formato por fragmentos no se aplica a esta capa.')
             return
         return self.start_rich_edit()
 
@@ -762,7 +765,7 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
             return
         self.canvas.start_editor(self.content.toPlainText())
         self._editing_context=(self.page_number,self.model.revision,tuple(self.canvas.ids))
-        self._notice('Escribe en el cuadro. Pulsa «1. Ver vista previa» arriba o Ctrl+Intro; después «2. Aplicar cambio». Escape cancela.')
+        self._notice('Escribe en el cuadro. Pulsa «Aceptar» o Ctrl+Intro para validar y aplicar el cambio. Escape cancela.')
         self._refresh_actions()
 
     def _line_reflow_available(self):
@@ -829,7 +832,7 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
             self.page_number=0
             self._restore_ids=self._restore_regions=None
             self._thumbnail_pages.clear();self._thumbnail_order.clear()
-            for i in range(self.pages.count()):self.pages.item(i).setIcon(QIcon())
+            self.pages.clear_icons()
         if (self.last_report or {}).get('operation','').startswith('image_'):
             regions=self.last_report.get('destination_regions',[])
             self._restore_image_rect=regions[-1] if regions else None
@@ -857,10 +860,9 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
         self.canvas.search_rects = []
         self._thumbnail_pages.clear()
         self._thumbnail_order.clear()
-        for index in range(self.pages.count()):
-            self.pages.item(index).setIcon(QIcon())
+        self.pages.clear_icons()
         removed=(self.last_report or {}).get('removed_bookmarks',[])
-        message="Cambio aplicado al PDF. Guardar como crea una copia validada."
+        message="Cambio aplicado al PDF. Pulsa «Guardar» para conservarlo en tu copia."
         if (self.last_report or {}).get('warning'):
             message+=' '+self.last_report['warning']
         if removed:
@@ -958,8 +960,7 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
         self.canvas.search_rects = []
         self._thumbnail_pages.clear()
         self._thumbnail_order.clear()
-        for index in range(self.pages.count()):
-            self.pages.item(index).setIcon(QIcon())
+        self.pages.clear_icons()
         self._submit(command,callback=lambda _:self.load_page())
 
     def choose_save(self):
@@ -1148,7 +1149,7 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
         event.accept()
 
 
-class MainWindow(WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
+class MainWindow(CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
     """New workspace interceptors precede the existing window implementation."""
 
 
@@ -1173,6 +1174,7 @@ def main(argv=None):
     group.add_argument("--smoke-v181",metavar="REPORT_JSON",help="Recorrido del ejecutable con actualizador corregido 1.8.1")
     group.add_argument("--smoke-v200", "--smoke-v202", "--smoke-v203", dest="smoke_v200",metavar="REPORT_JSON",help="Prueba dirigida del ejecutable: compatibilidad, aceptación, pestañas, historial y guardado")
     group.add_argument("--smoke-v201",metavar="REPORT_JSON",help="Prueba de edición e impresión con vista previa, sin enviar trabajos a impresoras físicas")
+    group.add_argument("--smoke-v300",metavar="REPORT_JSON",help="Prueba de apertura, selección, objetos, tipografía, guardado y cierre 3.0.0")
     args = parser.parse_args(argv)
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("PDF Modder")
@@ -1182,12 +1184,12 @@ def main(argv=None):
     if not application_icon.isNull():
         app.setWindowIcon(application_icon)
     initial = args.pdf
-    smoke_report=args.smoke_test or args.smoke_extended or args.smoke_tagged or args.smoke_clipped or args.smoke_v08 or args.smoke_v09 or args.smoke_compat or args.smoke_v150 or args.smoke_v160 or args.smoke_v161 or args.smoke_v162 or args.smoke_v170 or args.smoke_v171 or args.smoke_v180 or args.smoke_v181 or args.smoke_v200 or args.smoke_v201
+    smoke_report=args.smoke_test or args.smoke_extended or args.smoke_tagged or args.smoke_clipped or args.smoke_v08 or args.smoke_v09 or args.smoke_compat or args.smoke_v150 or args.smoke_v160 or args.smoke_v161 or args.smoke_v162 or args.smoke_v170 or args.smoke_v171 or args.smoke_v180 or args.smoke_v181 or args.smoke_v200 or args.smoke_v201 or args.smoke_v300
     if smoke_report and not initial:
         root = Path(getattr(sys,"_MEIPASS",Path(__file__).resolve().parents[1]))
         initial = str(root/"examples"/("compat-etiquetado-v091.pdf" if args.smoke_compat else "herramientas-v08.pdf" if args.smoke_v08 else "recortado.pdf" if args.smoke_clipped else "etiquetado.pdf" if args.smoke_tagged else "digital.pdf"))
-    if args.smoke_v200 or args.smoke_v201:
-        smoke_folder=Path(args.smoke_v200 or args.smoke_v201).resolve().parent
+    if args.smoke_v200 or args.smoke_v201 or args.smoke_v300:
+        smoke_folder=Path(args.smoke_v200 or args.smoke_v201 or args.smoke_v300).resolve().parent
         smoke_folder.mkdir(parents=True,exist_ok=True)
         window=MainWindow(config_path=smoke_folder/'v200-fonts.json',history_dir=smoke_folder/'v200-history')
     else:
@@ -1196,7 +1198,9 @@ def main(argv=None):
         window.setWindowIcon(application_icon)
     window.show()
     if smoke_report:
-        if args.smoke_v201:
+        if args.smoke_v300:
+            from .smoke_v300 import SmokeV300 as Smoke
+        elif args.smoke_v201:
             from .smoke_v201 import SmokeV201 as Smoke
         elif args.smoke_v200:
             from .smoke_v200 import SmokeV200 as Smoke

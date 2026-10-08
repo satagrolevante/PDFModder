@@ -48,7 +48,8 @@ def _match(g, record):
 
 def has_rich_metadata(data, page):
     with fitz.open(stream=data, filetype='pdf') as doc:
-        return bool(_read_metadata(doc, page))
+        from .typography_v300 import _records
+        return bool(_read_metadata(doc, page) or _records(doc, page))
 
 
 def _locate_underlines(operations, records):
@@ -196,6 +197,10 @@ def _catalog(shows, operations, resource):
 def selection_payload(data, page, ids, resolver=None):
     """Fuente real, estilos y cursores del PDF abierto; no modifica el documento."""
     resolver = resolver or FontResolver()
+    from .typography_v300 import selection_payload as shaped_selection
+    shaped = shaped_selection(data, page, ids, resolver)
+    if shaped is not None:
+        return shaped
     from .form_instances_v200 import isolate_selected_forms
     from .model import EditRequest
     isolated = isolate_selected_forms(data, EditRequest(page,tuple(ids)))
@@ -212,6 +217,9 @@ def selection_payload(data, page, ids, resolver=None):
         selected = model.selected(ids)
         if not selected or len(selected) != len(set(ids)):
             raise EditError('Selecciona texto del documento actual.')
+        from .typography_v300 import source_clusters
+        selected, advanced_source = source_clusters(data, page, model, ids)
+        ids = [g.id for g in selected]
         records = _read_metadata(doc,page)
         stored = [c for r in records for c in r.get('glyphs',[])]
         matching=next((r for r in records if len(r.get('glyphs',[]))==len(selected) and
@@ -242,7 +250,7 @@ def selection_payload(data, page, ids, resolver=None):
             state = _state_at(operations,show['operation'])
             spacing = float(existing.get('char_spacing',0)) if existing else 0.
             following=selected[position+1] if position+1<len(selected) else None
-            if not existing and following and following.line == glyph.line:
+            if not advanced_source and not existing and following and following.line == glyph.line:
                 gap = following.origin[0]-glyph.trace_bbox[2]
                 if abs(gap) < glyph.size: spacing=gap
             style = dict(font_name=glyph.font,font_file=None,font_xref=glyph.font_xref,
@@ -250,6 +258,8 @@ def selection_payload(data, page, ids, resolver=None):
                          opacity=glyph.opacity,underline=bool(existing and existing.get('underline')),
                          char_spacing=spacing,source_ascent=(glyph.origin[1]-glyph.bbox[1])/glyph.size,
                          source_descent=(glyph.bbox[3]-glyph.origin[1])/glyph.size)
+            if advanced_source:
+                style['font_features'] = {'liga': 1, 'kern': 1}
             if existing:
                 style['char_spacing'] = existing.get('char_spacing',0.)
             # Keep each physical style separate. The UI may coalesce identical
@@ -298,7 +308,7 @@ def _finite(value,label,minimum=None,maximum=None):
 
 
 def _paragraph(request,index):
-    result=dict(alignment='left',left_indent=0.,right_indent=0.,first_indent=0.,
+    result=dict(alignment='left',direction='auto',left_indent=0.,right_indent=0.,first_indent=0.,
                 line_spacing=0.,space_before=0.,space_after=0.,tab_stops=[],tab_interval=36.)
     for entry in request.paragraphs:
         if entry.get('index',index)==index:
@@ -309,6 +319,8 @@ def _paragraph(request,index):
     result['tab_stops']=sorted(set(_finite(v,'Tabulación',0,2000) for v in result['tab_stops']))
     if result['alignment'] not in ('left','center','right','justify'):
         raise EditError('Alineación desconocida.')
+    if result['direction'] not in ('auto', 'ltr', 'rtl'):
+        raise EditError('Dirección desconocida: elige automática, izquierda a derecha o derecha a izquierda.')
     return result
 
 
@@ -405,6 +417,14 @@ def edit_rich_pdf(data, request, resolver=None):
         output,report=edit_rich_pdf(data,replace(request,runs=canonical_runs),resolver)
         report['unicode_normalization']={'form':'NFC','detail':'Acentos compuestos dentro del mismo fragmento de formato; no se mezclan estilos.'}
         return output,report
+    from .typography_v300 import requires_shaping, edit_shaped_pdf, _records
+    with fitz.open(stream=data, filetype='pdf') as typography_probe:
+        owned = _records(typography_probe, request.page)
+        owned_selected = bool(owned and any(any(_match(g, saved) for saved in record['glyphs'])
+                              for record in owned for g in extract_page(typography_probe, request.page).selected(request.ids)))
+    if (requires_shaping(request.runs) or any(p.get('direction') == 'rtl' for p in request.paragraphs)
+            or owned_selected):
+        return edit_shaped_pdf(data, request, resolver)
     if not request.ids:
         return _add_rich_pdf(data,request,resolver)
     from .form_instances_v200 import isolate_selected_forms
@@ -415,7 +435,7 @@ def edit_rich_pdf(data, request, resolver=None):
         report['form_isolation'] = evidence
         return result, report
     with fitz.open(stream=data,filetype='pdf') as doc:
-        issues=document_issues(data,doc)
+        issues=document_issues(data,doc,operation="content")
         if issues:raise EditError('\n'.join(issues))
         model=extract_page(doc,request.page,data)
         selected=model.selected(request.ids)
@@ -756,7 +776,7 @@ def _add_rich_pdf(data,request,resolver):
         raise EditError('Define el cuadro donde quieres añadir el texto.')
     rect=tuple(_finite(v,'Posición') for v in request.rect)
     with fitz.open(stream=data,filetype='pdf') as doc:
-        issues=document_issues(data,doc)
+        issues=document_issues(data,doc,operation="content")
         if issues:raise EditError('\n'.join(issues))
         original_model=extract_page(doc,request.page,data)
         # A unique font resource name is unnecessary: the standard PDF face is
@@ -765,8 +785,8 @@ def _add_rich_pdf(data,request,resolver):
         anchored=doc.tobytes(garbage=0,deflate=True)
     with fitz.open(stream=anchored,filetype='pdf') as doc:
         anchor_model=extract_page(doc,request.page,anchored)
-        ids=[g.id for g in anchor_model.glyphs[len(original_model.glyphs):]]
-    if len(ids)!=1:raise EditError('No se pudo preparar el punto de inserción del texto nuevo.')
+        from .typography_v300 import insertion_anchor_ids
+        ids=insertion_anchor_ids(original_model,anchor_model)
     output,report=edit_rich_pdf(anchored,replace(request,ids=ids,revision=None),resolver)
     expected=original_model.glyphs+[Glyph(**g) for g in report['glyphs']]
     with fitz.open(stream=output,filetype='pdf') as doc:
@@ -783,6 +803,10 @@ def move_rich_pdf(data, request, resolver=None):
     from .objects import GROUP_KEY, _groups
     if request.revision and request.revision != hashlib.sha256(data).hexdigest():
         raise EditError('La selección está desactualizada. Selecciona el texto de nuevo.')
+    from .typography_v300 import move_shaped_pdf
+    shaped = move_shaped_pdf(data, request)
+    if shaped is not None:
+        return shaped
     from .form_instances_v200 import isolate_selected_forms
     isolated = isolate_selected_forms(data,request)
     if isolated is not None:
@@ -874,6 +898,8 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
     """Normal strict validator with an exact allowance for owned underlines."""
     from .validation import _canonical,related,assert_characters,trace_chars,assert_pixels,_ink_exclusions
     from .tagged import assert_structure
+    from .validation import assert_form_preservation, assert_content_outside_widgets, assert_text_object_structure
+    assert_form_preservation(before_data, after_data)
     def without_underlines(page,items):
         result=related(page)
         drawings=list(result['drawings'])
@@ -894,6 +920,9 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
             raise EditError('La edición alteró los marcadores.')
         for i in range(before.page_count):
             a,b=before[i],after[i]
+            if i == page_number:
+                assert_content_outside_widgets(a, [g.bbox for g in changed])
+                assert_content_outside_widgets(b, [g.bbox for g in changed])
             if (tuple(a.mediabox),tuple(a.cropbox),a.rotation)!=(tuple(b.mediabox),tuple(b.cropbox),b.rotation):
                 raise EditError('Cambió la geometría de una página.')
             if without_underlines(a,old_underlines if i==page_number else [])!=without_underlines(b,new_underlines if i==page_number else []):
@@ -906,6 +935,7 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
             # their hinting may expose an accent overhang MuPDF did not paint.
             pixels['verified_ink_regions']=list(dict.fromkeys(_ink_exclusions(a,excluded)+_ink_exclusions(b,excluded)))
             reports.append(pixels)
-    PdfReader(BytesIO(after_data),strict=True)
+    independent = PdfReader(BytesIO(after_data),strict=True)
+    assert_text_object_structure(after_data, reader=independent)
     assert_structure(before_data,after_data,tagged_expected)
     return dict(verified=True,pages=reports,independent_parser='pypdf')

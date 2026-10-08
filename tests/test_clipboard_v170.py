@@ -84,7 +84,9 @@ def test_native_input_shortcuts_take_priority_and_object_mime_roundtrip(qtbot,to
     window=tools_window
     backup=QMimeData()
     clipboard=QApplication.clipboard()
-    for name in clipboard.mimeData().formats():backup.setData(name,clipboard.mimeData().data(name))
+    original_mime=clipboard.mimeData()
+    if original_mime is not None:
+        for name in original_mime.formats():backup.setData(name,original_mime.data(name))
     try:
         window.search_box.setEnabled(True)
         window.search_box.setText('texto del campo')
@@ -98,4 +100,7 @@ def test_native_input_shortcuts_take_priority_and_object_mime_roundtrip(qtbot,to
         payload={'bundle':{'version':1,'kind':'image','image_bytes':b'bytes de prueba','rect':(0,0,10,20)}}
         assert mime_bundle_v170(bundle_mime_v170(payload))['image_bytes']==b'bytes de prueba'
     finally:
-        clipboard.setMimeData(backup)
+        if original_mime is None:
+            clipboard.clear()
+        else:
+            clipboard.setMimeData(backup)

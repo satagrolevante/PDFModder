@@ -22,11 +22,17 @@ def ordered_lines(model):
         # The baseline's direction also handles vertical and right-to-left
         # writing without sorting by arbitrary glyph identifiers.
         direction = group[0].direction
-        group.sort(key=lambda g: (g.origin[0] * direction[0] +
-                                  g.origin[1] * direction[1], g.id))
+        from .typography_v300 import logical_order
+        ranks = logical_order(model)
+        logical_group = group and all(g.id in ranks for g in group) and len({ranks[g.id][0] for g in group}) == 1
+        if logical_group:
+            group.sort(key=lambda g: ranks[g.id][1])
+        else:
+            group.sort(key=lambda g: (g.origin[0] * direction[0] +
+                                      g.origin[1] * direction[1], g.id))
         part = []
         for glyph in group:
-            if part and direction[0] > .8:
+            if part and direction[0] > .8 and not logical_group:
                 gap = glyph.bbox[0] - part[-1].bbox[2]
                 if gap > max(18., 2.5 * max(glyph.size, part[-1].size)):
                     lines.append(part)
@@ -86,6 +92,8 @@ def selection_text(model, start_id=None, end_id=None):
     start = positions[start_id] if start_id is not None else 0
     end = positions[end_id] if end_id is not None else len(glyphs) - 1
     start, end = sorted((start, end))
+    if model.logical_text_runs:
+        return model.text([g.id for g in glyphs[start:end + 1]])
     result, previous = [], None
     for glyph in glyphs[start:end + 1]:
         if previous is not None:

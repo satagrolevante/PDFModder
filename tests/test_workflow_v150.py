@@ -56,8 +56,13 @@ def workflow(qtbot, tmp_path):
 
 
 def click_tool(qtbot, window, name):
+    settled(qtbot, window)
     button = window.findChild(QToolButton, name)
     assert button is not None and button.isEnabled(), name
+    for section in (window.content_tools_section, window.format_tools_section,
+                    window.page_tools_section, window.advanced_tools_section):
+        if section.content.isAncestorOf(button) and not section.header.isChecked():
+            qtbot.mouseClick(section.header, Qt.LeftButton)
     window.tools_scroll.ensureWidgetVisible(button)
     qtbot.mouseClick(button, Qt.LeftButton)
 
@@ -67,6 +72,8 @@ def page_click(qtbot, window, point, double=False):
     pixel = window.canvas.viewport_point(point)
     assert window.canvas.viewport().rect().contains(pixel)
     (qtbot.mouseDClick if double else qtbot.mouseClick)(window.canvas.viewport(), Qt.LeftButton, pos=pixel)
+    if not double:
+        settled(qtbot, window)
     return pixel
 
 
@@ -120,7 +127,10 @@ def test_tools_text_image_save_and_reopen_real_worker(qtbot, workflow, tmp_path,
     original = sha256(source.read_bytes()).hexdigest()
     qtbot.mouseClick(window.tools_toggle_button, Qt.LeftButton)
     assert not window.tools_scroll.isVisible()
+    qtbot.waitUntil(lambda:window.application_mode=='reading' and not window.busy
+                   and not window._reader_queue_v180,timeout=30000)
     qtbot.mouseClick(window.tools_toggle_button, Qt.LeftButton)
+    settled(qtbot, window)
     assert window.tools_scroll.isVisible()
     assert window.width() == 1366 and window.height() == 768
     assert window.canvas.viewport().width() >= 700
@@ -128,6 +138,7 @@ def test_tools_text_image_save_and_reopen_real_worker(qtbot, workflow, tmp_path,
     click_tool(qtbot, window, 'toolEditContent')
     page_click(qtbot, window, (360., 80.))
     assert window.canvas.image_mode and window.canvas.selected_image()
+    qtbot.mouseClick(window.format_tools_section.header, Qt.LeftButton)
     assert window.image_quick_controls.isVisible()
     assert not window.side_format_controls.isVisible()
     point = text_point(window, '2025')

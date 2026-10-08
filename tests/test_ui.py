@@ -9,6 +9,7 @@ import pytest
 
 from pdfmodder.app import MainWindow
 from pdfmodder.model import transform,union
+from test_ui_line_edit import settled as editing_settled
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,10 +30,12 @@ def editor(qtbot,tmp_path):
 
 
 def settled(qtbot,window):
-    qtbot.waitUntil(lambda:not window.busy and not getattr(window,'_rich_loading',False)
-                   and not getattr(window,'_rich_accept_pending',False)
-                   and getattr(window,'_rich_pending',None) is None
-                   and not (getattr(window,'_rich_active',False) and window._rich_timer.isActive()),timeout=30000)
+    editing_settled(qtbot,window)
+    # Selection compatibility is scheduled after the mouse event. Wait for
+    # that read-only request as well before asserting the controller is idle.
+    qtbot.waitUntil(lambda:not window.busy
+                   and getattr(window,'_preflight_pending_v200',None) is None
+                   and not window._preflight_timer_v200.isActive(),timeout=30000)
     assert not window.last_error,window.last_error
 
 
@@ -50,6 +53,7 @@ def choose(qtbot,window,text):
     window.canvas.ensureVisible(window.canvas.scene_rect(glyph.bbox),20,20)
     screen = window.canvas.viewport_point(center)
     qtbot.mouseClick(window.canvas.viewport(),Qt.LeftButton,pos=screen)
+    settled(qtbot,window)
     return glyph,screen
 
 
@@ -70,10 +74,12 @@ def test_full_ui_edit_drag_save_reopen_cancel_and_failed_save(qtbot,editor,tmp_p
     qtbot.keyClick(editor.canvas,Qt.Key_Escape)
     qtbot.mouseRelease(editor.canvas.viewport(),Qt.LeftButton,pos=cancelled_end)
     qtbot.wait(210)
+    settled(qtbot,editor)
     assert editor.state["history_index"] == 0
     assert not editor.busy
 
     # A real on-page typing session, then Escape: zero committed edits.
+    glyph,point = choose(qtbot,editor,"10/09/2026")
     qtbot.mouseDClick(editor.canvas.viewport(),Qt.LeftButton,pos=point)
     ready_editor(qtbot,editor)
     qtbot.keyClick(editor.canvas.editor,Qt.Key_A,modifier=Qt.ControlModifier)
@@ -120,7 +126,7 @@ def test_full_ui_edit_drag_save_reopen_cancel_and_failed_save(qtbot,editor,tmp_p
 
     # Source overwrite is rejected; the dirty working state remains usable.
     editor.save_as(source)
-    qtbot.waitUntil(lambda:not editor.busy,timeout=30000)
+    qtbot.waitUntil(lambda:not editor.busy and editor._save_transaction_v300 is None,timeout=30000)
     assert "original" in editor.last_error.lower()
     assert editor.state["dirty"]
     assert editor.state["history_index"] == 2

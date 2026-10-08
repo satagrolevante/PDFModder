@@ -22,18 +22,19 @@ def modified(data,text='Document changed'):
         return doc.tobytes(garbage=4)
 
 
-def test_reader_defers_snapshots_and_reuses_model_across_zoom(tmp_path,monkeypatch):
+def test_reader_uses_immutable_snapshot_without_recovery_checkpoint_and_reuses_models(tmp_path,monkeypatch):
     import pdfmodder.worker as worker
     session=Session(make_pdf(tmp_path/'one.pdf'),reading=True,recovery_root=tmp_path/'recovery')
     calls=[];original=worker.extract_page
     monkeypatch.setattr(worker,'extract_page',lambda *args:(calls.append(1),original(*args))[1])
     try:
-        assert not session.history.root.exists()
+        assert session.history.original_source.is_file()
+        assert not session.history.has_checkpoint and session.history._lock is None
         pages=[session.page(0,zoom=z) for z in (.6,1.,1.5)]
         assert len(calls)==1 and pages[0]['model'] is pages[-1]['model']
         assert session.history.current is session.history.current
         assert len(session._documents)==1 and len(session._displaylists)==1
-        assert not session.history.root.exists()
+        assert not session.history.has_checkpoint and session.history._lock is None
     finally:session.close()
 
 

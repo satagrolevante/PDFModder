@@ -47,11 +47,11 @@ def compatibility_window(qtbot, tmp_path):
     window.close()
 
 
-def _open(qtbot, window, tmp_path, data):
+def _open(qtbot, window, tmp_path, data, *, allow_document_issues=False):
     source = tmp_path / 'original.pdf'
     source.write_bytes(data)
     window.open_document(source)
-    settled(qtbot, window)
+    settled(qtbot, window, allow_document_issues=allow_document_issues)
     assert window.model is not None
     return source
 
@@ -67,11 +67,6 @@ def _replace_date(qtbot, window, *, legacy):
     qtbot.keyClicks(editor, '11/09/2026')
     qtbot.keyClick(editor, Qt.Key_Return, modifier=Qt.ControlModifier)
     settled(qtbot, window)
-    if legacy:
-        assert window.state['preview'] and window.state['history_index'] == 0
-        assert window.commit_button.isEnabled()
-        qtbot.mouseClick(window.commit_button, Qt.LeftButton)
-        settled(qtbot, window)
     assert window.state['history_index'] == 1 and not window.state['preview']
     assert '11/09/2026' in ''.join(g.text for g in window.model.glyphs)
 
@@ -150,7 +145,10 @@ def test_tagged_gui_edit_extract_delete_undo_save_keeps_tags(qtbot, compatibilit
 def test_invalid_tag_structure_disables_page_tools_with_specific_reason(qtbot, compatibility_window, tmp_path):
     window = compatibility_window
     original = make_tagged_pdf(defect='broken_parenttree')
-    source = _open(qtbot, window, tmp_path, original)
+    source = _open(qtbot, window, tmp_path, original, allow_document_issues=True)
+    assert 'MCID 0 de página 1 no coincide con ParentTree y /K.' in window.last_error
+    assert window.message.text() == window.last_error
+    assert window.last_error in window.state['issues']
     capabilities = window.state['page_capabilities']
     assert not capabilities['supported'] and capabilities['reason']
     assert not any(capabilities[key] for key in ('delete', 'extract', 'reorder', 'rotate'))

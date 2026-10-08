@@ -87,7 +87,7 @@ def edit_native_layout(data, request, model):
         raise EditError('Hay una capa OCR superpuesta. Selecciona explícitamente cómo editar esa capa.')
     clean = replace(model, issues=[issue for issue in model.issues if issue != CLIP_ISSUE])
     with fitz.open(stream=data, filetype='pdf') as doc:
-        issues = document_issues(data, doc)
+        issues = document_issues(data, doc,operation="content")
         if issues:
             raise EditError('\n'.join(issues))
         page = doc[request.page]

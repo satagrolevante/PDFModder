@@ -30,6 +30,9 @@ class AddTextRequest:
     allow_overlap: bool = False
     reflow: bool = True
     accessibility_order: str | None = None
+    font_axes: dict | None = None
+    font_features: dict | None = None
+    direction: str = 'auto'
 
 
 def _lines(text, face, size, width, reflow):
@@ -64,6 +67,21 @@ def insert_text_pdf(data: bytes, request: AddTextRequest, resolver=None):
     links or annotations whose interaction regions could become misleading.
     """
     started = time.perf_counter()
+    from .typography_v300 import requires_shaping, edit_shaped_pdf
+    from .richmodels import RichTextRequest
+    run = dict(text=request.text, font_name=request.font_name, font_file=request.font_file,
+               size=request.size, color=request.color, font_axes=request.font_axes,
+               font_features=request.font_features, direction=request.direction)
+    if requires_shaping([run]):
+        if request.accessibility_order:
+            raise EditError('La composición avanzada requiere un área sin estructura accesible; conserva el orden de lectura existente.')
+        output, report = edit_shaped_pdf(data, RichTextRequest(
+            request.page, [], [run], rect=(request.x, request.y, request.x+request.width, request.y+request.height),
+            paragraphs=[dict(alignment=request.align, direction=request.direction)],
+            revision=request.revision, allow_overlap=request.allow_overlap), resolver)
+        report.update(operation='add_text', allowed_overlap=request.allow_overlap,
+                      elapsed_seconds=round(time.perf_counter()-started, 3))
+        return output, report
     from .tagged_insert import TaggedAddition
     tagged = TaggedAddition(data, request.page, '/P', request.accessibility_order, text=request.text)
     if request.revision and request.revision != hashlib.sha256(data).hexdigest():
@@ -112,7 +130,7 @@ def insert_text_pdf(data: bytes, request: AddTextRequest, resolver=None):
                                  tuple(request.color), 1.0, 0, line_index, 0))
             x += advance
     with fitz.open(stream=data, filetype='pdf') as doc:
-        issues = document_issues(data, doc)
+        issues = document_issues(data, doc, operation="content")
         if issues:
             raise EditError('\n'.join(issues))
         if not isinstance(request.page, int) or not 0 <= request.page < doc.page_count:

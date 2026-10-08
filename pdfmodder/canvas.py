@@ -7,6 +7,7 @@ from PySide6.QtGui import QColor, QPen, QBrush, QPixmap, QKeyEvent, QPolygonF
 from PySide6.QtWidgets import QApplication, QGraphicsView, QGraphicsScene
 
 from .model import transform, transform_rect, union
+from .selection_v300 import selection_index
 from .rich_editor import PageEditor
 
 
@@ -107,6 +108,8 @@ class PdfCanvas(QGraphicsView):
         self._text_resize_rect=None
         self._edit_click_pdf=None
         self._editor_bounds=None
+        self.selection_rect_v300=None
+        self.draft_overflow_rect_v300=None
         self._pixmap_item=None
         self._editor_proxy=None
         self.interaction_mode='select'
@@ -167,6 +170,8 @@ class PdfCanvas(QGraphicsView):
         self._click_revision = None
         self._last_pointer_press = 0.
         self._editor_bounds=None
+        self.selection_rect_v300=None
+        self.draft_overflow_rect_v300=None
         self.changes = changes or []
         self._draw_overlays()
         return pixmap
@@ -402,6 +407,13 @@ class PdfCanvas(QGraphicsView):
     def set_selection(self, ids, notify=True):
         allowed = {g.id for g in self.model.glyphs} if self.model else set()
         self.ids = sorted(set(ids) & allowed)
+        self.selection_rect_v300 = None
+        if self.ids and self.model:
+            first = next(g for g in self.model.glyphs if g.id in self.ids)
+            if self.mode == 'cell':
+                scope = selection_index(self.model).scope(first, 'cell')
+                if set(scope.ids) == set(self.ids):
+                    self.selection_rect_v300 = scope.rect
         if self.ids:
             self.image_id=None
             self.image_selected.emit(None)
@@ -536,16 +548,19 @@ class PdfCanvas(QGraphicsView):
         selected = self.model.selected(self.ids)
         for glyph in selected:
             self._rect_item(glyph.bbox, "#007cc2", "#440099dd")
-        if selected and self.show_guides and not self.reading_mode:
-            bounds = self._text_resize_rect or union(g.bbox for g in selected)
+        if selected and not self.reading_mode:
+            bounds = self._text_resize_rect or self.selection_rect_v300 or union(g.bbox for g in selected)
             self._rect_item(bounds, "#007cc2", None, True)
             if not self.read_only and not self.editor.isVisible():
                 self._draw_handles(bounds)
-            r = self.scene_rect(bounds)
-            pen = QPen(QColor("#55c3d5e1"), 1., Qt.DashLine)
-            for x in (r.left(), r.right()):
-                item = self.scene().addLine(x, 0, x, self.scene().height(), pen)
-                self.overlays.append(item)
+            if self.show_guides:
+                r = self.scene_rect(bounds)
+                pen = QPen(QColor("#55c3d5e1"), 1., Qt.DashLine)
+                for x in (r.left(), r.right()):
+                    item = self.scene().addLine(x, 0, x, self.scene().height(), pen)
+                    self.overlays.append(item)
+        if self.draft_overflow_rect_v300 and self.editor.isVisible():
+            self._rect_item(self.draft_overflow_rect_v300, '#c73a26', None, True)
         if self._drag and selected:
             dx,dy = self._drag
             bounds = union(g.bbox for g in selected)
@@ -632,7 +647,7 @@ class PdfCanvas(QGraphicsView):
             event.accept()
             return
         if self.ids and not self.read_only:
-            bounds=union(g.bbox for g in self.model.selected(self.ids))
+            bounds=self.selection_rect_v300 or union(g.bbox for g in self.model.selected(self.ids))
             handle=self._handle_at(bounds,event.position().toPoint())
             if handle:
                 self._text_resize=handle
@@ -665,10 +680,9 @@ class PdfCanvas(QGraphicsView):
         elif event.modifiers() & Qt.ShiftModifier and self._anchor_id is not None:
             anchor = next((g for g in self.model.glyphs if g.id == self._anchor_id), None)
             # A range never silently sweeps a different extraction line/column.
-            if anchor and anchor.line == hit.line and anchor.mode == hit.mode and (anchor.opacity>0)==(hit.opacity>0):
-                lo,hi = sorted((anchor.id, hit.id))
-                self.set_selection([g.id for g in self.model.glyphs if g.line == hit.line and g.mode == hit.mode
-                                    and (g.opacity>0)==(hit.opacity>0) and lo <= g.id <= hi])
+            safe_range = selection_index(self.model).range(anchor,hit) if anchor else []
+            if safe_range:
+                self.set_selection(safe_range)
             else:
                 self.set_selection(set(self.ids) | set(group))
         elif hit.id not in self.ids:
@@ -740,7 +754,7 @@ class PdfCanvas(QGraphicsView):
                 return
         if self._text_resize and self._press and self.ids:
             point=self.pdf_point(event.position().toPoint())
-            bounds=union(g.bbox for g in self.model.selected(self.ids))
+            bounds=self.selection_rect_v300 or union(g.bbox for g in self.model.selected(self.ids))
             self._text_resize_rect=resize_rect(bounds,self._text_resize,
                 (point[0]-self._press[0],point[1]-self._press[1]))
             self._draw_overlays()
@@ -751,11 +765,9 @@ class PdfCanvas(QGraphicsView):
             if self.interaction_mode=='select' and not self._border_move:
                 hit=self.model.hit(point)
                 anchor=next((g for g in self.model.glyphs if g.id==self._selection_drag_anchor),None)
-                if hit and anchor and hit.line==anchor.line and hit.mode==anchor.mode and (hit.opacity>0)==(anchor.opacity>0):
-                    endpoints=self.model.group(anchor,self.mode)+self.model.group(hit,self.mode)
-                    lo,hi=min(endpoints),max(endpoints)
-                    self.set_selection([g.id for g in self.model.glyphs if g.line==anchor.line and lo<=g.id<=hi
-                                        and g.mode==anchor.mode and (g.opacity>0)==(anchor.opacity>0)])
+                if hit and anchor:
+                    safe_range=selection_index(self.model).range(anchor,hit,self.mode)
+                    if safe_range:self.set_selection(safe_range)
                 event.accept()
                 return
             self._drag = (point[0]-self._press[0], point[1]-self._press[1])
@@ -921,10 +933,19 @@ class PdfCanvas(QGraphicsView):
 
     def _coherent_selection_at(self, ids, point):
         selected = self.model.selected(ids)
-        if not selected or len({(g.line,g.mode,g.opacity>0) for g in selected}) != 1:
+        if not selected:
             return []
-        line = [g.id for g in self.model.glyphs if g.line == selected[0].line and g.mode == selected[0].mode
-                and (g.opacity>0)==(selected[0].opacity>0)]
+        index=selection_index(self.model)
+        if self.mode in ('paragraph','cell'):
+            scope=index.scope(selected[0],self.mode)
+            if set(scope.ids)==set(ids) and scope.rect[0]<=point[0]<=scope.rect[2] and scope.rect[1]<=point[1]<=scope.rect[3]:
+                return [g.id for g in selected]
+        # A user may explicitly select a wider native line, such as justified
+        # text with large spaces. Preserve that corrected contiguous choice
+        # on double click; automatic scopes and dragged ranges still stop at
+        # inferred column gaps and painted barriers.
+        line = [g.id for g in index.native_by_id.get(selected[0].id,[])]
+        if any(g.id not in line for g in selected):return []
         positions = [line.index(g.id) for g in selected]
         if max(positions) - min(positions) + 1 != len(positions):
             return []

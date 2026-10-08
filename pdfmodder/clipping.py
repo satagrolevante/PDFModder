@@ -137,6 +137,26 @@ def operator_glyph_map(data,number,model):
             probing.append(([NumberObject(3)],b'Tr'))
     if stack:
         _fail('el estado gráfico contiene una apertura q sin cierre.')
+    widget_glyph_ids=set()
+    # MuPDF includes widget appearances in text traces. They have their own
+    # resources and cannot be bound to a page-content SHOW. Prove which glyphs
+    # disappear when widgets are removed from an ephemeral copy, preserving
+    # the exact remaining character order and positions. No original widget
+    # or appearance is changed, and selected widget text remains unmapped.
+    with fitz.open(stream=data,filetype='pdf') as proof:
+        proof_page=proof[number]
+        widgets=[widget.xref for widget in proof_page.widgets() or []]
+        if widgets:
+            for xref in widgets:proof_page.delete_widget(proof_page.load_widget(xref))
+            remaining=[(chr(c[0]),c[2]) for span in proof_page.get_texttrace() for c in span['chars']]
+            cursor=0
+            for glyph in model.glyphs:
+                if (cursor<len(remaining) and glyph.text==remaining[cursor][0]
+                        and all(abs(a-b)<=.035 for a,b in zip(glyph.origin,remaining[cursor][1]))):
+                    cursor+=1
+                else:widget_glyph_ids.add(glyph.id)
+            if cursor!=len(remaining):
+                _fail('no se pudo separar la apariencia del formulario del contenido de la página.')
     with fitz.open(stream=data,filetype='pdf') as probe:
         xref = probe.get_new_xref()
         probe.update_object(xref,'<<>>')
@@ -150,6 +170,8 @@ def operator_glyph_map(data,number,model):
         if text != glyph.text or any(abs(a-b)>.035 for a,b in zip(point,glyph.origin)) or len(color)!=3:
             _fail('el sondeo no conserva texto y posiciones; no se puede identificar la fuente exacta.')
         marker = (round(color[0]*255)<<16)|(round(color[1]*255)<<8)|round(color[2]*255)
+        if glyph.id in widget_glyph_ids:
+            continue
         if marker not in shows and form_probed:
             # No page-level operator/resource binding is claimed for a Form.
             # Its glyphs still participate in the final content/pixel checks.

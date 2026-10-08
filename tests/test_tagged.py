@@ -173,6 +173,15 @@ def test_tagged_support_does_not_disable_existing_document_protections(kind):
     writer.write(stream)
     source = stream.getvalue()
     model, chosen = select(source, '10/09/2026', x=100, y=100)
+    if kind=='form':
+        from pdfmodder.validation import assert_form_preservation
+        output, report=edit_pdf(source,request_for(model,chosen,text='11/09/2026'))
+        assert report['verified']
+        assert_form_preservation(source,output)
+        assert PdfReader(BytesIO(output)).get_fields()['CampoPrueba']['/V']=='valor'
+        assert_structure_preserved(source,output)
+        assert_control_page_unchanged(source,output)
+        return
     with pytest.raises(EditError, match=r'(?i)cifrad|formulario|firma|certificad|permiso'):
         edit_pdf(source, request_for(model, chosen, text='11/09/2026'))
 
@@ -288,7 +297,7 @@ def test_tagged_operations_without_semantic_choices_have_specific_blocks(operati
         'pages_extract': lambda: extract_pages_pdf(source, [1]),
         'pages_merge': lambda: merge_pdfs(source, [source]),
     }
-    with pytest.raises(EditError, match=r'(?i)etiquetado:.*(?:(?:asignar|remapear).*etiquetas|fusionar.*accesibilidad|orden de lectura|descripci[oó]n)'):
+    with pytest.raises(EditError, match=r'(?i)etiquetado:.*(?:(?:asignar|remapear).*etiquetas|fusionar.*accesibilidad|orden de lectura|inicio o al final de esta página|descripci[oó]n)'):
         operations[operation]()
     assert sha256(source).hexdigest() == original_hash
     assert audit_tagged(source)['reading_order'].startswith(DATE_TEXT+MOVE_TEXT)

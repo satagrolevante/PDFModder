@@ -93,6 +93,8 @@ class UpdatesDialog(QDialog):
         self.updater = updater
         self._automatic_update = False
         self._discard_confirmed = False
+        self._preparing_work_v300 = False
+        self._install_generation_v300 = 0
         self.setObjectName('updatesDialogV170')
         self.setWindowTitle('Actualizaciones de PDF Modder')
         self.setMinimumWidth(510)
@@ -142,6 +144,8 @@ class UpdatesDialog(QDialog):
         self._refresh()
 
     def _check(self):
+        if self._preparing_work_v300:
+            return
         status = self.updater.status()
         if status['busy'] or (status['state'] != 'ready' and status.get('retryAt', 0) > time.time()):
             self._refresh()
@@ -162,15 +166,36 @@ class UpdatesDialog(QDialog):
         self._refresh()
 
     def _install(self):
+        if self._preparing_work_v300:
+            return
         if self.window.busy or getattr(self.window, '_signature_placement_dialog', None) is not None:
             self._automatic_update = False
             QMessageBox.information(self, 'Operación en curso', 'Espera a que termine la operación del PDF antes de instalar.')
             return
-        if not self.window._confirm_discard():
-            self._automatic_update = False
-            return
-        self._discard_confirmed = True
         self._automatic_update = False
+        resolve = getattr(self.window, '_request_close_v300', None)
+        if resolve is not None:
+            self._preparing_work_v300 = True
+            self._install_generation_v300 += 1
+            generation = self._install_generation_v300
+            def resolved(approved):
+                if generation != self._install_generation_v300 or not self._preparing_work_v300:
+                    return
+                self._preparing_work_v300 = False
+                if approved:
+                    self._launch_installer_v300()
+                else:
+                    self._refresh()
+            resolve('update', after=resolved)
+            self._refresh()
+            return
+        # Older embedding windows do not own PDF sessions or the asynchronous
+        # Save workflow; retain their existing confirmation contract.
+        if self.window._confirm_discard():
+            self._launch_installer_v300()
+
+    def _launch_installer_v300(self):
+        self._discard_confirmed = True
         directory = detected_installation_directory(installed_version=self.updater.status()['installedVersion'])
         self.updater.install(previous_directory=directory,
                              previous_pid=os.getpid() if directory is not None else None)
@@ -186,10 +211,12 @@ class UpdatesDialog(QDialog):
         self.progress.setValue(status['progress'])
         retry_at = status.get('retryAt', 0)
         can_query = retry_at <= time.time()
-        self.check_button.setEnabled(not busy and (can_query or state == 'ready'))
+        self.check_button.setEnabled(not busy and not self._preparing_work_v300 and (can_query or state == 'ready'))
         self.check_button.setToolTip('GitHub ha indicado que esperes antes de volver a consultar.' if not can_query else 'Buscar, descargar e instalar la actualización')
-        self.download_button.setEnabled(not busy and can_query and state == 'available')
-        self.install_button.setEnabled(not busy and state == 'ready')
+        self.download_button.setEnabled(not busy and not self._preparing_work_v300 and can_query and state == 'available')
+        self.install_button.setEnabled(not busy and not self._preparing_work_v300 and state == 'ready')
+        if self._preparing_work_v300:
+            self.message.setText('Preparando los documentos antes de instalar. Puedes guardar los cambios, descartarlos o cancelar.')
         if self._automatic_update and not busy:
             if state == 'available':
                 self._download()
@@ -205,6 +232,8 @@ class UpdatesDialog(QDialog):
 
     def reject(self):
         self._automatic_update = False
+        self._preparing_work_v300 = False
+        self._install_generation_v300 += 1
         self.timer.stop()
         if self.updater.status()['busy']:
             self.updater.cancel()

@@ -162,6 +162,7 @@ class RichEditing:
         def loaded(payload):
             if generation!=self._rich_generation:return
             payload.update(rect=list(rect),width=rect[2]-rect[0],height=rect[3]-rect[1],auto_width=False,auto_height=False)
+            payload['_explicit_area_v300']=True
             self._open_rich_payload(payload)
             self._rich_changed(self.canvas.editor.payload())
         self._submit('rich_selection',{'page':self.page_number,'ids':self.canvas.ids[:]},loaded)

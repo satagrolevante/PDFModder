@@ -36,11 +36,73 @@ class History:
         self._current=original;self._original=original
         self.metadata=dict(metadata or {});self.pending_path=None;self.pending_report=None
         self._lock=None
+        self._original_durable=True
         self.digests=[self.metadata.get('original_digest') or hashlib.sha256(original).hexdigest()];self.sizes=[len(original)]
+
+    @classmethod
+    def from_file(cls,source,directory=None,max_states=40,max_bytes=512*1024*1024,
+                  persistent_root=None,metadata=None):
+        """Capture immutable bytes on disk without retaining a document-sized buffer.
+
+        A PDF engine may keep seeking the same file long after opening. Never
+        point it at the user's mutable original: copying also protects reading
+        and comparison when another application replaces that original.
+        """
+        obj=cls(b'',directory,max_states,max_bytes,persistent_root,metadata)
+        obj.root.mkdir(parents=True,exist_ok=True)
+        destination=obj.root/'original.pdf'
+        fd,name=tempfile.mkstemp(prefix='.opening-',dir=obj.root)
+        digest=hashlib.sha256();size=0
+        try:
+            with os.fdopen(fd,'wb') as outgoing,open(source,'rb') as incoming:
+                before=os.fstat(incoming.fileno())
+                cloned=False
+                try:
+                    # Linux filesystems with copy-on-write can capture a large
+                    # PDF without duplicating its data blocks before rendering.
+                    import fcntl
+                    fcntl.ioctl(outgoing.fileno(),0x40049409,incoming.fileno())
+                    cloned=True
+                except (ImportError,OSError):
+                    outgoing.seek(0);outgoing.truncate(0)
+                while True:
+                    block=incoming.read(1024*1024)
+                    if not block:break
+                    if not cloned:outgoing.write(block)
+                    digest.update(block);size+=len(block)
+                outgoing.flush()
+                after=os.fstat(incoming.fileno());named=os.stat(source)
+            identity=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+            if identity(before)!=identity(after) or identity(after)!=identity(named) or size!=before.st_size:
+                from .model import EditError
+                raise EditError('El archivo cambió mientras se abría. Vuelve a abrirlo cuando termine de guardarse.')
+            os.replace(name,destination)
+            value=digest.hexdigest()
+            obj.states=[destination];obj.digests=[value];obj.sizes=[size]
+            obj._current=obj._original=None
+            obj._original_durable=False
+            obj.metadata.update(original_digest=value,saved_digest=value)
+            return obj
+        except Exception:
+            obj.close()
+            raise
+        finally:
+            if os.path.exists(name):os.unlink(name)
+
+    @property
+    def current_source(self):
+        """A stable file for reading; byte materialisation remains opt-in."""
+        return self._current if self._current is not None else self.states[self.index]
+
+    @property
+    def original_source(self):
+        return self._original if self._original is not None else self.root/'original.pdf'
 
     @property
     def current(self):
-        if self._current is None:self._current=self.states[self.index].read_bytes()
+        if self._current is None:
+            path=self.states[self.index]
+            self._current=self.original if path.name=='original.pdf' else path.read_bytes()
         return self._current
 
     @property
@@ -48,7 +110,9 @@ class History:
 
     @property
     def original(self):
-        if self._original is None:self._original=(self.root/'original.pdf').read_bytes()
+        if self._original is None:
+            self._original=(self._current if self._current is not None and self.states[self.index] is not None
+                            and self.states[self.index].name=='original.pdf' else (self.root/'original.pdf').read_bytes())
         return self._original
 
     def materialize(self):
@@ -58,6 +122,16 @@ class History:
             self._lock=RecoveryLock(self.root)
         if self.states[0] is None:
             path=self.root/'original.pdf';atomic_bytes(path,self.original);self.states[0]=path
+        if not self._original_durable:
+            # Reading needs stable bytes, while recovery needs durable bytes.
+            # Complete durability before publishing the first checkpoint.
+            # Windows requires a writable handle for FlushFileBuffers.
+            with (self.root/'original.pdf').open('r+b') as original:os.fsync(original.fileno())
+            self._original_durable=True
+
+    @property
+    def has_checkpoint(self):
+        return self.persistent and (self.root/'session.json').exists()
 
     def _manifest(self,states=None,reports=None,index=None,base_reports=None,dropped=None,
                   digests=None,sizes=None,metadata=None,pending_path=None,pending_report=None):
@@ -119,7 +193,10 @@ class History:
         return self._navigate(min(len(self.states)-1,self.index+1))
 
     def suspend(self):
-        self.materialize();self._current=self._original=None
+        # File-backed reading already has an immutable snapshot. Durability
+        # and the recovery lock are only necessary when publishing work.
+        if self.states[0] is None:self.materialize()
+        self._current=self._original=None
 
     @classmethod
     def restore(cls,root,manifest):
@@ -131,6 +208,7 @@ class History:
         obj.digests=manifest['digests'];obj.sizes=manifest['sizes'];obj.metadata=manifest['metadata']
         obj.pending_path=obj.root/manifest['pending'] if manifest.get('pending') else None
         obj.pending_report=manifest.get('pending_report');obj._current=obj._original=None
+        obj._original_durable=True
         from .recovery_v200 import RecoveryLock
         obj._lock=RecoveryLock(obj.root)
         return obj

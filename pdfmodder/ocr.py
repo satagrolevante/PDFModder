@@ -91,7 +91,7 @@ def _advance_units(font, code, text, state):
 def _prepare(data, number, model):
     from .validation import document_issues
     with fitz.open(stream=data,filetype='pdf') as doc:
-        problems=document_issues(data,doc)
+        problems=document_issues(data,doc,operation="content")
         if problems:
             _error('\n'.join(problems))
     reader, operations, shows, mapping = operator_glyph_map(data, number, model)

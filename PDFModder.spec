@@ -4,7 +4,7 @@ from pathlib import Path
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules, copy_metadata
 
 root = Path(SPECPATH)
 debug_console = os.environ.get('PDFMODDER_DEBUG_CONSOLE') == '1'
@@ -36,15 +36,27 @@ datas += collect_data_files('pyhanko')
 datas += collect_data_files('pyhanko_certvalidator')
 datas += collect_data_files('tzdata')
 datas += copy_metadata('pyHanko', recursive=True)
-for package in ('PyMuPDF', 'fonttools', 'pypdf', 'Pillow', 'numpy', 'PySide6', 'PySide6_Essentials', 'shiboken6'):
+for package in ('PyMuPDF', 'fonttools', 'pypdf', 'Pillow', 'numpy', 'PySide6', 'PySide6_Essentials', 'shiboken6', 'uharfbuzz', 'python-bidi'):
     datas += copy_metadata(package)
+
+# Keep the shaping and Unicode bidirectional extensions in the onedir bundle.
+# They must be present in a clean Windows environment without development PATH.
+font_binaries = []
+# TTFont selects table implementations dynamically, including the variation
+# tables needed when instantiating an imported variable font.
+font_hiddenimports = collect_submodules('fontTools.ttLib.tables')
+for package in ('uharfbuzz', 'bidi'):
+    package_datas, package_binaries, package_hiddenimports = collect_all(package)
+    datas += package_datas
+    font_binaries += package_binaries
+    font_hiddenimports += package_hiddenimports
 
 a = Analysis(
     [str(root / 'run_pdfmodder.py')],
     pathex=[str(root)],
-    binaries=[],
+    binaries=font_binaries,
     datas=datas,
-    hiddenimports=['pymupdf', 'pypdf', 'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'PySide6.QtPrintSupport'],
+    hiddenimports=['pymupdf', 'pypdf', 'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'PySide6.QtPrintSupport', *font_hiddenimports],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

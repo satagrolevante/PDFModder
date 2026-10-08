@@ -145,6 +145,47 @@ def test_batch_occurrences_do_not_confuse_old_and_intermediate_positions():
         assert [im['bbox'][0] for im in doc[0].get_image_info()]==pytest.approx([90,140])
 
 
+@pytest.mark.parametrize('nested_first',[False,True])
+def test_coincident_image_occurrences_keep_paint_order_and_shared_neighbors(nested_first):
+    from pdfmodder.media import image_items,transform_image_pdf
+    image=BytesIO();Image.new('RGBA',(10,10),(20,40,190,128)).save(image,format='PNG')
+    with fitz.open() as doc,fitz.open() as form:
+        page=doc.new_page(width=300,height=300)
+        page.insert_text((20,25),'VECINO INTACTO')
+        rect=fitz.Rect(40,90,60,110)
+        if nested_first:
+            source=form.new_page(width=20,height=20)
+            source.insert_image(source.rect,stream=image.getvalue())
+            page.show_pdf_page(rect,form,0)
+        xref=page.insert_image(rect,stream=image.getvalue())
+        page.insert_image(rect,xref=xref)
+        contents=page.get_contents()
+        resources=doc.xref_get_key(page.xref,'Resources')[1]
+        other=doc.new_page(width=300,height=300)
+        doc.xref_set_key(other.xref,'Resources',resources)
+        doc.xref_set_key(other.xref,'Contents','['+' '.join(f'{xref} 0 R' for xref in contents)+']')
+        data=doc.tobytes()
+    selected=1 if nested_first else 0
+    with fitz.open(stream=data,filetype='pdf') as doc:
+        before=doc[0].get_image_info(hashes=True,xrefs=True)
+        items=image_items(doc,0)
+        assert items[selected]['editable'] and items[selected+1]['editable']
+        if nested_first:
+            assert not items[0]['editable']
+    result,report=transform_image_pdf(data,0,str(selected),(90,90,110,110))
+    assert report['verified']
+    with fitz.open(stream=data,filetype='pdf') as old,fitz.open(stream=result,filetype='pdf') as new:
+        after=new[0].get_image_info(hashes=True,xrefs=True)
+        assert after[selected]['bbox']==pytest.approx((90,90,110,110),abs=.035)
+        assert after[selected]['digest']==before[selected]['digest']
+        for index in range(len(before)):
+            if index!=selected:
+                for key in ('bbox','transform','digest','width','height'):
+                    assert after[index][key]==before[index][key]
+        assert new[0].get_text('words')==old[0].get_text('words')
+        assert new[1].get_pixmap().samples==old[1].get_pixmap().samples
+
+
 def test_ordering_partial_text_cannot_move_neighbor_from_shared_scope():
     source=document();line=object_info(source,0)['items'][0]
     with pytest.raises(EditError,match='no seleccionados'):

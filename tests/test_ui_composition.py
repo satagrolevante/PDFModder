@@ -6,12 +6,13 @@ import traceback
 import pymupdf as fitz
 from pypdf import PdfReader
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QApplication, QDialog, QToolButton
+from PySide6.QtWidgets import QApplication, QDialog, QToolButton,QStyle,QStyleOptionButton
 import pytest
 
 from pdfmodder.app import MainWindow
 from pdfmodder.dialogs import TextDialog
 from pdfmodder.model import union
+from test_ui_line_edit import settled
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -27,11 +28,6 @@ def composing_editor(qtbot,tmp_path):
     yield window
     window._allow_close=True
     window.close()
-
-
-def settled(qtbot,window):
-    qtbot.waitUntil(lambda:not window.busy,timeout=30000)
-    assert not window.last_error,window.last_error
 
 
 def advanced_tool_button(window,name,action):
@@ -60,7 +56,9 @@ def test_click_place_text_real_typography_dialog_preview_commit_save_and_reopen(
     assert window.add_text_properties_action.isEnabled()
     qtbot.mouseClick(advanced_tool_button(window,'toolAddTextProperties',window.add_text_properties_action),Qt.LeftButton)
     assert window.canvas.placement_mode and not window.canvas.image_mode
-    assert not window.save_action.isEnabled()
+    # Choosing an insertion point has no text draft yet. Version 3 can save
+    # the current document here; actual drafts are flushed by the save flow.
+    assert window.save_action.isEnabled()
     assert window.state['history_index']==0
 
     # No engine calls or command mocks fill the new text: this QTimer drives the
@@ -84,7 +82,13 @@ def test_click_place_text_real_typography_dialog_preview_commit_save_and_reopen(
             family_index=dialog.font_picker.family_box.findData('Courier')
             assert family_index>=0
             dialog.font_picker.family_box.setCurrentIndex(family_index)
-            qtbot.mouseClick(dialog.font_picker.bold_box,Qt.LeftButton)
+            bold=dialog.font_picker.bold_box
+            style=QStyleOptionButton();bold.initStyleOption(style)
+            indicator=bold.style().subElementRect(QStyle.SE_CheckBoxIndicator,style,bold)
+            # The grid gives the checkbox extra width; its empty centre can
+            # lie outside Qt's clickable indicator/label area.
+            qtbot.mouseClick(bold,Qt.LeftButton,pos=indicator.center())
+            assert bold.isChecked()
             assert dialog.font_picker.choice()['font_name']=='Courier-Bold'
             dialog.size_box.setValue(13.375)
             dialog.width_box.setValue(90.0)

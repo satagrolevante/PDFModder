@@ -1,16 +1,18 @@
 """Document tabs, recovery, selection preflight and bounded cell editing."""
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import Qt,QTimer,QSize
+from PySide6.QtCore import Qt,QTimer,QSignalBlocker
 from PySide6.QtGui import QAction,QIcon,QPixmap
-from PySide6.QtWidgets import (QTabBar,QLabel,QFileDialog,QMessageBox,QListWidgetItem,
+from PySide6.QtWidgets import (QTabBar,QLabel,QFileDialog,QMessageBox,
     QDialog,QVBoxLayout,QFormLayout,QDoubleSpinBox,QComboBox,QDialogButtonBox,
     QListWidget,QPushButton,QHBoxLayout,QGraphicsView,QGraphicsScene,QInputDialog,QLineEdit)
 
 from .model import pt,mm,transform_rect,union
 from .ui_icons_v170 import icon_v170
+from .selection_ui_v300 import SelectionUiV300Mixin
 
 
 class CellDialogV200(QDialog):
@@ -75,7 +77,7 @@ class SplitCompareV200(QDialog):
         finally:self._syncing=False
 
 
-class WorkspaceV200Mixin:
+class WorkspaceV200Mixin(SelectionUiV300Mixin):
     def _exec_edit_dialog(self,dialog):
         self._modal_depth_v200=getattr(self,'_modal_depth_v200',0)+1
         timers=[getattr(self,name,None) for name in ('_workspace_timer_v200','_preflight_timer_v200')]
@@ -123,6 +125,7 @@ class WorkspaceV200Mixin:
         self.preview_step_button.setText('Aceptar ✓ · Ctrl+Intro')
         self.apply_step_button.setText('Aceptar ✓')
         self.error_raised.connect(self._legacy_failed_v200)
+        self._init_selection_v300()
         QTimer.singleShot(250,self._offer_recovery_v200)
 
     def _reading_command_allowed_v171(self,command):
@@ -250,10 +253,8 @@ class WorkspaceV200Mixin:
         view=self._session_views_v200.get(sid,{})
         self.page_number=0
         self._reset_view_v200();self.page_number=min(view.get('page',0),self.state['page_count']-1);self.zoom=view.get('zoom',1.25)
-        self._sync_zoom_control();self.pages.blockSignals(True);self.pages.clear()
-        for i in range(self.state['page_count']):
-            item=QListWidgetItem(f'Página {i+1}');item.setSizeHint(QSize(118,158));self.pages.addItem(item)
-        self.pages.setCurrentRow(self.page_number);self.pages.blockSignals(False)
+        self._sync_zoom_control()
+        self._populate_pages_v300(self.state['page_count'],self.page_number)
         self._set_mode_v171(view.get('mode','reading'));self._restore_ids=view.get('ids') or None
         self.load_page();self._refresh_actions()
         QTimer.singleShot(200,lambda:(self.reader if self.application_mode=='reading' else self.canvas).verticalScrollBar().setValue(view.get('scroll',0)))
@@ -297,6 +298,12 @@ class WorkspaceV200Mixin:
             elif self.canvas.ids and self.model:
                 draft={'kind':'legacy','page':self.page_number,'ids':self.canvas.ids[:],
                        'revision':self.model.revision,'text':self.canvas.editor.toPlainText()}
+                try:
+                    draft['request']=asdict(self._request(text=draft['text'],formatting=True,adjust_line=True))
+                except ValueError:
+                    # Persist the text even if the current options still need
+                    # correction before a valid legacy request can be made.
+                    pass
         self._submit('store_draft',{'draft':draft,'workspace':workspace})
 
     def selection_changed(self,ids):
@@ -407,7 +414,9 @@ class WorkspaceV200Mixin:
         return super().cancel()
 
     def _offer_recovery_v200(self):
-        if self._closed:return
+        # A document opened immediately at startup takes priority. Recovery
+        # remains available from its action, without interrupting that work.
+        if self._closed or self.state:return
         if self.busy:QTimer.singleShot(300,self._offer_recovery_v200);return
         self._submit('list_recovery',self._recovery_options_v200(),callback=lambda result:self._show_recoveries_v200(result,automatic=True))
 
@@ -455,11 +464,35 @@ class WorkspaceV200Mixin:
         if not draft or self.state.get('preview'):return
         self._restored_draft_v200=None
         if draft.get('kind')=='rich':
-            payload=draft['payload'];self.canvas.set_selection(payload.get('ids',[]));self._rich_generation+=1;self._open_rich_payload(payload)
+            payload=deepcopy(draft['payload']);payload['_explicit_area_v300']=True
+            self.canvas.set_selection(payload.get('ids',[]));self._rich_generation+=1;self._open_rich_payload(payload)
         elif draft.get('kind')=='legacy':
-            self.canvas.set_selection(draft.get('ids',[]));self.canvas.start_editor(draft.get('text',''))
+            self.canvas.set_selection(draft.get('ids',[]))
+            self._restore_legacy_options_v300(draft.get('request') or {})
+            self.canvas.start_editor(draft.get('text',''))
             self._editing_context=(self.page_number,self.model.revision,tuple(self.canvas.ids))
         self._notice('Borrador recuperado. Revísalo y pulsa Aceptar o Cancelar.')
+
+    def _restore_legacy_options_v300(self,request):
+        for name,key,convert in (('width_box','width',mm),('height_box','height',mm),
+                                 ('size_box','size',float),('line_spacing_box','line_spacing',float),
+                                 ('paragraph_spacing_box','paragraph_spacing',float)):
+            value=request.get(key)
+            if value is not None:
+                widget=getattr(self,name)
+                with QSignalBlocker(widget):widget.setValue(convert(value))
+        for name,key in (('reflow_box','reflow'),('line_reflow_box','line_reflow'),
+                         ('auto_width_box','auto_width'),('auto_height_box','auto_height'),
+                         ('allow_overlap_box','allow_overlap')):
+            if key in request:
+                widget=getattr(self,name)
+                with QSignalBlocker(widget):widget.setChecked(bool(request[key]))
+        if request.get('anchor') is not None:
+            with QSignalBlocker(self.anchor_box):self.anchor_box.setCurrentIndex(self.anchor_box.findData(request['anchor']))
+        if request.get('decimal_separator') is not None:
+            with QSignalBlocker(self.decimal_box):self.decimal_box.setCurrentText(request['decimal_separator'])
+        if request.get('ocr_mode') is not None:
+            with QSignalBlocker(self.ocr_mode_box):self.ocr_mode_box.setChecked(request['ocr_mode']=='searchable')
 
     def split_compare_v200(self):
         ids=list(self._session_paths_v200)

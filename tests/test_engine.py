@@ -185,8 +185,13 @@ def test_mixed_style_group_moves_without_concatenation_or_reformatting():
     model = model_for(data)
     selected = [g for g in model.glyphs if abs(g.origin[1] - 490) < .05]
     assert len({g.font for g in selected}) == 2
-    with pytest.raises(EditError, match="mezcla estilos"):
-        edit_pdf(data, request_for(model, selected, text="Normal y negrita", width=180))
+    rewritten, report = edit_pdf(data, request_for(model, selected, text="Normal y negrita", width=180))
+    assert report['verified'] and report['native_panel']
+    _, updated = select(rewritten, 'Normal y negrita')
+    assert [(g.font,g.size,g.color) for g in updated[:7]] == [(g.font,g.size,g.color) for g in selected[:7]]
+    assert [(g.font,g.size,g.color) for g in updated[-7:]] == [(g.font,g.size,g.color) for g in selected[-7:]]
+    assert all(g.font == selected[6].font for g in updated[7:9])
+    assert_unchanged_neighbours(data, rewritten, selected)
     changed, _ = edit_pdf(data, request_for(model, selected, dx=15.5, dy=35.25))
     assert_moved_once(data, changed, selected, 15.5, 35.25)
 
@@ -223,7 +228,6 @@ def test_crop_rotation_zoom_coordinates_match_reopened_destination(zoom):
 
 
 @pytest.mark.parametrize("name,needle,error", [
-    ("unsupported_regions.pdf", "Texto con escala horizontal", "Escala horizontal|no reproduce exactamente"),
     ("unsupported_regions.pdf", "Texto inclinado", "orientación propia"),
     ("unsupported_regions.pdf", "Contorno sin relleno", "trazado"),
     ("unsupported_regions.pdf", "SOLAPADO", "solapa|aislar"),
@@ -237,6 +241,15 @@ def test_unsupported_region_refuses_and_original_bytes_stay_available(name, need
     with pytest.raises(EditError, match=error):
         edit_pdf(data, request_for(model, chosen, dx=2), resolver)
     assert load(name) == data
+
+
+def test_horizontal_scale_moves_by_native_operators_with_exact_neighbours():
+    data = load('unsupported_regions.pdf')
+    model, chosen = select(data, 'Texto con escala horizontal')
+    output, report = edit_pdf(data, request_for(model, chosen, dx=2))
+    assert report['verified']
+    assert_moved_once(data, output, chosen, 2, 0)
+    assert_unchanged_neighbours(data, output, chosen)
 
 
 def test_chain_change_move_and_reedit_without_duplicate_content():

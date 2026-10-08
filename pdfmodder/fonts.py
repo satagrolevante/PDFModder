@@ -25,6 +25,53 @@ class FontError(ValueError):
     """La operación necesita una fuente que no puede resolverse con fidelidad."""
 
 
+def instantiate_variable_font(buffer: bytes, axes: dict | None = None) -> tuple[bytes, dict]:
+    """Freeze every variation axis; preserve license flags and record the input.
+
+    An omitted axis takes the font's declared default, never a guessed weight.
+    The resulting SFNT is re-opened and checked before MuPDF can use its bytes.
+    """
+    from fontTools.varLib.instancer import instantiateVariableFont
+    try:
+        with TTFont(BytesIO(buffer), lazy=False) as source:
+            if 'fvar' not in source:
+                raise FontError('La fuente elegida no contiene ejes de variación.')
+            metadata = _font_metadata(buffer, _first_name(source, 6) or 'fuente variable')
+            _check_embedding(metadata, metadata['name'])
+            supplied = dict(axes or {})
+            known = {axis.axisTag: axis for axis in source['fvar'].axes}
+            unknown = sorted(set(supplied) - set(known))
+            if unknown:
+                raise FontError('Ejes desconocidos: ' + ', '.join(unknown) + '.')
+            coordinates = {}
+            for tag, axis in known.items():
+                value = supplied.get(tag, axis.defaultValue)
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not math.isfinite(value) or not axis.minValue <= value <= axis.maxValue):
+                    raise FontError(f'El eje {tag} debe estar entre {axis.minValue:g} y {axis.maxValue:g}.')
+                coordinates[tag] = float(value)
+            instance = instantiateVariableFont(source, coordinates, inplace=False, optimize=True,
+                                               downgradeCFF2='CFF2' in source)
+            stream = BytesIO()
+            instance.save(stream, reorderTables=True)
+            result = stream.getvalue()
+        with TTFont(BytesIO(result), lazy=False) as verified:
+            if 'fvar' in verified or 'gvar' in verified or 'CFF2' in verified:
+                raise FontError('No se pudo producir una instancia estática completa de esta fuente variable.')
+            actual = _font_metadata(result, metadata['name'])
+            if actual.get('fs_type') != metadata.get('fs_type'):
+                raise FontError('La instancia cambió los permisos declarados por la fuente.')
+        return result, {'variable_source': True, 'font_axes': coordinates,
+                        'source_sha256': sha256(buffer).hexdigest(),
+                        'instance_sha256': sha256(result).hexdigest(),
+                        'variation_axes': metadata['variation_axes'],
+                        'instance_verified': True}
+    except FontError:
+        raise
+    except (ValueError, KeyError, TTLibError, AssertionError, OSError) as exc:
+        raise FontError(f'No se pudo instanciar la fuente variable: {exc}') from exc
+
+
 # Sólo los nombres PDF estándar y sus abreviaturas documentadas por PyMuPDF.
 # Arial, Liberation Sans, Nimbus Sans, etc. NO se equiparan a Helvetica.
 BASE14 = {
@@ -117,6 +164,7 @@ def _font_metadata(buffer: bytes, fallback_name: str) -> dict[str, Any]:
                 "license_url": _first_name(tt, 14),
                 "manufacturer_url": _first_name(tt, 11),
                 "variable": "fvar" in tt,
+                "variation_axes": [{"tag": a.axisTag, "minimum": float(a.minValue), "default": float(a.defaultValue), "maximum": float(a.maxValue)} for a in tt["fvar"].axes] if "fvar" in tt else [],
                 "outline_format": "CFF2" if "CFF2" in tt else "CFF" if "CFF " in tt else "TrueType" if "glyf" in tt else "desconocido",
                 "glyph_count": int(tt["maxp"].numGlyphs) if "maxp" in tt else None,
                 "table_tags": [str(tag) for tag in tt.keys() if tag != "GlyphOrder"],
@@ -211,8 +259,6 @@ def _check_embedding(metadata: dict[str, Any], name: str, subset: bool = False) 
         raise FontError(f"«{name}» sólo permite incrustación de mapas de bits; no se puede conservar texto vectorial.")
     if subset and metadata.get("no_subsetting"):
         raise FontError(f"«{name}» prohíbe subconjuntos; se necesita el archivo de fuente completo.")
-    if metadata.get("variable"):
-        raise FontError(f"«{name}» es una fuente variable. Importe una instancia TTF/OTF estática de la variante exacta.")
 
 
 def _check_characters(font: pymupdf.Font, text: str, name: str) -> None:
@@ -293,13 +339,20 @@ class FontResolver:
         self.config_error = None
         return candidate.metadata
 
-    def _from_file(self, path: Path, source: str, detected_name: str, text: str) -> ResolvedFont:
+    def _from_file(self, path: Path, source: str, detected_name: str, text: str, font_axes: dict | None = None) -> ResolvedFont:
         if path.suffix.casefold() not in (".ttf", ".otf"):
             raise FontError("Importe un archivo TTF u OTF individual; las colecciones TTC/OTC no están admitidas.")
         try:
             content = path.read_bytes()
             metadata = _font_metadata(content, detected_name)
             _check_embedding(metadata, detected_name)
+            if metadata.get("variable"):
+                content, instance = instantiate_variable_font(content, font_axes)
+                metadata = _font_metadata(content, detected_name)
+                metadata.update(instance)
+                _check_embedding(metadata, detected_name)
+            elif font_axes:
+                raise FontError("La fuente elegida es estática; no admite ejes de variación.")
             font = pymupdf.Font(fontbuffer=content)
             _check_characters(font, text, detected_name)
         except (OSError, RuntimeError) as exc:
@@ -308,14 +361,14 @@ class FontResolver:
                          "bold": bool(font.is_bold), "italic": bool(font.is_italic)})
         return ResolvedFont(font.name or detected_name, font, content, None, source, metadata)
 
-    def resolve_explicit(self, font_name: str, text: str, font_file: str | Path | None = None) -> ResolvedFont:
+    def resolve_explicit(self, font_name: str, text: str, font_file: str | Path | None = None, font_axes: dict | None = None) -> ResolvedFont:
         """An explicit new face, rather than a substitute for a detected resource.
 
         A chosen file is authoritative and its actual face is returned to the UI.
         Bold/italic is never simulated. No files are copied or downloaded.
         """
         if font_file:
-            resolved = self._from_file(Path(font_file).expanduser().resolve(), "archivo elegido", font_name, text)
+            resolved = self._from_file(Path(font_file).expanduser().resolve(), "archivo elegido", font_name, text, font_axes)
             resolved.metadata["identity_basis"] = "Tipografía elegida explícitamente por el usuario"
             return resolved
         target = normalized_name(font_name or "")
@@ -333,7 +386,7 @@ class FontResolver:
         failures = []
         for path in self._installed_index().get(target, []):
             try:
-                resolved = self._from_file(path, "instalada elegida", target, text)
+                resolved = self._from_file(path, "instalada elegida", target, text, font_axes)
                 if resolved.metadata.get("postscript_name") != target:
                     raise FontError("La fuente instalada cambió; actualice el catálogo de fuentes.")
                 resolved.metadata["identity_basis"] = "Tipografía instalada elegida explícitamente"
@@ -378,7 +431,10 @@ class FontResolver:
                             "name": ps_name, "path": str(path), "source": "instalada",
                             "version": _first_name(face, 5),
                             "bold": bool(fs_selection & 32 or mac_style & 1),
-                            "italic": bool(fs_selection & 1 or mac_style & 2)}
+                            "italic": bool(fs_selection & 1 or mac_style & 2),
+                            "variable": "fvar" in face,
+                            "font_axes": {a.axisTag: float(a.defaultValue) for a in face["fvar"].axes} if "fvar" in face else {},
+                            "variation_axes": [{"tag": a.axisTag, "minimum": float(a.minValue), "default": float(a.defaultValue), "maximum": float(a.maxValue)} for a in face["fvar"].axes] if "fvar" in face else []}
                         try:
                             _check_embedding(metadata, ps_name)
                             entry.update(editable=True, status="Permisos verificables; se comprueban los caracteres al utilizarla")

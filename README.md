@@ -1,10 +1,33 @@
-# PDF Modder 2.0.3
+# PDF Modder 3.0.0
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
 
-## Canal de actualizaciones 2.0.3
+## Novedades 3.0.0
+
+Apertura con geometrías progresivas, lista de páginas virtual y copias de trabajo
+en disco; selección por palabra, línea, párrafo y celda; ampliación y redistribución
+explícitas del área de texto; **Guardar**, **Guardar como…**, **Guardar todo** y
+**Guardar / Descartar / Cancelar** al cerrar pestañas o la aplicación.
+
+El inventario de objetos permite mover, escalar, girar y duplicar apariciones de
+texto, imágenes, vectores y Forms compatibles, y modificar sus propiedades de
+pintura. Las apariciones anidadas conservan recursos, capas y grupos de transparencia.
+La composición OpenType amplía ligaduras, marcas combinantes, escrituras de derecha
+a izquierda e instancias explícitas de fuentes variables. Cada operación indica su
+compatibilidad y conserva las comprobaciones de integridad.
+
+La selección usa la geometría del documento, sin reglas para plantillas concretas.
+Los PDF escaneados siguen llegando con el OCR externo ya hecho.
+[Uso, límites y protocolo de comprobación](docs/GUIA_V300.md).
+
+La compilación Windows de una rama produce artefactos de prueba. La publicación
+pública se ejecuta por separado, desde `main`, mediante una ejecución manual.
+El informe `ENTREGA.json` de cada paquete distingue pruebas offscreen y escritorio
+nativo; las pruebas de versiones anteriores no acreditan 3.0.0.
+
+## Canal de actualizaciones 2.0.3 (histórico)
 
 El código y las nuevas versiones se publican en `satagrolevante/PDFModder`.
 La aplicación consulta las descargas públicas sin iniciar sesión. Las instalaciones
@@ -42,14 +65,15 @@ Las comprobaciones son dirigidas a los cambios; no se repite todo el corpus hist
 Descargas y versiones públicas: [GitHub Releases](https://github.com/satagrolevante/PDFModder/releases).
 El botón **Buscar actualizaciones** consulta este mismo repositorio, sin iniciar sesión.
 
-Instalador: `releases/v2.0.3/PDFModder-v2.0.3-Instalar.exe`. Incluye las dependencias
+Instalador de esta versión: `releases/v3.0.0/PDFModder-v3.0.0-Instalar.exe`,
+generado después de sus comprobaciones. Incluye las dependencias
 y registra su desinstalador en Aplicaciones instaladas. La alternativa portable
 requiere toda la carpeta `PDFModder`, con `_internal` junto a `PDFModder.exe`.
-Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 2.0.3** desde
+Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 3.0.0** desde
 el acceso creado. **Actualizar ahora** descarga, verifica e instala la actualización,
 cierra la aplicación tras resolver los cambios pendientes y retira la instalación
 anterior identificada cuando la nueva instalación termina correctamente. Conserva
-documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 2.0.3** o
+documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 3.0.0** o
 la entrada correspondiente de Aplicaciones instaladas de Windows.
 
 Desde el código, con Python 3.12 x64:
@@ -164,7 +188,8 @@ Consulte [correcciones, pruebas y límites 0.9.1](docs/CORRECCIONES_V091.md).
    el recurso verificado; se comprueba la cobertura de los caracteres nuevos.
 9. Imágenes: ocho tiradores, volteo, giro libre, **Encajar**, **Rellenar recortando**
    y **Estirar** explícito. El recorte nuevo es reversible y afecta sólo a esa instancia.
-10. Use **Guardar como…** y reabra la copia. El archivo original se protege.
+10. Use **Guardar como…** y reabra la copia. En 3.0.0, **Guardar** actualiza
+    el último destino de esa pestaña; la primera escritura crea una copia.
 
 Consulte [guía y límites 0.9](docs/GUIA_V09.md), [verificación 0.9](docs/VERIFICACION_V09.md)
 y [licencias](docs/LICENCIAS.md). Las pruebas históricas no acreditan el paquete nuevo.
@@ -174,7 +199,8 @@ y [licencias](docs/LICENCIAS.md). Las pruebas históricas no acreditan el paquet
 El modo estricto no elige fuentes parecidas ni simula negrita/cursiva. Qt muestra
 programas tipográficos verificados cuando puede cargarlos; las incompatibilidades
 se indican. El render del PDF es la referencia final frente al borrador Qt.
-La edición rica admite texto horizontal compatible, páginas giradas y CropBox.
+La edición rica admite texto horizontal compatible, páginas giradas y CropBox;
+la composición OpenType de 3.0.0 añade las escrituras y opciones descritas en su guía.
 Recursos, recortes, permisos, firmas y elementos vecinos siguen verificándose.
 
 OCR invisible y documentos etiquetados mantienen las comprobaciones de sus capas
@@ -190,6 +216,19 @@ documenta esas rutas. Su aceptación antigua en dos pasos sigue utilizándose pa
 OCR/etiquetas y el panel lateral, no en el nuevo editor rico.
 
 ## Construir
+
+Protocolo de 3.0.0, con dependencias fijadas y corpus sintético:
+
+```powershell
+.venv/Scripts/python.exe scripts/release_v300.py --headless-qa --tests tests
+```
+
+Construye el ejecutable, comprueba su GUI y proceso PDF, instala y desinstala una
+copia aislada, y genera instalador, portable, fuentes e informes. `--headless-qa`
+registra Qt offscreen; omítalo en un escritorio de Windows para comprobar la
+plataforma nativa. Desde Linux, `--source-only --headless-qa --tests tests` comprueba
+las fuentes y la GUI; la construcción Windows necesita Windows 11 x64.
+Las fuentes o dependencias que cambien requieren repetir las comprobaciones.
 
 ```powershell
 .venv/Scripts/python.exe -m pytest -p no:cacheprovider --basetemp=tmp/pytest-local

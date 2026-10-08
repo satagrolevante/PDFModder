@@ -74,12 +74,19 @@ class PageModel:
     glyphs: list[Glyph]
     issues: list[str] = field(default_factory=list)
     revision: str | None = None
+    # Painted straight edges in unrotated PDF coordinates. Selection uses
+    # these as barriers and can infer bounded cells without document templates.
+    selection_boundaries: list[tuple] = field(default_factory=list)
+    logical_text_runs: list[dict] = field(default_factory=list)
 
     def selected(self, ids):
         ids = set(ids)
         return [g for g in self.glyphs if g.id in ids]
 
     def text(self, ids):
+        if self.logical_text_runs:
+            from .typography_v300 import logical_model_text
+            return logical_model_text(self, ids)
         result, previous = [], None
         for g in self.selected(ids):
             if previous and g.line != previous.line:
@@ -97,27 +104,12 @@ class PageModel:
         return min(hits, key=lambda g:hypot((g.bbox[0]+g.bbox[2])/2-x,(g.bbox[1]+g.bbox[3])/2-y)) if hits else None
 
     def group(self, glyph, mode):
-        if mode == "character":
-            return [glyph.id]
-        line = [g for g in self.glyphs if g.line == glyph.line and g.mode==glyph.mode
-                and (g.opacity>0)==(glyph.opacity>0)]
-        if mode == "line":
-            return [g.id for g in line]
         if mode == "block":
             # Blocks are extraction groups, never merged by spatial proximity.
             return [g.id for g in self.glyphs if g.block == glyph.block and g.mode==glyph.mode
                     and (g.opacity>0)==(glyph.opacity>0)]
-        i = line.index(glyph)
-        left, right = i, i
-        while left > 0 and not line[left-1].text.isspace():
-            if line[left].origin[0] - line[left-1].bbox[2] > glyph.size*.65:
-                break
-            left -= 1
-        while right+1 < len(line) and not line[right+1].text.isspace():
-            if line[right+1].origin[0] - line[right].bbox[2] > glyph.size*.65:
-                break
-            right += 1
-        return [g.id for g in line[left:right+1]]
+        from .selection_v300 import selection_index
+        return selection_index(self).group(glyph, mode)
 
 
 @dataclass
