@@ -1,8 +1,8 @@
-name: Publicar entrega 2.0.3 ya comprobada
+name: Publicar entrega 3.0.0 ya comprobada
 
 on:
   push:
-    branches: [main]
+    branches: [main, version-3.0.0]
     paths: ['.github/workflows/publish-prebuilt.yml']
   workflow_dispatch:
 
@@ -11,7 +11,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: publish-prebuilt-v203
+  group: publish-prebuilt-v300
   cancel-in-progress: false
 
 jobs:
@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 2b2f1fe4154e8df40607acb54e1eb144dcf74436
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -29,35 +31,15 @@ jobs:
         with:
           github-token: ${{ github.token }}
           repository: satagrolevante/PDFModder
-          run-id: 37313639989
-          name: PDFModder-Windows-a763cfe12e56c13dd636ac1ad8605bf20ff2d600
+          run-id: 37894463231
+          name: PDFModder-v3.0.0-Windows-2b2f1fe4154e8df40607acb54e1eb144dcf74436
           path: .
       - name: Instalar dependencia del publicador
-        run: python -m pip install --disable-pip-version-check requests==2.34.2
-      - name: Esperar la visibilidad pública autorizada
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python - <<'PY'
-          import json, os, time, urllib.request
-          request = urllib.request.Request(
-              'https://api.github.com/repos/satagrolevante/PDFModder',
-              headers={'Authorization': 'Bearer ' + os.environ['GITHUB_TOKEN'],
-                       'Accept': 'application/vnd.github+json',
-                       'User-Agent': 'PDFModder-publisher'})
-          deadline = time.monotonic() + 570
-          while True:
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  repository = json.load(response)
-              if not repository['private']:
-                  break
-              if time.monotonic() >= deadline:
-                  raise RuntimeError('El repositorio sigue privado; confirme el cambio de visibilidad y reejecute este workflow.')
-              print('Pendiente de confirmar Public en el repositorio.', flush=True)
-              time.sleep(30)
-          PY
+        run: >-
+          python -m pip install --disable-pip-version-check requests==2.34.2
+          charset-normalizer==3.5.1 idna==3.20 urllib3==2.8.0 certifi==2026.7.22
       - name: Publicar los archivos comprobados sin recompilar
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_SHA: a763cfe12e56c13dd636ac1ad8605bf20ff2d600
-        run: python scripts/publish_github_releases.py --version 2.0.3
+          GITHUB_SHA: 2b2f1fe4154e8df40607acb54e1eb144dcf74436
+        run: python scripts/publish_github_releases.py --version 3.0.0
