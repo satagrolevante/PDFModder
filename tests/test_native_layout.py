@@ -114,13 +114,16 @@ def test_explicit_size_rgb_and_optional_font_keep_baseline_and_neighbors(font_na
         assert 'Fuente elegida' in report['warning']
 
 
-def test_explicit_ttf_adds_new_accent_without_modifying_original_resources():
+@pytest.mark.parametrize('font_file', ['bundled', 'windows-arial'])
+def test_explicit_ttf_adds_new_accent_without_modifying_original_resources(font_file):
     from pathlib import Path
-    font=Path('C:/Windows/Fonts/arial.ttf')
+    font=(Path(__file__).parents[1]/'assets/fonts/LiberationSans-Regular.ttf'
+          if font_file=='bundled' else Path('C:/Windows/Fonts/arial.ttf'))
     if not font.exists():pytest.skip('Prueba adicional de fuente instalada en Windows')
     data=fragmented_fixture()
     output,report=run(data,'SANDÍA €',auto_width=True,auto_height=True,font_file=str(font))
     assert report['verified'] and report['font_extension']['explicit']
+    assert report['original_font_resources_unchanged']
     assert_neighbors(data,output)
     assert 'SANDÍA €' in PdfReader(BytesIO(output)).pages[0].extract_text()
     with fitz.open(stream=output,filetype='pdf') as doc:model=extract_page(doc,0,output)
@@ -129,6 +132,17 @@ def test_explicit_ttf_adds_new_accent_without_modifying_original_resources():
     second,report=edit_pdf(output,EditRequest(0,[g.id for g in chosen],text='SANDÍA Á €',auto_width=True,auto_height=True))
     assert report['verified'] and not report['font_extension']['explicit']
     assert report['font_extension']['source']=='programa incrustado exacto'
+    assert report['original_font_resources_unchanged']
+    from pdfmodder.clipping import _signature
+    original_fonts=PdfReader(BytesIO(data)).pages[0]['/Resources']['/Font']
+    first_fonts=PdfReader(BytesIO(output)).pages[0]['/Resources']['/Font']
+    second_fonts=PdfReader(BytesIO(second)).pages[0]['/Resources']['/Font']
+    for original, later in ((original_fonts,first_fonts),(first_fonts,second_fonts)):
+        assert all(_signature(resource)==_signature(later[name]) for name,resource in original.items())
+    from hashlib import sha256
+    with fitz.open(stream=output,filetype='pdf') as doc:
+        program=doc.extract_font(chosen[0].font_xref)[3]
+    assert report['font_extension']['source_program_sha256']==sha256(program).hexdigest()
     assert 'SANDÍA Á €' in PdfReader(BytesIO(second)).pages[0].extract_text()
     assert_neighbors(data,second)
 

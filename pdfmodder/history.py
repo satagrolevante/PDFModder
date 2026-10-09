@@ -71,11 +71,22 @@ class History:
                     if not cloned:outgoing.write(block)
                     digest.update(block);size+=len(block)
                 outgoing.flush()
-                after=os.fstat(incoming.fileno());named=os.stat(source)
-            identity=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
-            if identity(before)!=identity(after) or identity(after)!=identity(named) or size!=before.st_size:
-                from .model import EditError
-                raise EditError('El archivo cambió mientras se abría. Vuelve a abrirlo cuando termine de guardarse.')
+                after=os.fstat(incoming.fileno())
+                # Compare descriptors using the same API. On CPython 3.12
+                # Windows, stat(path).st_ctime is creation time whereas
+                # fstat(fd).st_ctime is the actual metadata change time.
+                # Reopening also checks that the name still identifies the
+                # file we read, while its first handle remains alive.
+                try:
+                    with open(source,'rb') as named_source:
+                        named=os.fstat(named_source.fileno())
+                except FileNotFoundError:
+                    from .model import EditError
+                    raise EditError('El archivo cambió mientras se abría. Vuelve a abrirlo cuando termine de guardarse.') from None
+                identity=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+                if identity(before)!=identity(after) or identity(after)!=identity(named) or size!=before.st_size:
+                    from .model import EditError
+                    raise EditError('El archivo cambió mientras se abría. Vuelve a abrirlo cuando termine de guardarse.')
             os.replace(name,destination)
             value=digest.hexdigest()
             obj.states=[destination];obj.digests=[value];obj.sizes=[size]

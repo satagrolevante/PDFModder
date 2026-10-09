@@ -6,6 +6,40 @@ from .model import EditError, union
 from .richmodels import RichTextRequest
 
 
+def _font_evidence(before, after, page, report):
+    """Keep the panel's font guarantees identical across native compositors.
+
+    Rich composition reports each inserted resource separately. A simple
+    field still needs the existing single-font extension evidence, including
+    when its q/cm/Q scopes force it through the rich compositor on reopening.
+    Check the original resources themselves before exposing that guarantee.
+    """
+    from io import BytesIO
+    from pypdf import PdfReader
+    from .clipping import _signature
+
+    original = PdfReader(BytesIO(before), strict=True).pages[page]
+    current = PdfReader(BytesIO(after), strict=True).pages[page]
+    def fonts(pdf_page):
+        resources = pdf_page.get('/Resources', {})
+        resources = resources.get_object() if hasattr(resources, 'get_object') else resources
+        result = resources.get('/Font', {})
+        return result.get_object() if hasattr(result, 'get_object') else result
+    original_fonts, current_fonts = fonts(original), fonts(current)
+    for resource, font in original_fonts.items():
+        if resource not in current_fonts or _signature(font) != _signature(current_fonts[resource]):
+            raise EditError('La composición alteró una fuente original, su programa o su codificación.')
+    report.update(original_font_resources_unchanged=True,
+                  font_resources_unchanged=set(original_fonts) == set(current_fonts))
+    extensions = {resource: evidence for resource, evidence in report.get('fonts', {}).items()
+                  if isinstance(evidence, dict) and 'explicit' in evidence
+                  and evidence.get('original_resource_unchanged')}
+    if extensions:
+        report['font_extensions'] = extensions
+        if len(extensions) == 1:
+            report['font_extension'] = next(iter(extensions.values()))
+
+
 def _replace_runs(runs, text):
     old=[]
     for run in runs:
@@ -69,6 +103,7 @@ def edit_native_panel(data, request, model, resolver=None):
     if abs(shift)>.00001:
         shifted=tuple(v+(shift if i%2==0 else 0.) for i,v in enumerate(bounds))
         result,report=edit_rich_pdf(data,replace(rich,rect=shifted),resolver)
+    _font_evidence(data,result,request.page,report)
     report.update(native_panel=True,line_reflow=False,line_reflow_requested=request.line_reflow,
                   paragraph_layout=request.reflow)
     if request.line_reflow:

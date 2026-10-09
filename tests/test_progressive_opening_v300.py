@@ -111,16 +111,82 @@ def test_clean_reader_workspace_and_tab_switch_do_not_publish_recovery(tmp_path)
 
 def test_snapshot_detects_source_change_during_capture_and_removes_partial_state(tmp_path,monkeypatch):
     import pdfmodder.history as history
-    source=pdf_file(tmp_path);root=tmp_path/'capture';stat=history.os.stat
-    def changed(path,*args,**kwargs):
-        result=stat(path,*args,**kwargs)
-        if Path(path)==source:
+    source=pdf_file(tmp_path);root=tmp_path/'capture';fstat=history.os.fstat;calls=0
+    def changed(fd):
+        nonlocal calls
+        calls+=1
+        result=fstat(fd)
+        if calls>1:
             return SimpleNamespace(st_dev=result.st_dev,st_ino=result.st_ino,st_size=result.st_size+1,
                                    st_mtime_ns=result.st_mtime_ns,st_ctime_ns=result.st_ctime_ns)
         return result
-    monkeypatch.setattr(history.os,'stat',changed)
+    monkeypatch.setattr(history.os,'fstat',changed)
     with pytest.raises(EditError,match='cambió mientras'):History.from_file(source,persistent_root=root)
     assert not root.exists()
+
+
+def test_snapshot_uses_descriptor_timestamps_when_windows_path_stat_differs(tmp_path,monkeypatch):
+    import pdfmodder.history as history
+    source=pdf_file(tmp_path);original=source.read_bytes();stat=history.os.stat
+    def windows_path_stat(path,*args,**kwargs):
+        result=stat(path,*args,**kwargs)
+        if Path(path)==source:
+            # CPython 3.12 on Windows exposes creation time through stat(path)
+            # and metadata change time through fstat(fd).
+            return SimpleNamespace(st_dev=result.st_dev,st_ino=result.st_ino,st_size=result.st_size,
+                                   st_mtime_ns=result.st_mtime_ns,st_ctime_ns=result.st_ctime_ns-1_000_000_000)
+        return result
+    monkeypatch.setattr(history.os,'stat',windows_path_stat)
+    captured=History.from_file(source,directory=tmp_path)
+    try:
+        assert captured.original_source.read_bytes()==original
+        assert captured.revision==sha256(original).hexdigest()
+        assert captured._original is captured._current is None
+    finally:captured.close()
+
+
+@pytest.mark.parametrize('change',['append','same_size_overwrite'])
+def test_snapshot_rejects_real_in_place_write_before_descriptor_recheck(tmp_path,monkeypatch,change):
+    import pdfmodder.history as history
+    source=pdf_file(tmp_path);root=tmp_path/'capture';fstat=history.os.fstat;calls=0
+    def changed(fd):
+        nonlocal calls
+        calls+=1
+        if calls==2:
+            initial=fstat(fd)
+            with source.open('r+b') as writer:
+                if change=='append':writer.seek(0,2)
+                writer.write(b'X');writer.flush()
+            history.os.utime(source,ns=(initial.st_atime_ns,initial.st_mtime_ns+2_000_000_000))
+        return fstat(fd)
+    monkeypatch.setattr(history.os,'fstat',changed)
+    with pytest.raises(EditError,match='cambió mientras'):History.from_file(source,persistent_root=root)
+    assert not root.exists()
+
+
+@pytest.mark.parametrize('change',['replacement','removal'])
+def test_snapshot_rechecks_named_source_while_original_descriptor_is_alive(tmp_path,monkeypatch,change):
+    import builtins
+    import pdfmodder.history as history
+    source=pdf_file(tmp_path);root=tmp_path/'capture';replacement=tmp_path/'replacement.pdf'
+    replacement.write_bytes(source.read_bytes());original_open=builtins.open;source_handle=None
+    def changed_name(path,*args,**kwargs):
+        nonlocal source_handle
+        if Path(path)==source:
+            if source_handle is None:
+                source_handle=original_open(path,*args,**kwargs)
+                return source_handle
+            # Use real file descriptors for distinct files. Reopening a
+            # replaced/deleted path is simulated because Windows may prohibit
+            # renaming a file while its original descriptor is open.
+            assert not source_handle.closed
+            history.os.fstat(source_handle.fileno())
+            if change=='removal':raise FileNotFoundError(str(source))
+            return original_open(replacement,*args,**kwargs)
+        return original_open(path,*args,**kwargs)
+    monkeypatch.setattr(history,'open',changed_name,raising=False)
+    with pytest.raises(EditError,match='cambió mientras'):History.from_file(source,persistent_root=root)
+    assert source_handle.closed and not root.exists()
 
 
 def test_file_snapshot_push_undo_and_suspend_preserve_original(tmp_path):

@@ -1,6 +1,8 @@
 """CID panel alignment, dimensions and neighbour preservation."""
 from pathlib import Path
+from io import BytesIO
 import pymupdf as fitz
+from pypdf import PdfReader
 import pytest
 
 from pdfmodder.engine import edit_pdf, extract_page
@@ -42,3 +44,25 @@ def test_no_implicit_line_wrap_when_panel_reflow_is_disabled():
     data,model,selected=sample()
     with pytest.raises(EditError,match='anchura|Redistribuir'):
         edit_pdf(data,EditRequest(0,[g.id for g in selected],text='1239,250',width=10,height=100,auto_height=True))
+
+
+def test_panel_verifies_original_font_program_instead_of_trusting_compositor_report(monkeypatch):
+    from pdfmodder import richtext
+    data,model,selected=sample()
+    compose=richtext.edit_rich_pdf
+    resource=selected[0].font_resource
+    def changed_program(*args,**kwargs):
+        result,report=compose(*args,**kwargs)
+        reader=PdfReader(BytesIO(result))
+        font=reader.pages[0]['/Resources']['/Font'][resource]
+        program=font['/DescendantFonts'][0]['/FontDescriptor']['/FontFile2']
+        with fitz.open(stream=result,filetype='pdf') as doc:
+            xref=program.indirect_reference.idnum
+            # Trailing padding leaves the visible glyphs unchanged, but the
+            # original embedded program must nevertheless remain byte exact.
+            doc.update_stream(xref,doc.xref_stream(xref)+b'\0')
+            result=doc.tobytes(garbage=0,deflate=True)
+        return result,report
+    monkeypatch.setattr(richtext,'edit_rich_pdf',changed_program)
+    with pytest.raises(EditError,match='fuente original'):
+        edit_pdf(data,EditRequest(0,[g.id for g in selected],text='1239,250',auto_width=True))
