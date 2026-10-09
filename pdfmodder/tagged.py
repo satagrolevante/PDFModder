@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from io import BytesIO
 import hashlib
 import copy
+import math
 import pymupdf as fitz
 from pypdf import PdfReader
 from pypdf.generic import (ContentStream,DecodedStreamObject,IndirectObject,
@@ -34,6 +35,35 @@ def _integer(value,label):
     if not isinstance(value,int) or isinstance(value,bool) or value<0:
         fail(label+' debe ser un entero no negativo.')
     return int(value)
+
+
+def _preservable_layout_attributes(value):
+    """Allow unchanged paragraph style, never declared object geometry.
+
+    Native editing keeps these explicit style parameters and neighbouring
+    operators. BBox, dimensions, colours, classes, other owners and unknown
+    attributes need their own update proof and remain unsupported here.
+    """
+    attributes=obj(value)
+    if (not isinstance(attributes,dict) or not isinstance(attributes.get('/O'),NameObject)
+            or attributes['/O']!='/Layout'):
+        return False
+    numbers={'/SpaceBefore','/SpaceAfter','/StartIndent','/EndIndent','/TextIndent'}
+    if set(attributes)-numbers-{'/O','/TextAlign','/WritingMode'}:
+        return False
+    for key in numbers & set(attributes):
+        number=obj(attributes[key])
+        if (isinstance(number,bool) or not isinstance(number,(int,float))
+                or not math.isfinite(number)
+                or key in ('/SpaceBefore','/SpaceAfter') and number<0):
+            return False
+    if '/TextAlign' in attributes and (not isinstance(attributes['/TextAlign'],NameObject)
+            or attributes['/TextAlign'] not in ('/Start','/End','/Center','/Justify')):
+        return False
+    if '/WritingMode' in attributes and (not isinstance(attributes['/WritingMode'],NameObject)
+            or attributes['/WritingMode']!='/LrTb'):
+        return False
+    return True
 
 
 def _stream(operations):
@@ -313,6 +343,85 @@ def analyze(data):
     return TaggedStructure(data)
 
 
+_READONLY_CACHE_BUDGET = 128 * 1024 * 1024
+_readonly_cache = None
+_readonly_verdict = None
+
+
+def clear_readonly_cache(revision=None):
+    """Release checked graphs, optionally only for one SHA-256 revision."""
+    global _readonly_cache, _readonly_verdict
+    if _readonly_cache is not None and (revision is None or _readonly_cache[0][0].hex() == revision):
+        _readonly_cache = None
+    if _readonly_verdict is not None and (revision is None or _readonly_verdict[0][0].hex() == revision):
+        _readonly_verdict = None
+
+
+def _readonly_size(structure):
+    """Conservative retained-size estimate; this is not a process-memory limit."""
+    if structure is None:
+        return 0
+    # Include the source plus its reader buffer, parsed PDF objects, structural
+    # nodes, content operands and per-operation contexts. Never retain several
+    # large document revisions to make an advisory check faster.
+    return (2 * len(structure.data) + 1024 * len(structure.nodes)
+            + 512 * sum(len(ops) for ops in structure.operations)
+            + 1024 * len(structure.reader.resolved_objects)
+            + 32 * sum(len(contexts) for contexts in structure.contexts)
+            + 1024 * len(structure.marks))
+
+
+def analyze_readonly(data):
+    """Reuse one immutable revision for checks that never modify its structure.
+
+    Mutable planning models must keep using analyze(): TaggedAddition changes
+    its structure. Read-only transaction guards may share this checked model.
+    A writable input buffer is copied before hashing and parsing so a
+    later in-place change cannot contaminate this revision's cached evidence.
+    """
+    global _readonly_cache, _readonly_verdict
+    source = bytes(data)
+    key = (hashlib.sha256(source).digest(), len(source))
+    if _readonly_cache is not None and _readonly_cache[0] == key:
+        _, structure, error = _readonly_cache
+        if error is not None:
+            raise EditError(error)
+        return structure
+    _readonly_cache = None
+    _readonly_verdict = None
+    try:
+        structure = analyze(source)
+    except EditError as exc:
+        # Retain only the diagnostic, never an exception/traceback that keeps
+        # the rejected document and partially parsed graph alive.
+        message = str(exc)
+        if len(message.encode('utf-8')) <= 64 * 1024:
+            _readonly_verdict = (key, False, message)
+        if len(message.encode('utf-8')) <= _READONLY_CACHE_BUDGET:
+            _readonly_cache = (key, None, message)
+        raise
+    _readonly_verdict = (key, structure is not None, None)
+    if _readonly_size(structure) <= _READONLY_CACHE_BUDGET:
+        _readonly_cache = (key, structure, None)
+    return structure
+
+
+def validate_tagged(data):
+    """Check tags with a small verdict cache even when their graph is too large.
+
+    A verdict cannot stand in for a structural object: advisory checks that need
+    its nodes must still use analyze_readonly(). Transactions use analyze().
+    """
+    source = bytes(data)
+    key = (hashlib.sha256(source).digest(), len(source))
+    if _readonly_verdict is not None and _readonly_verdict[0] == key:
+        _, tagged, error = _readonly_verdict
+        if error is not None:
+            raise EditError(error)
+        return tagged
+    return analyze_readonly(source) is not None
+
+
 def require_untagged(data,operation):
     try:
         with fitz.open(stream=data,filetype='pdf') as doc:
@@ -327,8 +436,8 @@ def require_untagged(data,operation):
 
 
 def assert_structure(before,after,expected=None):
-    a=analyze(before)
-    b=analyze(after)
+    a=analyze_readonly(before)
+    b=analyze_readonly(after)
     if (a is None)!=(b is None):fail('se perdió o añadió una estructura de accesibilidad.')
     if a is not None and (expected if expected is not None else a.semantic())!=b.semantic():
         fail('la validación detectó cambios ajenos en etiquetas, relaciones, orden o propiedades accesibles.')
@@ -386,11 +495,21 @@ class TaggedEdit:
                 fail('la etiqueta contiene una expansión /E que requiere actualización semántica manual.')
             if properties.get('/Alt') and old!=new:
                 fail('la etiqueta contiene texto alternativo /Alt que requiere revisión semántica manual.')
+        # Index ancestry once. Scanning every content owner for every node
+        # makes a short edit quadratic in the complete document's structure.
+        # Append in owner insertion order, including cross-page contents and
+        # the empty root path, so ActualText checks retain their exact scope.
+        contents_by_path={}
+        for key,owner in structure.owners.items():
+            for depth in range(len(owner)+1):
+                path=owner[:depth]
+                if path in structure.nodes:
+                    contents_by_path.setdefault(path,[]).append(key)
         for path,node in structure.nodes.items():
-            contents=[key for key,owner in structure.owners.items() if owner[:len(path)]==path]
+            contents=contents_by_path.get(path,())
             relevant=[mcid for p,mcid in contents if p==page and mcid in affected]
             if not relevant:continue
-            if node.get('/A') or node.get('/C'):
+            if '/C' in node or ('/A' in node and not _preservable_layout_attributes(node['/A'])):
                 fail('el elemento tiene atributos de disposición o clases que todavía no se actualizan al editar.')
             if node.get('/E'):
                 fail('el elemento contiene una expansión semántica que requiere revisión manual.')
@@ -476,9 +595,24 @@ class TaggedEdit:
 
     def validate(self,after):
         from .engine import extract_page
-        result=assert_structure(self.structure.data,after,self.expected)
+        from .page_fingerprint import PageProof
+        # The source structure was verified when this guard was constructed;
+        # expected is its private semantic snapshot. Reparse only the output.
+        # Reopening the source here evicts the checked output from the single-
+        # revision cache and repeats both whole-document analyses unnecessarily.
+        result=analyze_readonly(after)
+        if result is None:
+            fail('se perdió la estructura de accesibilidad.')
+        if self.expected!=result.semantic():
+            fail('la validación detectó cambios ajenos en etiquetas, relaciones, orden o propiedades accesibles.')
+        unchanged_pages=PageProof(self.structure.data,after)
         with fitz.open(stream=after,filetype='pdf') as doc,fitz.open(stream=self.structure.data,filetype='pdf') as source:
             for page in range(doc.page_count):
+                # Structural semantics were checked globally above. Identical
+                # content and resources on another page also prove unchanged
+                # decoded glyphs and their marked-content ownership there.
+                if page!=self.page and unchanged_pages.unchanged(page):
+                    continue
                 model=extract_page(doc,page)
                 before=self.model if page==self.page else extract_page(source,page)
                 contexts=result.glyph_contexts(page,model)

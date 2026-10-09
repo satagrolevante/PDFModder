@@ -13,7 +13,7 @@ class CompatibilityUiV300Mixin:
                           ('Cambiar escala','scale'),('Girar','rotate'),('Duplicar','duplicate')]:
             self.capability_operation_v300.addItem(label,key)
         self.property_box.layout().insertRow(1,'Comprobar operación',self.capability_operation_v300)
-        self.capability_operation_v300.currentIndexChanged.connect(self._show_capability_v300)
+        self.capability_operation_v300.currentIndexChanged.connect(self._capability_operation_changed_v300)
         row=QWidget();layout=QHBoxLayout(row);layout.setContentsMargins(0,0,0,0)
         self.capability_buttons_v300={}
         for key,label,callback in [('fonts','Elegir fuente…',self.font_inspector),
@@ -49,6 +49,15 @@ class CompatibilityUiV300Mixin:
         resolutions=set(capability.get('resolution_ids',[]))
         for name,button in self.capability_buttons_v300.items():button.setVisible(name in resolutions)
 
+    def _capability_operation_changed_v300(self,*unused):
+        self._show_capability_v300()
+        result=getattr(self,'_preflight_result_v200',None)
+        key=self.capability_operation_v300.currentData()
+        if (self.model and self.canvas.ids and (not result or
+                result.get('operations',{}).get(key,{}).get('requires_check'))):
+            self._preflight_pending_v200=(self.page_number,self.model.revision,tuple(self.canvas.ids))
+            self._preflight_timer_v200.start(0)
+
     def _pump_preflight_v200(self):
         if getattr(self,'_modal_depth_v200',0):return
         pending=self._preflight_pending_v200
@@ -57,12 +66,16 @@ class CompatibilityUiV300Mixin:
         if pending!=(self.page_number,self.model.revision,tuple(self.canvas.ids)):
             self._preflight_pending_v200=None;return
         self._preflight_pending_v200=None
+        operation=self.capability_operation_v300.currentData()
         def ready(result):
             if not self.model or pending!=(self.page_number,self.model.revision,tuple(self.canvas.ids)):return
+            if operation!=self.capability_operation_v300.currentData():
+                self._preflight_pending_v200=pending;self._preflight_timer_v200.start(0);return
             self._preflight_result_v200=result;self._show_capability_v300()
             if self._start_edit_requested_v200==pending:
                 self._start_edit_requested_v200=None;QTimer.singleShot(0,self.start_edit)
-        self._submit('selection_capabilities_v300',{'page':pending[0],'revision':pending[1],'ids':list(pending[2])},ready)
+        self._submit('selection_capabilities_v300',{'page':pending[0],'revision':pending[1],
+            'ids':list(pending[2]),'operation':operation},ready)
 
     def _refresh_actions(self):
         super()._refresh_actions()

@@ -194,7 +194,7 @@ def _catalog(shows, operations, resource):
     return catalog
 
 
-def selection_payload(data, page, ids, resolver=None):
+def selection_payload(data, page, ids, resolver=None, *, page_model=None):
     """Fuente real, estilos y cursores del PDF abierto; no modifica el documento."""
     resolver = resolver or FontResolver()
     from .typography_v300 import selection_payload as shaped_selection
@@ -213,7 +213,9 @@ def selection_payload(data, page, ids, resolver=None):
         payload['form_isolation'] = evidence
         return payload
     with fitz.open(stream=data,filetype='pdf') as doc:
-        model = extract_page(doc,page,data)
+        model = (page_model if page_model is not None and page_model.number==page
+                 and page_model.revision==hashlib.sha256(data).hexdigest()
+                 else extract_page(doc,page,data))
         selected = model.selected(ids)
         if not selected or len(selected) != len(set(ids)):
             raise EditError('Selecciona texto del documento actual.')
@@ -401,12 +403,47 @@ def _layout(request,tokens,rect):
     return visible,lines,final_rect
 
 
+def _new_neighbor_overlap(planned, neighbor, selected, tolerance=.12):
+    """Reject overlap beyond the source's existing nominal glyph rectangles.
+
+    Close baselines can overlap font ascent/descent boxes without touching ink.
+    Preserve only existing intersections with this same untouched neighbor;
+    subtract their rectangle union rather than spanning gaps between selections.
+    """
+    if not intersects(planned.bbox, neighbor.bbox, tolerance):
+        return False
+    remaining = [fitz.Rect(planned.bbox) & fitz.Rect(neighbor.bbox)]
+    for source in selected:
+        if not intersects(source.bbox, neighbor.bbox, tolerance):
+            continue
+        allowed = (fitz.Rect(source.bbox) & fitz.Rect(neighbor.bbox)) + (
+            -tolerance, -tolerance, tolerance, tolerance)
+        uncovered = []
+        for part in remaining:
+            overlap = part & allowed
+            if overlap.is_empty:
+                uncovered.append(part)
+                continue
+            pieces = (
+                (part.x0, part.y0, part.x1, overlap.y0),
+                (part.x0, overlap.y1, part.x1, part.y1),
+                (part.x0, overlap.y0, overlap.x0, overlap.y1),
+                (overlap.x1, overlap.y0, part.x1, overlap.y1),
+            )
+            uncovered.extend(fitz.Rect(piece) for piece in pieces
+                             if piece[0] < piece[2] and piece[1] < piece[3])
+        remaining = uncovered
+        if not remaining:
+            return False
+    return True
+
+
 def edit_rich_pdf(data, request, resolver=None):
     """Compose, validate and return a new PDF; callers own preview/history."""
     from .native_codes import verified_catalog
     from .native_font_extension import prepare_native_font
     from .validation import document_issues, assert_characters
-    from .tagged import analyze, TaggedEdit
+    from .tagged import analyze_readonly, TaggedEdit
     if isinstance(request,dict): request=RichTextRequest(**request)
     resolver=resolver or FontResolver()
     started=time.perf_counter()
@@ -617,13 +654,17 @@ def edit_rich_pdf(data, request, resolver=None):
     for g in planned:
         if not page_bounds.contains(fitz.Rect(g.bbox)) or not (clip+(-.035,-.035,.035,.035)).contains(fitz.Rect(g.bbox)):
             raise EditError('El texto nuevo queda fuera de la página o del recorte original.')
-        if not request.allow_overlap and any(intersects(g.bbox,n.bbox,.12) for n in others):
+        if not request.allow_overlap and any(_new_neighbor_overlap(g,n,selected) for n in others):
             raise EditError('El texto se solapa con caracteres vecinos. Amplía o mueve el cuadro, o permite el solapamiento explícitamente.')
     with fitz.open(stream=data,filetype='pdf') as safety:
         if planned:_safe_rich_selection(safety[request.page],clean,planned,metadata)
         _safe_native_consolidation(safety[request.page],selected,planned)
-    structure=analyze(data)
-    tagged=TaggedEdit(structure,request.page,model,selected,planned,selected,True) if structure else None
+    structure=analyze_readonly(data)
+    from .tagged_artifacts import verified_artifact_selection
+    artifact=(structure is not None and verified_artifact_selection(
+        structure,request.page,request.ids,mapping,operations,model=model,planned=planned))
+    tagged=(TaggedEdit(structure,request.page,model,selected,planned,selected,True)
+            if structure is not None and not artifact else None)
     matrix=first_state['matrix'];linear=first_state['ctm']*page_matrix;inverse=~linear
     insertion=[];new_underlines=[];groups=[]
     for t in laid:
@@ -755,6 +796,7 @@ def edit_rich_pdf(data, request, resolver=None):
                   glyphs=[asdict(g) for g in planned],carets=carets,line_count=len(lines),fonts=evidence,
                   original=model.text(request.ids),replacement=logical_text,
                   elapsed_seconds=round(time.perf_counter()-started,3),rich_text=True)
+    if artifact:report['artifact_preserved']=True
     if removed_groups:
         report['removed_groups']=removed_groups
         report.setdefault('warnings',[]).append('Se han desagrupado los grupos afectados por el cambio de texto: '+', '.join(removed_groups)+'. Puedes agrupar su contenido de nuevo.')
@@ -899,7 +941,9 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
     from .validation import _canonical,related,assert_characters,trace_chars,assert_pixels,_ink_exclusions
     from .tagged import assert_structure
     from .validation import assert_form_preservation, assert_content_outside_widgets, assert_text_object_structure
+    from .page_fingerprint import PageProof
     assert_form_preservation(before_data, after_data)
+    unchanged_pages = PageProof(before_data, after_data)
     def without_underlines(page,items):
         result=related(page)
         drawings=list(result['drawings'])
@@ -925,6 +969,9 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
                 assert_content_outside_widgets(b, [g.bbox for g in changed])
             if (tuple(a.mediabox),tuple(a.cropbox),a.rotation)!=(tuple(b.mediabox),tuple(b.cropbox),b.rotation):
                 raise EditError('Cambió la geometría de una página.')
+            if i != page_number and unchanged_pages.unchanged(i):
+                reports.append(unchanged_pages.report(i))
+                continue
             if without_underlines(a,old_underlines if i==page_number else [])!=without_underlines(b,new_underlines if i==page_number else []):
                 raise EditError('La edición alteró imágenes, vectores, enlaces, anotaciones o campos ajenos.')
             assert_characters([(g.text,g.origin,g.font,g.size) for g in expected] if i==page_number else trace_chars(a),b)

@@ -10,21 +10,24 @@ def _entry(status,label,reasons=(),actions=(),resolutions=()):
                 resolution_ids=list(resolutions),requires_final_validation=True)
 
 
-def selection_capabilities_v300(session,page,ids,revision=None,new_text=None):
+def selection_capabilities_v300(session,page,ids,revision=None,new_text=None,operation=None):
     data=session.history.current;digest=sha256(data).hexdigest()
     if revision and revision!=digest:raise EditError('La selección pertenece a una revisión anterior.')
     from .compatibility_v200 import preflight_text
     from .engine import extract_page
     from .objects_v300 import object_graph
     from .validation import document_issues,content_widget_issues
-    text=preflight_text(data,page,ids,new_text,session.resolver)
-    text['resolution_ids']=[]
     with session._open(data) as doc:
-        model=extract_page(doc,page,data);selected=model.selected(ids)
+        cached=getattr(session,'_model_cache',{}).get((digest,page,False))
+        model=cached[0] if cached is not None else extract_page(doc,page,data)
+        selected=model.selected(ids)
         document_problems=document_issues(data,doc,operation='content')
         widget_problems=content_widget_issues(doc[page],[g.bbox for g in selected])
     if not selected or len(selected)!=len(set(ids)):
         raise EditError('Selecciona texto de la revisión actual.')
+    text=preflight_text(data,page,ids,new_text,session.resolver,
+                        page_model=model,document_problems=document_problems)
+    text['resolution_ids']=[]
     if widget_problems:
         text.update(status='blocked',label='Este texto coincide con un campo de formulario',
                     reasons=widget_problems,actions=['Usa el editor de campos para cambiar su valor o apariencia.'],
@@ -43,6 +46,20 @@ def selection_capabilities_v300(session,page,ids,revision=None,new_text=None):
             text=deepcopy(shaped);text.setdefault('actions',[])
             text.setdefault('reasons',[]);text.setdefault('resolution_ids',[])
             if text['status']=='conditional':text['resolution_ids'].append('fonts')
+    if operation=='text':
+        # Editing text does not need to probe every native object on the page.
+        # The operation chooser requests those checks explicitly when needed.
+        if text['status']!='blocked':text['resolution_ids'].append('area')
+        elif not document_problems and not widget_problems:
+            text['resolution_ids'].append('objects')
+        operations={'text':text}
+        for key,label in [('move','Mover'),('scale','Cambiar escala'),('rotate','Girar'),('duplicate','Duplicar')]:
+            operations[key]=_entry('conditional',label+': pendiente de comprobar',
+                actions=['Elige esta operación para comprobar la aparición PDF.'])
+            operations[key]['requires_check']=True
+        result=deepcopy(text);result.update(operations=operations,revision=digest,
+            object_id=None,scope='operación y selección actuales')
+        return result
     # Object inventory has stricter structural requirements than some verified
     # text paths. Its limitation belongs to those operations, not to the whole
     # selection or to a pending text draft.

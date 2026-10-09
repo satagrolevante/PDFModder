@@ -37,9 +37,9 @@ def document_issues(data, doc, *, operation=None):
         if root.get('/Perms'):
             issues.append("Documento firmado o certificado: modificar contenido afectaría a la firma.")
         if root.get('/StructTreeRoot'):
-            from .tagged import analyze
+            from .tagged import validate_tagged
             try:
-                analyze(data)
+                validate_tagged(data)
             except EditError as exc:
                 issues.append(str(exc))
         for f in (reader.get_fields() or {}).values():
@@ -218,9 +218,9 @@ def page_issues(data, number):
         if any(op in (b'W',b'W*') for _,op in ops):
             issues.append("Página con recortes gráficos explícitos: no se puede reconstruir el texto con seguridad.")
         if any(op in (b'BDC', b'BMC') for _,op in ops):
-            from .tagged import analyze
+            from .tagged import validate_tagged
             try:
-                if analyze(data) is None:
+                if not validate_tagged(data):
                     issues.append("Página con contenido marcado o capas sin estructura accesible verificable.")
             except EditError as exc:
                 issues.append(str(exc))
@@ -512,6 +512,8 @@ def validate_transition(before_data, after_data, page_number, expected, excluded
     report = []
     excluded = tuple(tuple(rect) for rect in excluded)
     assert_form_preservation(before_data, after_data)
+    from .page_fingerprint import PageProof
+    unchanged_pages = PageProof(before_data, after_data)
     with fitz.open(stream=before_data,filetype='pdf') as before, fitz.open(stream=after_data,filetype='pdf') as after:
         assert_content_outside_widgets(before[page_number], excluded)
         if before.page_count != after.page_count:
@@ -524,6 +526,9 @@ def validate_transition(before_data, after_data, page_number, expected, excluded
             a,b = before[i],after[i]
             if (tuple(a.mediabox),tuple(a.cropbox),a.rotation) != (tuple(b.mediabox),tuple(b.cropbox),b.rotation):
                 raise EditError("Se alteraron los límites o la rotación de una página.")
+            if i != page_number and unchanged_pages.unchanged(i):
+                report.append(unchanged_pages.report(i))
+                continue
             if related(a) != related(b):
                 raise EditError("Se alteraron imágenes, vectores, enlaces, anotaciones o campos; operación cancelada.")
             assert_characters(expected if i==page_number else trace_chars(a), b)

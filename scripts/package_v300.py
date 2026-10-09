@@ -1,4 +1,4 @@
-"""Empaqueta 3.0.0 con pruebas de esta revisión y del mismo ejecutable.
+"""Empaqueta 3.0.x con pruebas de esta revisión y del mismo ejecutable.
 
 --prepare valida pruebas/GUI y prepara las fuentes antes del instalador.
 --finish exige instalación y retirada aisladas y genera ZIP/sumas SHA-256.
@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import platform
+import re
 import shutil
 import sys
 import xml.etree.ElementTree as ET
@@ -37,7 +38,7 @@ def checked_test_report() -> tuple[dict, int, int]:
     if (binding.get("application_version") != __version__ or binding.get("exit_code") != 0
             or not binding.get("source_unchanged") or binding.get("app_source_sha256") != source_fingerprint()
             or binding.get("report_sha256") != digest(xml)):
-        raise RuntimeError("La evidencia de pytest no corresponde a las fuentes 3.0.0 actuales.")
+        raise RuntimeError("La evidencia de pytest no corresponde a las fuentes actuales de " + __version__ + ".")
     suites = [suite for suite in ET.parse(xml).getroot().iter("testsuite") if not suite.findall("testsuite")]
     if not suites or any(int(suite.get(key, "0")) for suite in suites for key in ("failures", "errors")):
         raise RuntimeError("Las pruebas tienen fallos o faltan resultados.")
@@ -53,7 +54,7 @@ def checked_smoke() -> dict:
     if (not report.get("ok") or not report.get("frozen") or report.get("stage") != "complete"
             or report.get("app_version") != __version__ or report.get("exe_sha256") != digest(BUNDLE / "PDFModder.exe")
             or report.get("source_sha256") != digest(report["source"])):
-        raise RuntimeError("El recorrido no acredita el ejecutable 3.0.0 actual ni su corpus.")
+        raise RuntimeError("El recorrido no acredita el ejecutable actual de " + __version__ + " ni su corpus.")
     steps = report.get("steps", [])
     if not steps or not all(step.get("ok") for step in steps) or not REQUIRED_SMOKE_STEPS.issubset({step.get("step") for step in steps}):
         raise RuntimeError("Faltan pasos aprobados del recorrido 3.0.0.")
@@ -61,8 +62,8 @@ def checked_smoke() -> dict:
 
 
 def prepare() -> None:
-    if __version__ != "3.0.0":
-        raise RuntimeError("Este empaquetado corresponde a 3.0.0.")
+    if not re.fullmatch(r"3\.0\.\d+", __version__):
+        raise RuntimeError("Este empaquetado corresponde a la familia 3.0.x.")
     binding, passed, skipped = checked_test_report()
     smoke = checked_smoke()
     for path in application_sources():

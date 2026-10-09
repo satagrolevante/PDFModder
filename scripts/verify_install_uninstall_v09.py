@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from pdfmodder import __version__ as VERSION
 
-CURRENT_SUITE = 'v' + VERSION.replace('.', '')
+CURRENT_SUITE = 'v300' if VERSION.startswith('3.0.') else 'v' + VERSION.replace('.', '')
 SUPPORTED_SUITES = tuple(dict.fromkeys(('v09', 'compat', 'v160', 'v161', 'v162', 'v170', 'v171', CURRENT_SUITE)))
 KEY = 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PDFModder-' + VERSION
 INSTALLER = ROOT / ('releases/v' + VERSION) / ('PDFModder-v' + VERSION + '-Instalar.exe')

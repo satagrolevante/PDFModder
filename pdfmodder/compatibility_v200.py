@@ -12,7 +12,8 @@ from .fonts import FontResolver, FontError
 from .model import EditRequest, EditError
 
 
-def preflight_text(data, page, ids, new_text=None, resolver=None):
+def preflight_text(data, page, ids, new_text=None, resolver=None, *,
+                   page_model=None, document_problems=None):
     """Return JSON-safe status/actions/font evidence for a selected text.
 
     Use on selection or when requesting an edit, rather than on each keypress.
@@ -37,7 +38,8 @@ def preflight_text(data, page, ids, new_text=None, resolver=None):
     result['unicode_normalization']=bool(new_text is not None and text!=new_text)
     try:
         with fitz.open(stream=data,filetype='pdf') as doc:
-            problems=document_issues(data,doc,operation='content')
+            problems=(document_issues(data,doc,operation='content')
+                      if document_problems is None else document_problems)
             if problems:
                 result['reasons']=problems
                 result['actions']=['Abrir una copia con permisos legítimos o conservar el documento firmado.']
@@ -47,7 +49,12 @@ def preflight_text(data, page, ids, new_text=None, resolver=None):
         if isolated is not None:
             result['form_isolation']=isolated[2]
         with fitz.open(stream=local,filetype='pdf') as doc:
-            model=extract_page(doc,page,local)
+            # A page already prepared by this worker has the same immutable
+            # revision. Form isolation creates different bytes and must build
+            # its own model instead of reusing the original page evidence.
+            model=(page_model if page_model is not None and page_model.number==page
+                   and page_model.revision==sha256(local).hexdigest()
+                   else extract_page(doc,page,local))
             selected=model.selected(ids)
             if not selected or len(selected)!=len(set(ids)):
                 raise EditError('Selecciona texto de la revisión actual.')

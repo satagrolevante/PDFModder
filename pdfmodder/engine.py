@@ -529,6 +529,12 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
 
 
 def atomic_save(data, destination, source=None):
+    """Validate and atomically persist the exact current PDF revision.
+
+    Editing already validates its PDF transaction. Saving introduces no new
+    transaction or serialization: verified byte identity proves that the file
+    retains the current revision's content, resources, geometry and appearance.
+    """
     destination=Path(destination).resolve()
     if source and destination==Path(source).resolve():
         raise EditError("Guardar como no puede sobrescribir el original. Elige otra ruta.")
@@ -536,23 +542,33 @@ def atomic_save(data, destination, source=None):
         raise EditError("El destino apunta al archivo original mediante un enlace.")
     temporary=None
     try:
+        data=bytes(data)
+        digest=hashlib.sha256(data).digest()
         with fitz.open(stream=data,filetype='pdf') as doc:
             issues=document_issues(data,doc,operation="content")
             if issues:
                 raise EditError('\n'.join(issues))
-            output=full_write(doc)
-        # The full-write route is the same as preview. Validate it before commit.
-        validate_transition(data,output,-1,[],[])
+            page_count=doc.page_count
+            if not page_count:
+                raise EditError("El documento no contiene páginas.")
         from pypdf import PdfReader
+        from .validation import assert_text_object_structure
         import io
-        PdfReader(io.BytesIO(output),strict=True)
+        independent=PdfReader(io.BytesIO(data),strict=True)
+        if len(independent.pages)!=page_count:
+            raise EditError("El analizador independiente no confirma el número de páginas.")
+        assert_text_object_structure(data,reader=independent)
         fd,temporary=tempfile.mkstemp(prefix='.pdfmodder-',suffix='.pdf',dir=destination.parent)
         with os.fdopen(fd,'wb') as stream:
-            stream.write(output)
+            if stream.write(data)!=len(data):
+                raise EditError("No se pudo escribir el PDF completo en el archivo temporal.")
             stream.flush()
             os.fsync(stream.fileno())
+        with open(temporary,'rb') as stream:
+            if os.fstat(stream.fileno()).st_size!=len(data) or hashlib.file_digest(stream,'sha256').digest()!=digest:
+                raise EditError("Falló la verificación de integridad del archivo temporal.")
         with fitz.open(temporary) as check:
-            if check.page_count!=len(PdfReader(io.BytesIO(output)).pages):
+            if check.page_count!=page_count:
                 raise EditError("Falló la verificación del archivo temporal.")
         os.replace(temporary,destination)
         temporary=None

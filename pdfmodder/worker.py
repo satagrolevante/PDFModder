@@ -547,7 +547,9 @@ class Session:
         self._require_editing()
         from .richtext import selection_payload
         if self.issues:raise EditError('\n'.join(self.issues))
-        payload=selection_payload(self.history.current,page,ids,self.resolver)
+        cached=self._model_cache.get((self.history.revision,page,False))
+        payload=selection_payload(self.history.current,page,ids,self.resolver,
+                                   page_model=cached[0] if cached is not None else None)
         catalog=getattr(self,'_rich_catalog',None)
         if catalog is None:
             catalog=self.resolver.catalog()
@@ -1025,6 +1027,9 @@ class Session:
     def close(self):
         self._cleanup_print()
         self._close_documents()
+        from .tagged import clear_readonly_cache
+        clear_readonly_cache(self.history.revision)
+        if self._pending_digest:clear_readonly_cache(self._pending_digest)
         self.history.close()
 
 

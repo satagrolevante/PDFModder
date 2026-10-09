@@ -53,6 +53,7 @@ def main():
     parser.add_argument('--repository', choices=REPOSITORIES, default=REPOSITORY,
                         help='Repositorio público de destino (el anterior sirve de puente)')
     parser.add_argument('--prepare-only', action='store_true', help='Preparar manifiestos sin red ni credenciales')
+    parser.add_argument('--notes-file', type=Path, help='Notas de esta versión para GitHub Releases')
     args = parser.parse_args()
     folders = sorted((ROOT/'releases').glob('v*')) if args.all else [ROOT/'releases'/('v'+args.version)]
     folders = [p for p in folders if p.is_dir() and
@@ -61,6 +62,8 @@ def main():
         raise ValueError('No hay una entrega empaquetada con instalador.')
     prepared = [(folder, release_files(folder)) for folder in folders]
     newest = max((p.name for p in folders),key=lambda tag:tuple(int(n) for n in tag[1:].split('.')))
+    notes = (args.notes_file.read_text(encoding='utf-8') if args.notes_file else
+             'Instalador Windows x64, versión portable y código fuente. Consulte README y los avisos incluidos.')
     if args.prepare_only:
         print(json.dumps([{'version':p.name,'assets':[f.name for f in fs]} for p,fs in prepared], indent=2))
         return
@@ -80,7 +83,7 @@ def main():
         response = session.get(api+'/releases/tags/'+quote(tag,safe=''), timeout=30)
         if response.status_code == 404:
             response = session.post(api+'/releases', json={'tag_name':tag,'name':'PDF Modder '+tag[1:],
-                'body':'Instalador Windows x64, versión portable y código fuente. Consulte README y los avisos incluidos.',
+                'body':notes,
                 'target_commitish':os.environ.get('GITHUB_SHA', 'main'),
                 'draft':True,'prerelease':False,'make_latest':'false'}, timeout=30)
         response.raise_for_status()

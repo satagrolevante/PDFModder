@@ -15,7 +15,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject, NumberObject, NullObject
 
 from .model import EditError
-from .tagged import TaggedStructure, obj, ref, _number_tree
+from .tagged import TaggedStructure, analyze_readonly, obj, ref, _number_tree
 
 
 def is_tagged(reader):
@@ -43,9 +43,11 @@ def _names(value, seen=None):
     return result
 
 
-def preflight(data):
+def preflight(data, *, readonly=False):
     """Verify structural scope separately from any concrete text selection."""
-    structure = TaggedStructure(data)
+    structure = analyze_readonly(data) if readonly else TaggedStructure(data)
+    if structure is None:
+        _fail('el documento no contiene una estructura accesible verificable.')
     allowed = {'/Type', '/K', '/ParentTree', '/ParentTreeNextKey', '/RoleMap', '/ClassMap', '/IDTree', '/Namespaces'}
     extra = set(structure.tree) - allowed
     if extra:
@@ -68,7 +70,7 @@ def page_capabilities(data):
         # The shared preflight also checks permissions, signatures, forms,
         # annotation actions and catalog features. Never advertise a bypass.
         from .pageops import _preflight
-        doc, reader = _preflight(data, 'Documento actual')
+        doc, reader = _preflight(data, 'Documento actual', readonly=True)
         doc.close()
         if not is_tagged(reader):
             if '/Names' in reader.trailer['/Root']:

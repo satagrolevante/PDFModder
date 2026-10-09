@@ -1,4 +1,4 @@
-name: Construir Windows 3.0.0
+name: Construir y publicar Windows
 
 on:
   push:
@@ -49,6 +49,8 @@ jobs:
   build:
     runs-on: windows-2025
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.release.outputs.version }}
     defaults:
       run:
         shell: pwsh
@@ -58,18 +60,32 @@ jobs:
         with:
           python-version: '3.12'
           architecture: x64
+      - name: Identificar versión de entrega
+        id: release
+        run: |
+          $releaseVersion = python -c "from pdfmodder import __version__; print(__version__)"
+          "version=$releaseVersion" >> $env:GITHUB_OUTPUT
       - name: Instalar dependencias fijadas
         run: ./scripts/install.ps1 -Development -PythonExe (Get-Command python).Source
       - name: Comprobar, compilar y empaquetar
         run: >-
-          .venv/Scripts/python.exe scripts/release_v300.py --headless-qa --tests tests
+          .venv/Scripts/python.exe scripts/release_v300.py --headless-qa --tests
+          tests/test_tagged_validation_cache.py tests/test_tagged_artifacts.py
+          tests/test_tagged_layout_styles.py tests/test_tagged_owner_index.py
+          tests/test_tagged_page_proof.py tests/test_page_fingerprint.py
+          tests/test_unchanged_page_validation.py tests/test_atomic_save_exact.py
+          tests/test_rich_overlap_preservation.py tests/test_selection_latency.py
+          tests/test_reading_worker_v171.py tests/test_progressive_opening_v300.py
+          tests/test_updates_v170.py tests/test_updates_v181.py
+          tests/test_update_channel_v203.py tests/test_update_saving_v300.py
+          tests/test_engine.py tests/test_richtext_v09.py
       - name: Conservar entregas y diagnóstico
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: PDFModder-v3.0.0-Windows-${{ github.sha }}
+          name: PDFModder-v${{ steps.release.outputs.version }}-Windows-${{ github.sha }}
           path: |
-            releases/v3.0.0/
+            releases/v${{ steps.release.outputs.version }}/
             output/release-v*-*.log
             output/pytest-v300-results.xml
             output/*v300*smoke*
@@ -83,7 +99,9 @@ jobs:
           retention-days: 14
 
   publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.1')
     needs: build
     runs-on: windows-2025
     permissions:
@@ -99,7 +117,7 @@ jobs:
           architecture: x64
       - uses: actions/download-artifact@v4
         with:
-          name: PDFModder-v3.0.0-Windows-${{ github.sha }}
+          name: PDFModder-v${{ needs.build.outputs.version }}-Windows-${{ github.sha }}
           path: .
       - name: Instalar dependencias del publicador
         run: >-
@@ -108,4 +126,6 @@ jobs:
       - name: Publicar instalador, portable, fuentes y manifiesto
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/publish_github_releases.py --version 3.0.0
+        run: >-
+          python scripts/publish_github_releases.py --version ${{ needs.build.outputs.version }}
+          --notes-file docs/NOTAS_${{ needs.build.outputs.version }}.md

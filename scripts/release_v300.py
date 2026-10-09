@@ -1,4 +1,4 @@
-"""Comprueba y construye PDF Modder 3.0.0 sin publicar archivos remotos.
+"""Comprueba y construye PDF Modder 3.0.x sin publicar archivos remotos.
 
 En Linux, --source-only --headless-qa ejecuta las pruebas y el recorrido Qt.
 La construcción, el ejecutable y el instalador requieren Windows/Python 3.12 x64.
@@ -10,6 +10,7 @@ import argparse
 from datetime import datetime
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -71,8 +72,8 @@ def main() -> None:
     parser.add_argument("--source-ui-only", action="store_true", help="Sólo recorrido de GUI desde fuentes; no acredita la batería")
     parser.add_argument("--headless-qa", action="store_true", help="Qt offscreen; no acredita el escritorio nativo de Windows")
     args = parser.parse_args()
-    if __version__ != "3.0.0":
-        parser.error("Este protocolo corresponde a la versión 3.0.0.")
+    if not re.fullmatch(r"3\.0\.\d+", __version__):
+        parser.error("Este protocolo corresponde a la familia 3.0.x.")
     if args.source_only and args.start != "source":
         parser.error("--source-only exige --start source.")
     if os.name != "nt" and not (args.source_only or args.source_ui_only):
@@ -108,7 +109,7 @@ def main() -> None:
         if args.source_only:
             return
     if state.get("application_version") != __version__ or state.get("app_source_sha256") != source_fingerprint():
-        raise RuntimeError("Ejecute las pruebas 3.0.0 sobre el código actual antes de reanudar.")
+        raise RuntimeError("Ejecute las pruebas de " + __version__ + " sobre el código actual antes de reanudar.")
     if start <= 1:
         execute("build", ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                 "scripts/build.ps1", "-SkipTests", "-PythonExecutable", python])
@@ -129,7 +130,7 @@ def main() -> None:
     if start <= 4:
         execute("finish", [python, "scripts/package_v300.py", "--finish", state["installation"]])
         execute("update-manifest", [python, "scripts/publish_github_releases.py", "--prepare-only"])
-    print("Entrega local lista: " + str(ROOT / "releases/v3.0.0"), flush=True)
+    print("Entrega local lista: " + str(ROOT / ("releases/v" + __version__)), flush=True)
 
 
 if __name__ == "__main__":

@@ -122,7 +122,7 @@ def _check_destination(holder, *, context):
             raise EditError(f"{context}: destino con nombre o ajuste de vista distinto de XYZ no compatible.")
 
 
-def _preflight(data, label):
+def _preflight(data, label, *, readonly=False):
     try:
         doc = fitz.open(stream=data, filetype="pdf")
     except Exception as exc:
@@ -144,7 +144,7 @@ def _preflight(data, label):
         page_catalog.preflight(reader)
         if root.get('/StructTreeRoot'):
             from .tagged_pages import preflight
-            preflight(data)
+            preflight(data, readonly=readonly)
         preferences = _object(root.get("/ViewerPreferences", {}))
         if preferences.get("/PrintPageRange"):
             raise EditError(f"{label}: intervalos de impresión predefinidos que requieren remapeo no compatible.")
