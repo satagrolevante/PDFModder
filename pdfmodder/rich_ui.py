@@ -1,7 +1,7 @@
 """Connect the rich drafting surface to the single PDF worker.
 
 Every preview starts at the immutable history snapshot. Late results are
-discarded by generation; accepting always validates the latest draft again.
+discarded by generation; accepting uses validation of the exact latest draft.
 """
 from copy import deepcopy
 from PySide6.QtCore import Qt,QTimer,QRect
@@ -86,7 +86,7 @@ class RichEditing:
         self.canvas.read_only=False
         self.canvas.start_rich_editor(payload,payload.get('catalog'))
         self.rich_result.show();self.rich_result_image.clear()
-        self.rich_result_message.setText('Borrador: la vista PDF aparecerá al escribir. Aceptar vuelve a validar el contenido.')
+        self.rich_result_message.setText('Borrador: la vista PDF aparecerá al escribir. El contenido se valida antes de aplicarlo.')
         self._notice('Escribir: arrastra para seleccionar letras. Intro: párrafo · Mayús+Intro: línea · ✓ Aceptar: Ctrl+Intro · × Cancelar: Esc.')
         self._refresh_actions()
 
@@ -100,7 +100,7 @@ class RichEditing:
         if not self._rich_active or self._rich_accept_pending:return
         self._rich_serial+=1;self._rich_pending=deepcopy(payload);self._rich_accept_pending=True
         self.canvas.editor.set_accepting(True)
-        self.canvas.editor.toolbar.status.setText('Validando el último borrador para aceptar…')
+        self.canvas.editor.toolbar.status.setText('Preparando el último borrador para aplicar…')
         self._rich_timer.start(0)
 
     def _rich_pump(self):

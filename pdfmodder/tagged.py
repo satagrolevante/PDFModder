@@ -11,7 +11,7 @@ import math
 import pymupdf as fitz
 from pypdf import PdfReader
 from pypdf.generic import (ContentStream,DecodedStreamObject,IndirectObject,
-    DictionaryObject,NameObject,NumberObject,FloatObject,TextStringObject,NullObject)
+    ArrayObject,DictionaryObject,NameObject,NumberObject,FloatObject,TextStringObject,NullObject)
 from .model import EditError
 
 SHOW={b'Tj',b'TJ',b"'",b'"'}
@@ -38,18 +38,18 @@ def _integer(value,label):
 
 
 def _preservable_layout_attributes(value):
-    """Allow unchanged paragraph style, never declared object geometry.
+    """Recognize supported layout fields; geometry needs a separate proof.
 
-    Native editing keeps these explicit style parameters and neighbouring
-    operators. BBox, dimensions, colours, classes, other owners and unknown
-    attributes need their own update proof and remain unsupported here.
+    Paragraph style is retained by native text editing. A declared BBox is
+    checked against the original and planned content below. Dimensions,
+    colours, other owners and unknown fields still need their own proof.
     """
     attributes=obj(value)
     if (not isinstance(attributes,dict) or not isinstance(attributes.get('/O'),NameObject)
             or attributes['/O']!='/Layout'):
         return False
     numbers={'/SpaceBefore','/SpaceAfter','/StartIndent','/EndIndent','/TextIndent'}
-    if set(attributes)-numbers-{'/O','/TextAlign','/WritingMode'}:
+    if set(attributes)-numbers-{'/O','/TextAlign','/WritingMode','/Placement','/BBox'}:
         return False
     for key in numbers & set(attributes):
         number=obj(attributes[key])
@@ -63,7 +63,59 @@ def _preservable_layout_attributes(value):
     if '/WritingMode' in attributes and (not isinstance(attributes['/WritingMode'],NameObject)
             or attributes['/WritingMode']!='/LrTb'):
         return False
+    if '/Placement' in attributes and (not isinstance(attributes['/Placement'],NameObject)
+            or attributes['/Placement'] not in ('/Block','/Inline')):
+        return False
+    if '/BBox' in attributes:
+        box=obj(attributes['/BBox'])
+        if (not isinstance(box,(list,tuple)) or len(box)!=4
+                or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v)
+                       for v in box) or box[0]>=box[2] or box[1]>=box[3]):
+            return False
     return True
+
+
+def _attribute_items(value,kind,*,revisions=True):
+    """Resolve attribute/class arrays without discarding revision markers."""
+    value=obj(value)
+    values=value if isinstance(value,(list,tuple)) else [value]
+    result=[]
+    numbers=[]
+    previous=False
+    for raw in values:
+        item=obj(raw)
+        if revisions and isinstance(item,int) and not isinstance(item,bool):
+            if not previous or item<0:
+                fail('el elemento tiene atributos de disposición o clases con revisiones inválidas.')
+            numbers.append(int(item))
+            previous=False
+        elif isinstance(item,kind):
+            result.append(item)
+            previous=True
+        else:
+            fail('el elemento tiene atributos de disposición o clases que no se pueden resolver.')
+    if not result:
+        fail('el elemento tiene atributos de disposición o clases vacíos.')
+    return result,numbers
+
+
+def _direct_attributes(value):
+    """Copy validated layout values inline, never mutate shared PDF objects."""
+    value=obj(value)
+    if isinstance(value,dict):
+        return DictionaryObject({NameObject(k):_direct_attributes(v) for k,v in value.items()})
+    if isinstance(value,(list,tuple)):
+        return ArrayObject([_direct_attributes(v) for v in value])
+    return copy.deepcopy(value)
+
+
+def _attribute_snapshot(value):
+    value=obj(value)
+    if isinstance(value,dict):
+        return {str(k):_attribute_snapshot(v) for k,v in value.items()}
+    if isinstance(value,(list,tuple)):
+        return tuple(_attribute_snapshot(v) for v in value)
+    return value
 
 
 def _stream(operations):
@@ -482,6 +534,8 @@ class TaggedEdit:
         self.expected=copy.deepcopy(structure.semantic())
         self.actual_updates={}
         self.marker_updates={}
+        self.layout_updates={}
+        self._pdf_matrix=None
         for mcid in affected:
             old=''.join(g.text for g in self.original[mcid])
             new=''.join(g.text for g in self.planned[mcid])
@@ -509,8 +563,7 @@ class TaggedEdit:
             contents=contents_by_path.get(path,())
             relevant=[mcid for p,mcid in contents if p==page and mcid in affected]
             if not relevant:continue
-            if '/C' in node or ('/A' in node and not _preservable_layout_attributes(node['/A'])):
-                fail('el elemento tiene atributos de disposición o clases que todavía no se actualizan al editar.')
+            self._plan_layout_attributes(path,node,contents)
             if node.get('/E'):
                 fail('el elemento contiene una expansión semántica que requiere revisión manual.')
             if node.get('/Alt') and any(
@@ -528,6 +581,112 @@ class TaggedEdit:
                         fail('ActualText del elemento difiere del texto visible; no se sustituye automáticamente.')
                     self.actual_updates[path]=new
                     self.expected['nodes'][path]['/ActualText']=new
+
+    def _plan_layout_attributes(self,path,node,contents):
+        if '/A' not in node and '/C' not in node:
+            return
+        direct,revisions=_attribute_items(node['/A'],dict) if '/A' in node else ([],[])
+        inherited=[]
+        if '/C' in node:
+            classes,class_revisions=_attribute_items(node['/C'],NameObject)
+            revisions+=class_revisions
+            classmap=obj(self.structure.tree.get('/ClassMap'))
+            if not isinstance(classmap,dict):
+                fail('el elemento tiene atributos de disposición o clases sin ClassMap válido.')
+            for name in classes:
+                if name not in classmap:
+                    fail('el elemento tiene atributos de disposición o clases sin definición verificable.')
+                attributes,_=_attribute_items(classmap[name],dict,revisions=False)
+                inherited.extend(attributes)
+        revision=obj(node.get('/R',0))
+        if (isinstance(revision,bool) or not isinstance(revision,int) or revision<0
+                or any(number>revision for number in revisions)):
+            fail('la revisión de los atributos de disposición o clases no es válida.')
+        if any(not _preservable_layout_attributes(attributes) for attributes in inherited+direct):
+            fail('el elemento tiene atributos de disposición o clases que todavía no se actualizan al editar.')
+        # Direct attributes override classes. Conflicting definitions inside
+        # either group need revision/precedence interpretation beyond this
+        # editor's proof, even when every individual field is recognized.
+        def combine(items):
+            result={}
+            for attributes in items:
+                for key,value in attributes.items():
+                    if key in result and (key=='/BBox' or _attribute_snapshot(result[key])!=_attribute_snapshot(value)):
+                        fail('el elemento tiene atributos de disposición o clases con definiciones contradictorias.')
+                    result[key]=value
+            return result
+        effective=combine(inherited)
+        effective.update(combine(direct))
+        if '/BBox' not in effective:
+            return
+        if any(p!=self.page for p,_ in contents):
+            fail('la caja de disposición abarca varias páginas y no puede verificarse al editar.')
+        mcids={mcid for _,mcid in contents}
+        original=[g for g in self.model.glyphs if self.contexts[g.id] in mcids]
+        planned=[g for g in original if self.contexts[g.id] not in self.affected]
+        planned.extend(g for mcid in mcids & self.affected for g in self.planned[mcid])
+        if not original or not planned:
+            fail('la caja de disposición necesita contenido visible para verificar su geometría.')
+        if self._pdf_matrix is None:
+            with fitz.open(stream=self.structure.data,filetype='pdf') as document:
+                page=document[self.page]
+                page.set_rotation(0)
+                self._pdf_matrix=~page.transformation_matrix
+        old_rect=fitz.Rect()
+        new_rect=fitz.Rect()
+        for glyph in original:old_rect|=fitz.Rect(glyph.bbox)*self._pdf_matrix
+        for glyph in planned:new_rect|=fitz.Rect(glyph.bbox)*self._pdf_matrix
+        box=fitz.Rect(obj(effective['/BBox']))
+        tolerance=.035
+        expanded=box+(-tolerance,-tolerance,tolerance,tolerance)
+        if not expanded.contains(old_rect):
+            fail('la caja de disposición declarada no contiene el texto original; necesita revisión manual.')
+        # A loose container box (for example a table) remains valid while all
+        # replacement text stays inside. Its fixed borders and neighbours are
+        # retained by the compositor. Never resize that layout from text alone.
+        if expanded.contains(new_rect):
+            return
+        tight=all(abs(a-b)<=tolerance for a,b in zip(box,old_rect))
+        text_only=(not any(self.structure.marks[self.page][mcid].paints
+                           or self.structure.marks[self.page][mcid].nested_actual for mcid in mcids)
+                   and not any(self.structure.node_refs[parent][:len(path)]==path
+                               for _,parent in self.structure.object_owners))
+        if not tight or not text_only:
+            fail('el texto nuevo sale de la caja de disposición; no puede redimensionarse sin cambiar otros contenidos.')
+        # Only a tight, single-page, exclusively textual box can be recomputed.
+        # Clone any direct/shared /A, or add a direct override of a shared class.
+        # Millipoint precision is finer than the geometry validator and stays
+        # stable through MuPDF's final numeric serialization.
+        bbox=ArrayObject([FloatObject(round(v,3)) for v in new_rect])
+        attributes=_direct_attributes(node['/A']) if '/A' in node else None
+        values=attributes if isinstance(attributes,(list,tuple)) else [attributes] if attributes is not None else []
+        targets=[value for value in values if isinstance(value,dict) and '/BBox' in value]
+        if targets:
+            targets[-1][NameObject('/BBox')]=bbox
+            if isinstance(attributes,ArrayObject):
+                index=next(i for i,value in enumerate(attributes) if value is targets[-1])+1
+                if index<len(attributes) and isinstance(attributes[index],int):
+                    attributes[index]=NumberObject(revision)
+                elif revision:attributes.insert(index,NumberObject(revision))
+            elif revision:attributes=ArrayObject([attributes,NumberObject(revision)])
+        else:
+            override=DictionaryObject({NameObject('/O'):NameObject('/Layout'),NameObject('/BBox'):bbox})
+            addition=[override,NumberObject(revision)] if revision else [override]
+            if isinstance(attributes,ArrayObject):attributes.extend(addition)
+            elif attributes is not None:attributes=ArrayObject([attributes,*addition])
+            else:attributes=ArrayObject(addition) if revision else override
+        self.layout_updates[path]=attributes
+        self.expected['nodes'][path]['/A']=_attribute_snapshot(attributes)
+
+    def apply_updates(self,document,structure=None):
+        """Apply planned element changes on either native or rebuilt content."""
+        structure=self.structure if structure is None else structure
+        for path,text in self.actual_updates.items():
+            document.xref_set_key(ref(structure.nodes[path])[0],'ActualText',fitz.get_pdf_str(text))
+        for path,attributes in self.layout_updates.items():
+            buffer=BytesIO()
+            attributes.write_to_stream(buffer)
+            document.xref_set_key(ref(structure.nodes[path])[0],'A',buffer.getvalue().decode('latin1'))
 
     def insert(self,erased,resolved,reproduction=False):
         from .engine import _insert,full_write
@@ -589,8 +748,7 @@ class TaggedEdit:
                 kept=[i for i in page.get_contents() if i not in set(added)]+[group]
                 doc.xref_set_key(page.xref,'Contents','['+' '.join(f'{i} 0 R' for i in kept)+']')
             if not reproduction:
-                for path,text in self.actual_updates.items():
-                    doc.xref_set_key(ref(current.nodes[path])[0],'ActualText',fitz.get_pdf_str(text))
+                self.apply_updates(doc,current)
             return full_write(doc)
 
     def validate(self,after):
@@ -624,4 +782,5 @@ class TaggedEdit:
                         fail('el texto lógico de una etiqueta no coincide con la edición solicitada.')
         return {'verified':True,'mcids':sorted(self.affected),'structure_preserved':True,
                 'logical_text_verified':True,'actual_text_updates':len(self.actual_updates)+len(self.marker_updates),
+                'layout_attribute_updates':len(self.layout_updates),
                 'scope':'Preservación de estructura y relaciones verificadas; no certificación PDF/UA.'}

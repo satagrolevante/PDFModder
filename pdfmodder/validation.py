@@ -231,15 +231,43 @@ def page_issues(data, number):
     return list(dict.fromkeys(issues))
 
 
-def assert_text_object_structure(data, *, reader=None):
+def assert_text_object_structure(data, *, reader=None, tagged_structure=None):
     """Verify concatenated page contents and only Forms invoked by that page.
 
     PDF parsers can read an orphan ET without reporting it. Painting and text
     extraction alone therefore do not prove that a text transaction preserved
     its BT/ET scopes. A page's /Contents streams share one text scope; a Form
     is checked in its own scope using the resources of that invocation.
+
+    A read-only TaggedStructure can supply already parsed page operations only
+    for its exact immutable bytes and strict reader. Forms still need their
+    independent scopes checked with the invoking resources. Unbound evidence
+    falls back to ordinary parsing; UI validation flags never authorize reuse.
     """
     try:
+        page_operations = None
+        if tagged_structure is not None:
+            from .tagged import TaggedStructure
+            candidate = getattr(tagged_structure, 'reader', None)
+            if (isinstance(tagged_structure, TaggedStructure)
+                    and isinstance(tagged_structure.data, bytes)
+                    and tagged_structure.data == bytes(data)
+                    and isinstance(candidate, PdfReader) and candidate.strict
+                    and (reader is None or reader is candidate)
+                    and isinstance(candidate.stream, io.BytesIO)
+                    and candidate.stream.getvalue() == bytes(data)):
+                pages = list(candidate.pages)
+                bindings = {(page.indirect_reference.idnum, page.indirect_reference.generation): number
+                            for number, page in enumerate(pages)
+                            if page.indirect_reference is not None}
+                if (len(bindings) == len(pages) and bindings == tagged_structure.pages
+                        and len(tagged_structure.operations) == len(pages)):
+                    reader = candidate
+                    page_operations = tagged_structure.operations
+            if page_operations is None and reader is candidate:
+                # A stale supplied structure must not bring its stale reader
+                # into the fallback check of the current byte revision.
+                reader = None
         reader = reader or PdfReader(io.BytesIO(data), strict=True)
         checked = set()
         active = set()
@@ -247,7 +275,7 @@ def assert_text_object_structure(data, *, reader=None):
         def resolved(value):
             return value.get_object() if hasattr(value, 'get_object') else value
 
-        def verify(stream, resources, label, identity, depth=0):
+        def verify(stream, resources, label, identity, depth=0, *, operations=None):
             key = (identity, id(resources))
             if key in checked:
                 return
@@ -256,7 +284,8 @@ def assert_text_object_structure(data, *, reader=None):
             active.add(identity)
             inside = False
             invoked = []
-            for operands, operator in ContentStream(stream, reader).operations:
+            operations = ContentStream(stream, reader).operations if operations is None else operations
+            for operands, operator in operations:
                 if operator == b'BT':
                     if inside:
                         raise EditError(f'Validación: {label} contiene bloques BT anidados.')
@@ -287,7 +316,9 @@ def assert_text_object_structure(data, *, reader=None):
 
         for number, page in enumerate(reader.pages):
             resources = resolved(page.get('/Resources', {}))
-            verify(page.get_contents(), resources, f'la página {number+1}', ('page', number))
+            operations = page_operations[number] if page_operations is not None else None
+            stream = page.get_contents() if operations is None else None
+            verify(stream, resources, f'la página {number+1}', ('page', number), operations=operations)
     except EditError:
         raise
     except Exception as exc:

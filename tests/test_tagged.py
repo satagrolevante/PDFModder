@@ -253,7 +253,7 @@ def test_logical_order_different_from_paint_order_survives_edit_and_move():
     assert_control_page_unchanged(source, moved)
 
 
-def test_layout_bbox_blocks_only_its_affected_structural_element():
+def test_layout_bbox_preserves_contained_edits_and_blocks_container_overflow():
     writer = PdfWriter(clone_from=PdfReader(BytesIO(make_tagged_pdf())))
     paragraph = writer._root_object['/StructTreeRoot']['/K']['/K'][0].get_object()
     paragraph[NameObject('/A')] = dictionary(O=NameObject('/Layout'),
@@ -264,8 +264,11 @@ def test_layout_bbox_blocks_only_its_affected_structural_element():
     original_hash = sha256(source).hexdigest()
     audit_tagged(source)
     model, chosen = select(source, '10/09/2026', x=100, y=100)
-    with pytest.raises(EditError, match=r'(?i)atributos.*disposición|BBox'):
-        edit_pdf(source, request_for(model, chosen, text='11/09/2026'))
+    changed,report=edit_pdf(source,request_for(model,chosen,text='11/09/2026'))
+    assert report['verified'] and report['accessibility']['layout_attribute_updates']==0
+    assert_structure_preserved(source,changed)
+    with pytest.raises(EditError, match='sale de la caja de disposición'):
+        edit_pdf(source, request_for(model, chosen, text='1000/09/2026',width=100))
     assert sha256(source).hexdigest() == original_hash
     model, chosen = select(source, 'PALABRA', x=WORD_X, y=150)
     output, _ = edit_pdf(source, request_for(model, chosen, dx=20, dy=20))

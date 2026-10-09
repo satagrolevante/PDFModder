@@ -4,7 +4,10 @@ from io import BytesIO
 
 import pymupdf as fitz
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, DecodedStreamObject, NameObject, NumberObject, TextStringObject
+from pypdf.generic import (
+    ArrayObject, BooleanObject, DecodedStreamObject, Fit, NameObject, NumberObject,
+    TextStringObject,
+)
 import pytest
 
 from pdfmodder.model import EditError
@@ -62,6 +65,94 @@ def test_keeps_fields_annotations_bookmarks_metadata_and_optional_layers():
         assert [x.field_value for x in after[0].widgets()] == ['Valor original']
         assert [x.info['content'] for x in after[0].annots()] == ['Comentario conservado']
     assert PdfReader(BytesIO(candidate)).get_fields()['Dato conservado']['/V'] == 'Valor original'
+
+
+def metadata_fixture():
+    writer = PdfWriter(clone_from=PdfReader(BytesIO(make_tagged_pdf())))
+    writer.pdf_header = '%PDF-1.5'
+    writer.add_metadata({'/CustomRecord': 'Metadatos propios, ñ',
+                         '/Trapped': '/False'})
+    writer._info[NameObject('/CustomIndirect')] = writer._add_object(
+        TextStringObject('Valor indirecto conservado'))
+    writer._info[NameObject('/CustomNested')] = writer._add_object(dictionary(
+        Label=TextStringObject('Dato propio'), Enabled=BooleanObject(True),
+        Values=ArrayObject([NumberObject(7), TextStringObject('siete')]),
+        OwnerInfo=writer._info.indirect_reference))
+    xmp = DecodedStreamObject()
+    xmp.set_data(b'<?xpacket begin=""?><x:xmpmeta xmlns:x="adobe:ns:meta/">'
+                 b'<custom xmlns="urn:pdfmodder:test">Keep all XMP</custom>'
+                 b'</x:xmpmeta><?xpacket end="w"?>')
+    xmp.update(dictionary(Type=NameObject('/Metadata'), Subtype=NameObject('/XML'),
+                          CustomFlag=TextStringObject('Conservar atributo')))
+    writer.root_object[NameObject('/Metadata')] = writer._add_object(xmp)
+    writer.add_outline_item('Destino completo', 1, color=(.25, .5, .75),
+                            bold=True, italic=True, is_open=False,
+                            fit=Fit.xyz(left=48, top=350, zoom=1.25))
+    stream = BytesIO()
+    writer.write(stream)
+    return stream.getvalue()
+
+
+def test_pdf_version_custom_info_xmp_and_complete_bookmarks_are_preserved():
+    source = metadata_fixture()
+    candidate, report = remove_tags(source)
+    result = PdfReader(BytesIO(candidate), strict=True)
+    assert result.pdf_header == '%PDF-1.5'
+    assert report['changed'] and report['verified']
+    info = result.trailer['/Info']
+    assert info['/CustomRecord'] == 'Metadatos propios, ñ'
+    assert info['/CustomIndirect'] == 'Valor indirecto conservado'
+    assert info['/CustomNested']['/Label'] == 'Dato propio'
+    assert info['/CustomNested']['/Enabled'].value is True
+    assert list(info['/CustomNested']['/Values']) == [7, 'siete']
+    assert (info['/CustomNested'].raw_get('/OwnerInfo') ==
+            result.trailer.raw_get('/Info'))
+    assert result.trailer['/Root']['/Metadata']['/CustomFlag'] == 'Conservar atributo'
+    with fitz.open(stream=source) as before, fitz.open(stream=candidate) as after:
+        assert before.metadata == after.metadata
+        assert before.get_xml_metadata() == after.get_xml_metadata()
+        expected, actual = before.get_toc(simple=False), after.get_toc(simple=False)
+        for item in expected + actual:
+            item[3].pop('xref', None)
+        assert expected == actual
+
+
+@pytest.mark.parametrize('nested', [False, True])
+def test_bookmark_links_are_verified_without_repeated_or_recursive_expansion(nested):
+    writer = PdfWriter(clone_from=PdfReader(BytesIO(make_tagged_pdf())))
+    parent = None
+    count = 24 if nested else 1000
+    for level in range(count):
+        item = writer.add_outline_item(f'Nivel {level}', level % 2, parent=parent)
+        if nested:
+            parent = item
+    stream = BytesIO()
+    writer.write(stream)
+    source = stream.getvalue()
+    candidate, _ = remove_tags(source)
+    with fitz.open(stream=source) as before, fitz.open(stream=candidate) as after:
+        assert before.get_toc() == after.get_toc()
+        assert len(after.get_toc()) == count
+
+
+@pytest.mark.parametrize('loss', ['custom_info', 'xmp_attribute', 'bookmark_destination'])
+def test_metadata_and_bookmark_loss_is_rejected(monkeypatch, loss):
+    source = metadata_fixture()
+    original_write = PdfWriter.write
+
+    def damaged_write(writer, stream):
+        if loss == 'custom_info':
+            writer._info[NameObject('/CustomRecord')] = TextStringObject('Dato perdido')
+        elif loss == 'xmp_attribute':
+            writer.root_object['/Metadata'].pop(NameObject('/CustomFlag'))
+        else:
+            # Keep its label and page number; lose only the bookmark's zoom.
+            writer.root_object['/Outlines']['/First']['/A']['/D'][-1] = NumberObject(2)
+        return original_write(writer, stream)
+
+    monkeypatch.setattr(PdfWriter, 'write', damaged_write)
+    with pytest.raises(EditError, match='metadatos o marcadores'):
+        remove_tags(source)
 
 
 def test_direct_dictionaries_and_form_xobject_associations_are_removed():

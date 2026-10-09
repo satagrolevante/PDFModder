@@ -1,5 +1,6 @@
 """API de proceso único. La GUI sólo intercambia valores y PNG, nunca Document."""
 from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 import hashlib
@@ -334,6 +335,7 @@ class Session:
         self.cache.clear()
         self.cache_bytes=0
         self._model_cache.clear();self._model_bytes=0
+        self._validated_rich=None
 
     def _put_preview(self,candidate,report):
         self.history.checkpoint({'path':self.path,'saved_digest':self.saved_digest,
@@ -568,9 +570,22 @@ class Session:
         from .richmodels import RichTextRequest
         self._writable()
         if isinstance(request,dict):request=RichTextRequest(**request)
-        candidate,report=edit_rich_pdf(self.history.current,request,self.resolver)
-        report.update(page=request.page,operation='rich_text')
-        self._mark_page_edit(report,request.page)
+        self._prepared_rich=None
+        # Only a result produced by the worker's complete validator is reusable.
+        # Keep one bounded snapshot, bound to both the immutable source revision
+        # and every request field. A changed character, style or area requires a
+        # new validation; UI reports and "verified" flags grant no authority.
+        cached=getattr(self,'_validated_rich',None)
+        if cached and cached[0]==self.history.revision and cached[1]==request:
+            candidate,report=cached[2],deepcopy(cached[3])
+        else:
+            self._validated_rich=None
+            request_key=deepcopy(request)
+            candidate,report=edit_rich_pdf(self.history.current,request,self.resolver)
+            report.update(page=request.page,operation='rich_text')
+            self._mark_page_edit(report,request.page)
+            if len(candidate)<=32*1024*1024:
+                self._validated_rich=(self.history.revision,request_key,candidate,deepcopy(report))
         if prepare:
             token=uuid.uuid4().hex
             self._prepared_rich=(token,self.history.revision,candidate,report)
@@ -868,6 +883,7 @@ class Session:
         return {'state':self.state(),'report':report}
 
     def cancel(self):
+        self._prepared_rich=None
         if self.pending is not None or self.history.metadata.get('draft'):
             self.history.checkpoint({'saved_digest':self.saved_digest,'draft':None})
         self.recovered_draft=None
@@ -1028,6 +1044,9 @@ class Session:
         self._cleanup_print()
         self._close_documents()
         from .tagged import clear_readonly_cache
+        for prepared in (getattr(self,'_validated_rich',None),getattr(self,'_prepared_rich',None)):
+            if prepared:clear_readonly_cache(hashlib.sha256(prepared[2]).hexdigest())
+        self._validated_rich=self._prepared_rich=None
         clear_readonly_cache(self.history.revision)
         if self._pending_digest:clear_readonly_cache(self._pending_digest)
         self.history.close()

@@ -17,3 +17,20 @@ La verificación de esta corrección utiliza regresiones sintéticas focalizadas
 En este entorno Linux, la preparación en el motor pasó de 18,6 a 4,7 segundos al entrar en edición y de 19 a 0,17 segundos al preparar una selección. La prueba final de interfaz Qt fuera de pantalla editó un encabezado en la página 1 y un párrafo en la 61, comprobó identidad en las 122 páginas restantes de cada operación y verificó texto y píxeles de las páginas de control 2, 20 y 123. Guardó y reabrió la copia desde una ventana nueva y confirmó que el original seguía idéntico.
 
 En esa prueba final, abrir el editor tardó menos de un segundo, aplicar y validar los cambios entre 10,7 y 13,3 segundos, guardar la copia 2,3 segundos y reabrirla 0,6 segundos. Estas cifras corresponden a las pruebas del código en Linux; no son mediciones del instalador en un escritorio físico de Windows. La entrega 3.0.1 incluye esta corrección y su informe de construcción y comprobaciones.
+
+La versión 3.0.2 amplía los atributos de disposición compatibles: acepta cuadros
+de tablas que siguen conteniendo el texto y actualiza cuadros ajustados a contenido
+exclusivamente textual. Los atributos compartidos se copian localmente; sus otras
+referencias y las clases permanecen intactas. También conserva la cabecera PDF y
+comprueba los metadatos completos y los destinos de marcadores al quitar etiquetas.
+
+Aceptar utiliza los bytes ya validados para la vista previa sólo si coinciden todos
+los campos del borrador y la revisión del documento. La nueva prueba Qt del mismo
+documento de 123 páginas editó una fecha de portada dentro de una tabla etiquetada,
+retiró etiquetas y deshizo esa operación, editó texto en la página 61, guardó y
+reabrió la copia. Conservó metadatos, las páginas de control y el archivo original.
+Aceptar la fecha con su vista previa validada tardó 0,51 segundos; generar esa
+vista previa tardó 10,48 segundos. Aceptar el otro cambio directamente, incluida
+su validación nueva, tardó 9,47 segundos. Quitar etiquetas tardó 11,79 segundos.
+Son mediciones de código en Linux con Qt fuera de pantalla; una validación nueva
+de un documento extenso sigue requiriendo varios segundos.

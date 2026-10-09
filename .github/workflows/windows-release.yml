@@ -70,15 +70,12 @@ jobs:
       - name: Comprobar, compilar y empaquetar
         run: >-
           .venv/Scripts/python.exe scripts/release_v300.py --headless-qa --tests
-          tests/test_tagged_validation_cache.py tests/test_tagged_artifacts.py
-          tests/test_tagged_layout_styles.py tests/test_tagged_owner_index.py
-          tests/test_tagged_page_proof.py tests/test_page_fingerprint.py
-          tests/test_unchanged_page_validation.py tests/test_atomic_save_exact.py
-          tests/test_rich_overlap_preservation.py tests/test_selection_latency.py
-          tests/test_reading_worker_v171.py tests/test_progressive_opening_v300.py
-          tests/test_updates_v170.py tests/test_updates_v181.py
+          tests/test_tagged.py tests/test_tagged_layout_styles.py tests/test_tagged_page_proof.py
+          tests/test_text_structure_reuse.py tests/test_native_wrappers_v300.py
+          tests/test_rich_validation_reuse.py tests/test_rich_ui_v09.py
+          tests/test_untag_v180.py tests/test_reader_worker_v180.py
+          tests/test_unchanged_page_validation.py tests/test_richtext_v09.py
           tests/test_update_channel_v203.py tests/test_update_saving_v300.py
-          tests/test_engine.py tests/test_richtext_v09.py
       - name: Conservar entregas y diagnóstico
         if: always()
         uses: actions/upload-artifact@v4
@@ -101,7 +98,7 @@ jobs:
   publish:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.1')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.2')
     needs: build
     runs-on: windows-2025
     permissions:

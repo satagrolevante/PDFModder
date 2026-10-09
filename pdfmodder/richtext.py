@@ -778,9 +778,7 @@ def edit_rich_pdf(data, request, resolver=None):
         output_doc.xref_set_key(output_doc[request.page].xref,_META_KEY,fitz.get_pdf_str(json.dumps(keep_records,ensure_ascii=True)))
         removed_groups=_drop_affected_groups(output_doc,request.page,selected)
         if tagged:
-            from .tagged import ref
-            for path,text in tagged.actual_updates.items():
-                output_doc.xref_set_key(ref(structure.nodes[path])[0],'ActualText',fitz.get_pdf_str(text))
+            tagged.apply_updates(output_doc)
         output=full_write(output_doc)
     _assert_typography(output,request.page,others+planned)
     report=_validate(data,output,request.page,others+planned,selected+planned,old_underlines,new_underlines,
@@ -982,7 +980,7 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
             # their hinting may expose an accent overhang MuPDF did not paint.
             pixels['verified_ink_regions']=list(dict.fromkeys(_ink_exclusions(a,excluded)+_ink_exclusions(b,excluded)))
             reports.append(pixels)
-    independent = PdfReader(BytesIO(after_data),strict=True)
-    assert_text_object_structure(after_data, reader=independent)
-    assert_structure(before_data,after_data,tagged_expected)
+    structure = assert_structure(before_data,after_data,tagged_expected)
+    independent = structure.reader if structure is not None else PdfReader(BytesIO(after_data),strict=True)
+    assert_text_object_structure(after_data, reader=independent, tagged_structure=structure)
     return dict(verified=True,pages=reports,independent_parser='pypdf')
