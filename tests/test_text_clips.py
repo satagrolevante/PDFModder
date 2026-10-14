@@ -146,7 +146,7 @@ def test_font_resource_probe_identifies_visible_and_invisible_glyphs_without_exp
         assert any(span['type']==3 for span in doc[0].get_texttrace())
 
 
-def test_clipped_actualtext_cannot_be_left_stale_by_native_operator_route():
+def test_clipped_actualtext_updates_through_joint_native_tagged_route():
     from tagged_corpus import DATE_TEXT,make_tagged_pdf
     from test_engine import select
     writer=PdfWriter(clone_from=PdfReader(BytesIO(make_tagged_pdf(actual_text=DATE_TEXT))))
@@ -159,8 +159,14 @@ def test_clipped_actualtext_cannot_be_left_stale_by_native_operator_route():
     writer.write(buffer)
     data=buffer.getvalue()
     model,chosen=select(data,'10/09/2026',x=100,y=100)
-    with pytest.raises(EditError,match='recortes y etiquetas'):
-        edit_pdf(data,request(model,chosen,text='11/09/2026'))
+    output,report=edit_pdf(data,request(model,chosen,text='11/09/2026'))
+    from pdfmodder.tagged import analyze
+    assert report['verified'] and report['accessibility']['actual_text_updates']==1
+    before,after=analyze(data).semantic(),analyze(output).semantic()
+    before['marks'][0][0][1]['/ActualText']='Fecha: 11/09/2026'
+    assert before==after
+    with fitz.open(stream=output,filetype='pdf') as doc:
+        assert '11/09/2026' in doc[0].get_text()
 
 
 def test_fill_and_clip_text_mode_four_is_blocked_even_if_trace_reports_visible_type_zero():

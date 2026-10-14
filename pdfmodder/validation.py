@@ -217,7 +217,13 @@ def page_issues(data, number):
         ops = ContentStream(page.get_contents(), reader).operations
         if any(op in (b'W',b'W*') for _,op in ops):
             issues.append("Página con recortes gráficos explícitos: no se puede reconstruir el texto con seguridad.")
-        if any(op in (b'BDC', b'BMC') for _,op in ops):
+        if not reader.trailer['/Root'].get('/StructTreeRoot'):
+            from .marked_content_v303 import assert_compatible_unstructured_marks
+            try:
+                assert_compatible_unstructured_marks(reader, page, ops)
+            except EditError as exc:
+                issues.append(str(exc))
+        elif any(op in (b'BDC', b'BMC') for _,op in ops):
             from .tagged import validate_tagged
             try:
                 if not validate_tagged(data):

@@ -564,6 +564,22 @@ class Session:
         payload.update(page=page,ids=ids)
         return payload
 
+    def rich_redistribute(self,request,scope='paragraph'):
+        """Prepare a larger draft; the ordinary acceptance owns the transaction."""
+        self._writable()
+        if self.issues:raise EditError('\n'.join(self.issues))
+        from .neighbor_layout_v303 import prepare_neighbor_draft
+        cached=self._model_cache.get((self.history.revision,request['page'],False))
+        payload=prepare_neighbor_draft(self.history.current,request,scope,self.resolver,
+                                      page_model=cached[0] if cached is not None else None)
+        catalog=getattr(self,'_rich_catalog',None)
+        if catalog is None:
+            catalog=self.rich_selection(request['page'],request['ids'])['catalog']
+        payload['catalog']=catalog
+        self._prepared_rich=None
+        self._validated_rich=None
+        return payload
+
     def rich_preview(self,request,zoom=1.25,apply=False,prepare=False):
         """Live previews use final export bytes, without replacing session state."""
         from .richtext import edit_rich_pdf
@@ -1189,7 +1205,7 @@ def dispatch(command,payload=None):
     # Engines retain their own document-specific checks. This guard prevents
     # any mutation/export route from using the deliberately unchecked reader.
     if command in ('clipboard_apply','edit_document_metadata','export_secure_pdf',
-                   'preview','rich_selection','rich_preview','rich_apply','rich_prepare','rich_commit',
+                   'preview','rich_selection','rich_redistribute','rich_preview','rich_apply','rich_prepare','rich_commit',
                    'object_info','object_operation','insert_text','image','export_image',
                    'find_replacements','preview_replacements','review_page','organizer_info','organizer_thumbnail',
                    'organize_pages','image_apply','delete_pages','extract_pages','preview_replace_pages_v150',
@@ -1224,6 +1240,7 @@ def dispatch(command,payload=None):
     if command=='page': return _session.page(**payload)
     if command=='preview': return _session.preview(payload['request'])
     if command=='rich_selection': return _session.rich_selection(**payload)
+    if command=='rich_redistribute': return _session.rich_redistribute(**payload)
     if command=='rich_preview': return _session.rich_preview(**payload)
     if command=='rich_apply': return _session.rich_preview(**payload,apply=True)
     if command=='rich_prepare': return _session.rich_preview(**payload,prepare=True)

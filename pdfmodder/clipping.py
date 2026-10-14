@@ -6,6 +6,7 @@ admitida mantiene cantidad de códigos y avances PDF, usando códigos ya vistos
 en el mismo recurso de fuente. No elimina OCR ni reconstruye contornos.
 """
 from dataclasses import fields, replace
+from decimal import Decimal
 from io import BytesIO
 import copy
 import hashlib
@@ -13,7 +14,7 @@ import time
 
 import pymupdf as fitz
 from pypdf import PdfReader
-from pypdf.generic import ByteStringObject, ContentStream, DecodedStreamObject, FloatObject, NameObject, NumberObject
+from pypdf.generic import ArrayObject, ByteStringObject, ContentStream, DecodedStreamObject, DictionaryObject, FloatObject, NameObject, NumberObject
 
 from .model import EditError, intersects, union
 
@@ -25,11 +26,39 @@ def _fail(message):
     raise EditError('Texto recortado: '+message)
 
 
+class _ExactFloat(FloatObject):
+    """Keep the parsed numeric value instead of pypdf's eight-digit rounding.
+
+    PDF numbers cannot use exponential notation. The shortest round-tripping
+    Python spelling, expanded as a decimal, preserves even high precision cm
+    operands without relaxing the operator/resource preservation proof.
+    """
+    def myrepr(self):
+        if self == 0:
+            return '0.0'
+        value = format(Decimal(repr(float(self))), 'f')
+        return value.rstrip('0').rstrip('.') if '.' in value else value
+
+
+def _precise_operand(value):
+    if isinstance(value, FloatObject):
+        return _ExactFloat(value)
+    if isinstance(value, ArrayObject):
+        return ArrayObject([_precise_operand(item) for item in value])
+    if isinstance(value, DictionaryObject):
+        return DictionaryObject({key: _precise_operand(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return [_precise_operand(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _precise_operand(item) for key, item in value.items()}
+    return value
+
+
 def _serialize(operations):
     source = DecodedStreamObject()
     source.set_data(b'')
     stream = ContentStream(source,None)
-    stream.operations = operations
+    stream.operations = [(_precise_operand(args), op) for args, op in operations]
     return stream.get_data()
 
 

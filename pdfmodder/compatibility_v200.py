@@ -70,6 +70,20 @@ def preflight_text(data, page, ids, new_text=None, resolver=None, *,
                 result.update(status='conditional',label='Capa OCR: elegir modo explícitamente',
                               actions=['Activar Corregir capa OCR buscable o editar la apariencia visible.'])
                 return result
+            # Preflight must own the same original selection as the compositor,
+            # including URI links and annotations, rather than promising only
+            # font codes for text that the editing route cannot accept.
+            from dataclasses import replace
+            from .clipping import CLIP_ISSUE
+            from .engine import _safe_selection
+            from .linked_text_v303 import prepare_linked_text
+            linked=prepare_linked_text(local,page,model,selected,
+                text if text is not None else ''.join(g.text for g in selected))
+            _safe_selection(doc[page],replace(model,issues=[v for v in model.issues if v!=CLIP_ISSUE]),
+                            selected,preserve_paint_order=True,linked_text=linked)
+            if linked:
+                result['linked_text']=linked.report()
+                result.setdefault('warnings',[]).append('Se comprobarán el texto visible, el destino y el área activa del enlace conjuntamente.')
             _,operations,shows,mapping=operator_glyph_map(local,page,model)
             sources={show['operation']:show for show in shows}
             grouped={}

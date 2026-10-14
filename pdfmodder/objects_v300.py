@@ -363,7 +363,7 @@ class _Writer:
     def __init__(self,data,page):
         self.reader=PdfReader(BytesIO(data),strict=True)
         self.doc=fitz.open(stream=data,filetype='pdf');self.page=page;self.counter=0
-        self.cloned=[]
+        self.cloned=[];self.form_font_context=[]
 
     def close(self):self.doc.close()
 
@@ -381,7 +381,7 @@ class _Writer:
         ref=self.doc.get_new_xref();self.doc.update_object(ref,_pdf(_copy_dictionary(resources)))
         return ref
 
-    def clone_form(self,form,ops,resources):
+    def clone_form(self,form,ops,resources,original_fonts=None):
         source=getattr(getattr(form,'indirect_reference',None),'idnum',None)
         reference=self.doc.get_new_xref()
         value=_copy_dictionary(form)
@@ -393,6 +393,11 @@ class _Writer:
         self.doc.xref_set_key(reference,'Resources',f'{resource} 0 R')
         self.doc.update_stream(reference,_serialize(ops),compress=False)
         self.cloned.append({'source':source,'copy':reference})
+        original=getattr(form,'indirect_reference',None)
+        if original_fonts is not None:
+            if original is None:raise EditError('No se pudo verificar la referencia original del Form.')
+            self.form_font_context.append({'source':(original.idnum,original.generation),
+                'copy':(reference,0),'fonts':_copy_dictionary(original_fonts)})
         return reference
 
     def finish(self,ops,resources):
@@ -449,8 +454,10 @@ def _mutate(data,page,node,callback):
         if form.get('/StructParent') is not None or form.get('/StructParents') is not None:
             raise EditError('Esta instancia tiene relaciones de accesibilidad que requieren remapear etiquetas antes de editar su interior.')
         child_ops=ContentStream(form,writer.reader).operations
-        child_ops,child_res=walk(child_ops,_dict(form.get('/Resources',resources)),depth+1)
-        reference=writer.clone_form(form,child_ops,child_res)
+        original_resources=_dict(form.get('/Resources',resources))
+        original_fonts=_copy_dictionary(original_resources.get('/Font',{}))
+        child_ops,child_res=walk(child_ops,original_resources,depth+1)
+        reference=writer.clone_form(form,child_ops,child_res,original_fonts)
         resources,name=writer.resource(resources,'/XObject',reference)
         ops=list(ops);args=copy.copy(args);args[0]=name;ops[index]=(args,op)
         return ops,resources
@@ -458,7 +465,7 @@ def _mutate(data,page,node,callback):
         p=writer.reader.pages[page]
         ops,res=walk(ContentStream(p.get_contents(),writer.reader).operations,_dict(p.get('/Resources',{})))
         output=writer.finish(ops,res)
-        return output,writer.cloned
+        return output,writer.cloned,writer.form_font_context
     finally:writer.close()
 
 
@@ -604,21 +611,21 @@ def _relation_guard(data,page,node,transform):
             raise EditError('La transformación toca '+label+'; sus áreas activas necesitan una edición conjunta explícita.')
 
 
-def _validate(data,output,page,regions,typography_updated=False):
+def _validate(data,output,page,regions,typography_updated=False,form_font_context=()):
     from .validation import assert_form_preservation
+    from .pdf_object_identity_v303 import assert_pdf_object_identity
     assert_form_preservation(data,output)
-    # All pre-existing indirect objects except the selected page dictionary
-    # must stay byte-semantically intact. Shared Forms/resources are never changed.
+    # MuPDF may reorder dictionary keys and flatten compressed-object storage.
+    # Prove typed values, exact references and decoded streams rather than the
+    # serializer's representation. Only this page's explicitly owned keys vary.
     with fitz.open(stream=data,filetype='pdf') as before,fitz.open(stream=output,filetype='pdf') as after:
         if before.page_count!=after.page_count:raise EditError('La operación cambió el número de páginas.')
         page_count=before.page_count
-        allowed=before[page].xref
-        for xref in range(1,before.xref_length()):
-            if xref==allowed:continue
-            if before.xref_object(xref)!=after.xref_object(xref):
-                raise EditError('La operación alteró un recurso original compartido; transacción cancelada.')
-            if before.xref_is_stream(xref) and before.xref_stream(xref)!=after.xref_stream(xref):
-                raise EditError('La operación alteró un flujo original compartido; transacción cancelada.')
+        owned={'/Contents','/Resources'}
+        if typography_updated:owned.add('/PDFModderTypography')
+        proof=assert_pdf_object_identity(data,output,
+            allowed_page_dictionary_keys={page:owned},require_page_fonts=page,
+            owned_form_font_context=form_font_context)
         if before.metadata!=after.metadata or before.get_xml_metadata()!=after.get_xml_metadata():
             raise EditError('La operación alteró los metadatos del documento.')
         # Other pages and every referenced original resource were proved
@@ -632,17 +639,12 @@ def _validate(data,output,page,regions,typography_updated=False):
             'widgets':[(w.field_name,w.field_value,w.field_type,tuple(w.rect)) for w in p.widgets() or []]})
         if rel(a)!=rel(b):raise EditError('La operación alteró enlaces, anotaciones o campos.')
         pixels=assert_pixels(before[page],after[page],regions)
-    independent=PdfReader(BytesIO(output),strict=True)
+    independent=proof.candidate_reader
     if len(independent.pages)!=page_count:
         raise EditError('El lector independiente no confirma la estructura del resultado.')
-    original=PdfReader(BytesIO(data),strict=True)
-    def unchanged_page_values(value):
-        return {str(key):_pdf(value.raw_get(key)) for key in value
-                if key not in ('/Contents','/Resources') and not(typography_updated and key=='/PDFModderTypography')}
-    if unchanged_page_values(original.pages[page])!=unchanged_page_values(independent.pages[page]):
-        raise EditError('La operación alteró propiedades de la página ajenas a sus objetos.')
     return {'verified':True,'independent_parser':'pypdf','pixels':pixels,
-            'original_objects_unchanged':True,'relations_preserved':True}
+            'original_objects_unchanged':True,'relations_preserved':True,
+            'object_identity':proof.report}
 
 
 def edit_object_pdf(data,page,object_id,operation,*,revision=None,dx=0.,dy=0.,
@@ -713,7 +715,7 @@ def edit_object_pdf(data,page,object_id,operation,*,revision=None,dx=0.,dy=0.,
             # it in the same paint position and marked-content/layer context.
             replacement=ops[node.start:node.end+1]+replacement
         return ops[:node.start]+replacement+ops[node.end+1:],resources
-    output,clones=_mutate(data,page,node,modify)
+    output,clones,form_font_context=_mutate(data,page,node,modify)
     typography={'updated_records':0,'cloned_records':0,'verified':True}
     if graph.has_typography:
         from .typography_objects_v300 import update_native_object_records_v300
@@ -725,7 +727,8 @@ def edit_object_pdf(data,page,object_id,operation,*,revision=None,dx=0.,dy=0.,
         matrix=_matrix(node.matrix)
         margin=values['line_width']*max(math.hypot(matrix.a,matrix.b),math.hypot(matrix.c,matrix.d))*max(1,node.properties.get('miter_limit',10))/2
         r=destination;regions.append((r[0]-margin,r[1]-margin,r[2]+margin,r[3]+margin))
-    validation=_validate(data,output,page,regions,typography_updated=bool(typography['updated_records']))
+    validation=_validate(data,output,page,regions,typography_updated=bool(typography['updated_records']),
+                         form_font_context=form_font_context)
     report={'operation':'native_object_v300','object_operation':operation,'page':page,
             'object_id':object_id,'kind':node.kind,'source_regions':[node.rect],
             'destination_regions':[destination],'matrix':tuple(transform),'properties':values,

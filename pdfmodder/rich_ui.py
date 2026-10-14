@@ -120,8 +120,11 @@ class RichEditing:
                 self._submit('rich_commit',{'token':result['token']},committed)
                 return
             if serial!=self._rich_serial:return
-            self.canvas.set_live_preview(result['png'],'PDF validado · ✓ Aceptar para incorporarlo al historial.')
             report=result.get('report',{})
+            warning=report.get('warning')
+            warning=warning.strip() if isinstance(warning,str) else ''
+            self.canvas.set_live_preview(result['png'],'PDF validado · ✓ Aceptar para incorporarlo al historial.'
+                                         +(' '+warning if warning else ''))
             rect=report.get('new_bounds') or report.get('rect') or payload.get('rect')
             if rect and self.model:
                 display=transform_rect(rect,self.model.rotation_matrix)
@@ -130,12 +133,13 @@ class RichEditing:
                 cropped=pixmap.copy(QRect(int(display[0]*scale)-5,int(display[1]*scale)-5,
                     max(1,int((display[2]-display[0])*scale)+10),max(1,int((display[3]-display[1])*scale)+10)))
                 self.rich_result_image.setPixmap(cropped.scaled(330,190,Qt.KeepAspectRatio,Qt.SmoothTransformation))
-            self.rich_result_message.setText('PDF real validado. El tamaño de letra se conserva; Aceptar incorpora una sola operación.')
+            self.rich_result_message.setText('PDF real validado. El tamaño de letra se conserva; Aceptar incorpora una sola operación.'
+                                            +('\n'+warning if warning else ''))
         self._submit('rich_prepare' if accept else 'rich_preview',{'request':payload,'zoom':self.zoom},finished)
 
     def _rich_failed(self,command,message):
         if command=='rich_selection':self._rich_loading=False
-        if self._rich_active and command in ('rich_preview','rich_apply','rich_prepare','rich_commit'):
+        if self._rich_active and command in ('rich_preview','rich_apply','rich_prepare','rich_commit','rich_redistribute'):
             self._rich_accept_pending=False;self.canvas.editor.set_accepting(False)
             self.canvas.editor.toolbar.status.setText(message)
             self.rich_result_message.setText('Borrador no validado: '+message)

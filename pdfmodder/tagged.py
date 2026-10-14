@@ -49,7 +49,8 @@ def _preservable_layout_attributes(value):
             or attributes['/O']!='/Layout'):
         return False
     numbers={'/SpaceBefore','/SpaceAfter','/StartIndent','/EndIndent','/TextIndent'}
-    if set(attributes)-numbers-{'/O','/TextAlign','/WritingMode','/Placement','/BBox'}:
+    if set(attributes)-numbers-{'/O','/TextAlign','/WritingMode','/Placement','/BBox',
+                               '/TextDecorationColor','/TextDecorationType'}:
         return False
     for key in numbers & set(attributes):
         number=obj(attributes[key])
@@ -66,6 +67,15 @@ def _preservable_layout_attributes(value):
     if '/Placement' in attributes and (not isinstance(attributes['/Placement'],NameObject)
             or attributes['/Placement'] not in ('/Block','/Inline')):
         return False
+    if '/TextDecorationType' in attributes and (not isinstance(attributes['/TextDecorationType'],NameObject)
+            or attributes['/TextDecorationType'] not in ('/None','/Underline','/Overline','/LineThrough')):
+        return False
+    if '/TextDecorationColor' in attributes:
+        color=obj(attributes['/TextDecorationColor'])
+        if (not isinstance(color,(list,tuple)) or len(color)!=3
+                or any(isinstance(v,bool) or not isinstance(v,(int,float))
+                       or not math.isfinite(v) or not 0<=v<=1 for v in color)):
+            return False
     if '/BBox' in attributes:
         box=obj(attributes['/BBox'])
         if (not isinstance(box,(list,tuple)) or len(box)!=4
@@ -73,6 +83,58 @@ def _preservable_layout_attributes(value):
                        for v in box) or box[0]>=box[2] or box[1]>=box[3]):
             return False
     return True
+
+
+def _preservable_table_attributes(value, structure):
+    """Native text does not alter a verified cell's existing grid relations."""
+    attributes=obj(value)
+    if (not isinstance(attributes,dict) or attributes.get('/O')!='/Table'
+            or set(attributes)-{'/O','/RowSpan','/ColSpan','/Scope','/Headers'}):
+        return False
+    for key in ('/RowSpan','/ColSpan'):
+        number=obj(attributes.get(key,1))
+        if isinstance(number,bool) or not isinstance(number,int) or number<1:
+            return False
+    if '/Scope' in attributes and (not isinstance(attributes['/Scope'],NameObject)
+            or attributes['/Scope'] not in ('/Row','/Column','/Both')):
+        return False
+    if '/Headers' in attributes:
+        headers=obj(attributes['/Headers'])
+        identifiers={str(obj(node['/ID'])) for node in structure.nodes.values() if '/ID' in node}
+        if (not isinstance(headers,(list,tuple)) or not headers
+                or any(not isinstance(obj(header),str) or not str(obj(header))
+                       or str(obj(header)) not in identifiers for header in headers)):
+            return False
+    return True
+
+
+def semantic_paragraph_scopes(structure,page,model):
+    """Return complete single-page /P ownership groups, including custom roles."""
+    if structure is None:return []
+    roles=obj(structure.tree.get('/RoleMap',{}));roles=roles if isinstance(roles,dict) else {}
+    def standard(role):
+        seen=set()
+        while role in roles:
+            if role in seen:return None
+            seen.add(role);role=obj(roles[role])
+        return str(role)
+    contexts=structure.glyph_contexts(page,model)
+    groups={}
+    for glyph in model.glyphs:
+        mcid=contexts.get(glyph.id)
+        owner=structure.owners.get((page,mcid))
+        if owner is None:continue
+        for depth in range(len(owner),-1,-1):
+            path=owner[:depth];node=structure.nodes.get(path)
+            if node is not None and standard(str(node.get('/S','')))=='/P':
+                groups.setdefault(path,[]).append(glyph.id);break
+    # A cross-page logical paragraph needs a cross-page selector; do not claim
+    # that its current-page subset is a complete paragraph.
+    cross_page=set()
+    for (number,_),owner in structure.owners.items():
+        if number!=page:
+            cross_page.update(path for path in groups if owner[:len(path)]==path)
+    return [tuple(ids) for path,ids in groups.items() if path not in cross_page and ids]
 
 
 def _attribute_items(value,kind,*,revisions=True):
@@ -497,15 +559,16 @@ def assert_structure(before,after,expected=None):
 
 
 class TaggedEdit:
-    def __init__(self,structure,page,model,selected,planned,original_selection,rewriting):
+    def __init__(self,structure,page,model,selected,planned,original_selection,rewriting,*,native_inplace=False):
         self.structure=structure
+        self.native_inplace=native_inplace
         self.page=page
         self.model=model
         self.contexts=structure.glyph_contexts(page,model)
         owners={self.contexts[g.id] for g in original_selection}
         if None in owners:
             fail('la selección contiene un artefacto; elige contenido con una etiqueta propia.')
-        if rewriting and len(owners)!=1:
+        if rewriting and len(owners)!=1 and planned:
             fail('la sustitución abarca varias etiquetas. Selecciona un fragmento de una sola etiqueta para conservar su significado.')
         new_owner=next(iter(owners))
         affected={self.contexts[g.id] for g in selected}
@@ -522,7 +585,7 @@ class TaggedEdit:
         self.original={}
         for mcid in affected:
             mark=structure.marks[page][mcid]
-            if mark.paints or mark.nested_actual:
+            if (mark.paints or mark.nested_actual) and not native_inplace:
                 fail('la etiqueta combina texto con gráficos o propiedades semánticas anidadas; no puede reconstruirse de forma inequívoca.')
             original=[g for g in model.glyphs if self.contexts[g.id]==mcid]
             chosen=[i for i,g in enumerate(original) if g.id in removed]
@@ -531,6 +594,8 @@ class TaggedEdit:
             actual=original[:min(chosen)]+replacement.get(mcid,[])+original[max(chosen)+1:]
             self.original[mcid]=original
             self.planned[mcid]=actual
+        if native_inplace:
+            self._check_native_nested_scopes()
         self.expected=copy.deepcopy(structure.semantic())
         self.actual_updates={}
         self.marker_updates={}
@@ -602,8 +667,27 @@ class TaggedEdit:
         if (isinstance(revision,bool) or not isinstance(revision,int) or revision<0
                 or any(number>revision for number in revisions)):
             fail('la revisión de los atributos de disposición o clases no es válida.')
+        table=[a for a in inherited+direct if obj(a).get('/O')=='/Table']
+        if any(not self.native_inplace or not _preservable_table_attributes(a,self.structure) for a in table):
+            fail('el elemento tiene atributos de disposición o clases que todavía no se actualizan al editar (atributos de tabla no verificables).')
+        inherited=[a for a in inherited if obj(a).get('/O')!='/Table']
+        direct=[a for a in direct if obj(a).get('/O')!='/Table']
         if any(not _preservable_layout_attributes(attributes) for attributes in inherited+direct):
             fail('el elemento tiene atributos de disposición o clases que todavía no se actualizan al editar.')
+        if any('/TextDecorationType' in a or '/TextDecorationColor' in a for a in inherited+direct):
+            if not self.native_inplace:
+                fail('la decoración de texto sólo se conserva mediante edición nativa de sus operadores.')
+            decorated={mcid for p,mcid in contents if p==self.page}
+            original=[g for g in self.model.glyphs if self.contexts[g.id] in decorated]
+            planned=[g for g in original if self.contexts[g.id] not in self.affected]
+            planned.extend(g for mcid in decorated & self.affected for g in self.planned[mcid])
+            if original and planned:
+                left=min(g.bbox[0] for g in original);right=max(g.bbox[2] for g in original)
+                baselines={round(g.origin[1],3) for g in original}
+                sizes={round(g.size,3) for g in original}
+                if any(g.bbox[0]<left-.035 or g.bbox[2]>right+.035
+                       or round(g.origin[1],3) not in baselines or round(g.size,3) not in sizes for g in planned):
+                    fail('la nueva disposición necesita actualizar la decoración original conjuntamente.')
         # Direct attributes override classes. Conflicting definitions inside
         # either group need revision/precedence interpretation beyond this
         # editor's proof, even when every individual field is recognized.
@@ -625,6 +709,11 @@ class TaggedEdit:
         original=[g for g in self.model.glyphs if self.contexts[g.id] in mcids]
         planned=[g for g in original if self.contexts[g.id] not in self.affected]
         planned.extend(g for mcid in mcids & self.affected for g in self.planned[mcid])
+        if not planned and original:
+            # A deletion may leave a valid empty marked item. Retaining its
+            # declared container preserves grid/layout ownership without
+            # inventing a new empty geometry or touching other contents.
+            return
         if not original or not planned:
             fail('la caja de disposición necesita contenido visible para verificar su geometría.')
         if self._pdf_matrix is None:
@@ -677,6 +766,26 @@ class TaggedEdit:
             else:attributes=ArrayObject(addition) if revision else override
         self.layout_updates[path]=attributes
         self.expected['nodes'][path]['/A']=_attribute_snapshot(attributes)
+
+    def _check_native_nested_scopes(self):
+        changed={mcid for mcid in self.affected if ''.join(g.text for g in self.original[mcid])
+                 !=''.join(g.text for g in self.planned[mcid])}
+        if not changed:return
+        resources=obj(self.structure.reader.pages[self.page].get('/Resources',{}))
+        properties=obj(resources.get('/Properties',{}));stack=[]
+        for index,(args,operator) in enumerate(self.structure.operations[self.page]):
+            if operator in (b'BMC',b'BDC'):
+                value=args[1] if operator==b'BDC' else None
+                value=obj(properties.get(value)) if isinstance(value,NameObject) else obj(value)
+                stack.append((str(args[0]),value or {}))
+            elif operator in SHOW and self.structure.contexts[self.page][index] in changed:
+                for tag,props in stack:
+                    if tag in ('/OC','/ReversedChars'):
+                        fail('el contenido anidado tiene un orden o capa semántica que requiere revisión manual.')
+                    if props.get('/MCID') in self.affected:continue
+                    if set(props)-{'/MCID','/Lang'}:
+                        fail('el contenido anidado tiene propiedades semánticas que necesitan actualización conjunta.')
+            elif operator==b'EMC':stack.pop()
 
     def apply_updates(self,document,structure=None):
         """Apply planned element changes on either native or rebuilt content."""

@@ -63,6 +63,23 @@ def test_moving_into_a_new_neighbor_is_rejected():
         edit_rich_pdf(data, req)
 
 
+def test_explicit_overlap_keeps_neighbor_text_and_is_reported():
+    data, _, neighbors, payload = tight_lines()
+    req = draft(payload, 'FEDCBA')
+    rect = req.rect
+    req = replace(req, rect=(20, rect[1], rect[2]-30, rect[3]), allow_overlap=True)
+    output, report = edit_rich_pdf(data, req)
+    assert report['verified'] and report['allow_overlap']
+    assert report['overlap_neighbor_count'] > 0
+    assert 'Solapamiento permitido' in report['warning']
+    with fitz.open(stream=output, filetype='pdf') as after:
+        actual = extract_page(after, 0, output)
+        for original in neighbors:
+            assert any((g.text,g.origin,g.font,g.size,g.color) ==
+                       (original.text,original.origin,original.font,original.size,original.color)
+                       for g in actual.glyphs)
+
+
 def test_font_growth_beyond_existing_intersection_is_rejected():
     data, _, _, payload = tight_lines()
     req = draft(payload, 'ABCDEF')

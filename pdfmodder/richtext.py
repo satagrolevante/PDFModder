@@ -147,10 +147,10 @@ def _source_width(font, code, text):
     return float(descendant.get('/DW', 1000))
 
 
-def _safe_rich_selection(page,model,selected,metadata,*,preserve_paint_order=True):
+def _safe_rich_selection(page,model,selected,metadata,*,preserve_paint_order=True,linked_text=None):
     """Allow only this editor's verified, owned underline paths above text."""
     if not any(r.get('underlines') for r in metadata):
-        return _safe_selection(page,model,selected,preserve_paint_order=preserve_paint_order)
+        return _safe_selection(page,model,selected,preserve_paint_order=preserve_paint_order,linked_text=linked_text)
     # The original native operations stay intact; an isolated safety probe
     # removes only exactly matched owned underline sequences.
     data=page.parent.tobytes(garbage=0)
@@ -170,7 +170,7 @@ def _safe_rich_selection(page,model,selected,metadata,*,preserve_paint_order=Tru
         remapped=extract_page(probe,page.number)
         lookup={g.id:g for g in remapped.glyphs}
         targets=[replace(g,seqno=lookup[g.id].seqno) if g.id in lookup else g for g in selected]
-        _safe_selection(probe[page.number],replace(remapped,issues=model.issues),targets,preserve_paint_order=preserve_paint_order)
+        _safe_selection(probe[page.number],replace(remapped,issues=model.issues),targets,preserve_paint_order=preserve_paint_order,linked_text=linked_text)
 
 
 def _unit(show):
@@ -435,7 +435,62 @@ def _new_neighbor_overlap(planned, neighbor, selected, tolerance=.12):
         remaining = uncovered
         if not remaining:
             return False
-    return True
+    # Float32 rectangle subtraction can leave a hairline outside the tolerated
+    # existing overlap. Apply the same tolerance to each remaining rectangle,
+    # while keeping gaps between disjoint source intersections independent.
+    return any(part.width > tolerance and part.height > tolerance for part in remaining)
+
+
+def _unchanged_rich_request(data, request, resolver, model):
+    """Recognize an exact existing selection, including separate clipped cells."""
+    if request.auto_width or request.auto_height:
+        return None
+    payload = selection_payload(data, request.page, request.ids, resolver, page_model=model)
+    if request.runs != payload['runs'] or request.paragraphs != payload['paragraphs']:
+        return None
+    bounds = payload['rect']
+    rect = request.rect if request.rect is not None else bounds
+    if (len(rect) != 4 or any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in rect)
+            or any(abs(a-b) > .001 for a, b in zip(rect, bounds))):
+        return None
+    for value, original in ((request.width, bounds[2]-bounds[0]),
+                            (request.height, bounds[3]-bounds[1])):
+        if value is not None and (not isinstance(value, (int, float))
+                                  or not math.isfinite(value) or abs(value-original) > .001):
+            return None
+    return payload
+
+
+def _assert_clip_paint(data, page, regions, message):
+    """Prove that retained rectangular clips do not cut the current text ink.
+
+    This probe never becomes output. The final PDF keeps every original W/W*,
+    font resource and advance, and still passes the normal glyph/pixel proof.
+    Unknown clips/transforms are rejected by the caller before this narrow
+    metric-box exception is considered.
+    """
+    import numpy as np
+    reader = PdfReader(BytesIO(data), strict=True)
+    operations = ContentStream(reader.pages[page].get_contents(), reader).operations
+    with fitz.open(stream=data, filetype='pdf') as before, fitz.open(stream=data, filetype='pdf') as probe:
+        before[page].set_rotation(0)
+        probe[page].set_rotation(0)
+        stream = probe.get_new_xref()
+        probe.update_object(stream, '<<>>')
+        probe.update_stream(stream, _serialize([(args, op) for args, op in operations
+                                               if op not in (b'W', b'W*')]))
+        probe[page].set_contents(stream)
+        for region in regions:
+            # Include metric overhangs and antialiasing beyond the cell edge.
+            area = (fitz.Rect(region) + (-.75, -.75, .75, .75)) & before[page].rect
+            a = before[page].get_pixmap(matrix=fitz.Matrix(4, 4), clip=area, alpha=False)
+            b = probe[page].get_pixmap(matrix=fitz.Matrix(4, 4), clip=area, alpha=False)
+            if (a.width, a.height, a.n) != (b.width, b.height, b.n):
+                raise EditError(message)
+            delta = np.abs(np.frombuffer(a.samples, dtype=np.uint8).astype(np.int16)
+                           - np.frombuffer(b.samples, dtype=np.uint8).astype(np.int16))
+            if np.any(delta > 1):
+                raise EditError(message)
 
 
 def edit_rich_pdf(data, request, resolver=None):
@@ -482,7 +537,9 @@ def edit_rich_pdf(data, request, resolver=None):
             raise EditError('Selecciona un texto para el editor por fragmentos.')
         clean=replace(model,issues=[v for v in model.issues if v!=CLIP_ISSUE])
         metadata=_read_metadata(doc,request.page)
-        _safe_rich_selection(doc[request.page],clean,selected,metadata)
+        from .linked_text_v303 import prepare_linked_text
+        linked_text=prepare_linked_text(data,request.page,model,selected,''.join(str(r.get('text','')) for r in request.runs))
+        _safe_rich_selection(doc[request.page],clean,selected,metadata,linked_text=linked_text)
         rotation=doc[request.page].rotation
         doc[request.page].set_rotation(0)
         page_matrix=doc[request.page].transformation_matrix
@@ -490,6 +547,22 @@ def edit_rich_pdf(data, request, resolver=None):
         doc[request.page].set_rotation(rotation)
     chosen={g.id for g in selected}
     others=[g for g in model.glyphs if g.id not in chosen]
+    unchanged = _unchanged_rich_request(data, request, resolver, model)
+    if unchanged is not None:
+        # No reinsertion, cursor compensation or clipping changes are needed.
+        # The normal independent validator still verifies the current snapshot.
+        report = _validate(data, data, request.page, model.glyphs, [], [], [], None)
+        rect = tuple(unchanged['rect'])
+        report.update(page=request.page, rect=rect, area_width=rect[2]-rect[0],
+                      area_height=rect[3]-rect[1], auto_width=False, auto_height=False,
+                      source_regions=[g.bbox for g in selected],
+                      destination_regions=[g.bbox for g in selected],
+                      glyphs=[asdict(g) for g in selected], carets=unchanged['carets'],
+                      original=model.text(request.ids), replacement=unchanged['text'],
+                      line_count=len({g.line for g in selected}), fonts={},
+                      elapsed_seconds=round(time.perf_counter()-started, 3),
+                      rich_text=True, native_noop=True)
+        return data, report
     if any(g.mode==3 and any(intersects(g.bbox,s.bbox) for s in selected) for g in others):
         raise EditError('La selección tiene OCR invisible superpuesto. Corrige esa capa por separado antes de usar formato por fragmentos.')
     if any(abs(g.opacity-selected[0].opacity)>.001 for g in selected):
@@ -500,7 +573,7 @@ def edit_rich_pdf(data, request, resolver=None):
     first_op=mapping[first.id]['operation']
     resources=reader.pages[request.page]['/Resources'].get_object()
     first_state=_state_at(operations,first_op,resources)
-    states={}; source_clips=[]
+    states={}; source_clips=[]; source_metric_overhang=False
     for op in {mapping[g.id]['operation'] for g in selected}:
         state=_state_at(operations,op,resources); states[op]=state
         show=byop[op];unit=_unit(show)
@@ -515,7 +588,7 @@ def edit_rich_pdf(data, request, resolver=None):
             raise EditError('No se pueden aislar los códigos de los caracteres seleccionados.')
         for g in show['glyphs']:
             if g.id in chosen and not (source_clips[-1]+(-.03,-.03,.03,.03)).contains(fitz.Rect(g.bbox)):
-                raise EditError('Un carácter original está parcialmente oculto por el recorte.')
+                source_metric_overhang=True
     # A merged selection retains the intersection of its known clips. This
     # never expands a table cell or silently frees text from its original clip.
     clip=fitz.Rect(source_clips[0])
@@ -651,19 +724,46 @@ def edit_rich_pdf(data, request, resolver=None):
     laid,lines,rect=_layout(request,tokens,rect)
     planned=[replace(first,id=-1,text=t['char'],origin=t['origin'],bbox=t['bbox'],trace_bbox=t['bbox'],
                      font=t['choice']['font_name'],size=t['size'],color=t['color'],line=t['line']) for t in laid]
-    for g in planned:
-        if not page_bounds.contains(fitz.Rect(g.bbox)) or not (clip+(-.035,-.035,.035,.035)).contains(fitz.Rect(g.bbox)):
+    metric_clip_exception=False
+    overlap_neighbors=set()
+    for g, token in zip(planned, laid):
+        inside_clip=(clip+(-.035,-.035,.035,.035)).contains(fitz.Rect(g.bbox))
+        if not inside_clip:
+            # Permit only original-resource text on an original baseline and
+            # at its original size. Horizontal cell limits still apply. Its
+            # actual paint must then be proved below, with clips unchanged.
+            original_face=(working==data and any(
+                token['choice']['resource']==mapping[old.id]['font_resource']
+                and abs(g.size-old.size)<.001 and abs(g.origin[1]-old.origin[1])<.025
+                and normalized_name(g.font)==normalized_name(old.font)
+                for old in selected))
+            within_cell=(not clip.is_empty and g.bbox[0]>=clip.x0-.035
+                         and g.bbox[2]<=clip.x1+.035)
+            if not original_face or not within_cell:
+                raise EditError('El texto nuevo queda fuera de la página o del recorte original.')
+            metric_clip_exception=True
+        if not page_bounds.contains(fitz.Rect(g.bbox)):
             raise EditError('El texto nuevo queda fuera de la página o del recorte original.')
-        if not request.allow_overlap and any(_new_neighbor_overlap(g,n,selected) for n in others):
+        collisions={n.id for n in others if _new_neighbor_overlap(g,n,selected)}
+        overlap_neighbors.update(collisions)
+        if collisions and not request.allow_overlap:
             raise EditError('El texto se solapa con caracteres vecinos. Amplía o mueve el cuadro, o permite el solapamiento explícitamente.')
+    if source_metric_overhang and planned:
+        _assert_clip_paint(data, request.page, [bounds],
+                           'Un carácter original está parcialmente oculto por el recorte.')
     with fitz.open(stream=data,filetype='pdf') as safety:
-        if planned:_safe_rich_selection(safety[request.page],clean,planned,metadata)
-        _safe_native_consolidation(safety[request.page],selected,planned)
+        from .marked_content_v303 import assert_unstructured_artifact_bounds
+        assert_unstructured_artifact_bounds(data,request.page,model,selected,planned,mapping,operations)
+        if linked_text:linked_text.plan(planned)
+        if planned:_safe_rich_selection(safety[request.page],clean,planned,metadata,linked_text=linked_text)
+        # Empty replacement removes paint in place and never consolidates
+        # separate text SHOWs across intervening artwork.
+        if planned:_safe_native_consolidation(safety[request.page],selected,planned)
     structure=analyze_readonly(data)
     from .tagged_artifacts import verified_artifact_selection
     artifact=(structure is not None and verified_artifact_selection(
         structure,request.page,request.ids,mapping,operations,model=model,planned=planned))
-    tagged=(TaggedEdit(structure,request.page,model,selected,planned,selected,True)
+    tagged=(TaggedEdit(structure,request.page,model,selected,planned,selected,True,native_inplace=True)
             if structure is not None and not artifact else None)
     matrix=first_state['matrix'];linear=first_state['ctm']*page_matrix;inverse=~linear
     insertion=[];new_underlines=[];groups=[]
@@ -702,7 +802,7 @@ def edit_rich_pdf(data, request, resolver=None):
         with fitz.open(stream=data,filetype='pdf') as safety:
             decorations=[replace(first,bbox=tuple(item['rect'])) for item in new_underlines]
             try:
-                _safe_rich_selection(safety[request.page],clean,decorations,metadata,preserve_paint_order=False)
+                _safe_rich_selection(safety[request.page],clean,decorations,metadata,preserve_paint_order=False,linked_text=linked_text)
             except EditError as exc:
                 raise EditError('No se puede conservar el orden visual del subrayado solicitado. '+str(exc)) from exc
     # Each underline belongs to a character, so editing a partial styled range
@@ -779,10 +879,20 @@ def edit_rich_pdf(data, request, resolver=None):
         removed_groups=_drop_affected_groups(output_doc,request.page,selected)
         if tagged:
             tagged.apply_updates(output_doc)
+        if linked_text:linked_text.apply(output_doc)
         output=full_write(output_doc)
+    if metric_clip_exception:
+        _assert_clip_paint(output, request.page, [union(g.bbox for g in planned)],
+                           'El texto nuevo queda parcialmente oculto por el recorte original.')
     _assert_typography(output,request.page,others+planned)
     report=_validate(data,output,request.page,others+planned,selected+planned,old_underlines,new_underlines,
-                     tagged.expected if tagged else None)
+                     tagged.expected if tagged else None,expected_links=linked_text.expected_links if linked_text else None)
+    if linked_text:
+        linked_text.validate(output)
+        report['linked_text']=linked_text.report()
+        for warning in report['linked_text'].get('warnings',[]):
+            report.setdefault('warnings',[]).append(warning)
+            report['warning']=warning
     if tagged:report['accessibility']=tagged.validate(output)
     carets=[dict(index=t['index'],text=t['char'],origin=t['origin'],bbox=t['bbox'],
                  end=(t['origin'][0]+t['width']+t['spacing'],t['origin'][1])) for t in laid]
@@ -790,10 +900,19 @@ def edit_rich_pdf(data, request, resolver=None):
         last=carets[-1];carets.append(dict(index=index,origin=last['end'],bbox=last['bbox'],text=''))
     report.update(page=request.page,rect=rect,area_width=rect[2]-rect[0],area_height=rect[3]-rect[1],
                   auto_width=request.auto_width,auto_height=request.auto_height,
+                  allow_overlap=request.allow_overlap,overlap_neighbor_count=len(overlap_neighbors),
                   source_regions=[g.bbox for g in selected],destination_regions=[g.bbox for g in planned],
                   glyphs=[asdict(g) for g in planned],carets=carets,line_count=len(lines),fonts=evidence,
                   original=model.text(request.ids),replacement=logical_text,
                   elapsed_seconds=round(time.perf_counter()-started,3),rich_text=True)
+    if overlap_neighbors:
+        warning='Solapamiento permitido con texto vecino. Revisa la vista previa o redistribuye el texto vecino para separarlo.'
+        report.setdefault('warnings',[]).append(warning)
+        report['warning']=warning
+    if source_metric_overhang:
+        report['clip_metric_overhang_verified']=True
+    if metric_clip_exception:
+        report['clip_paint_verified']=True
     if artifact:report['artifact_preserved']=True
     if removed_groups:
         report['removed_groups']=removed_groups
@@ -934,7 +1053,7 @@ def move_rich_pdf(data, request, resolver=None):
     return output, report
 
 
-def _validate(before_data,after_data,page_number,expected,changed,old_underlines,new_underlines,tagged_expected,pixel_underlines=None):
+def _validate(before_data,after_data,page_number,expected,changed,old_underlines,new_underlines,tagged_expected,pixel_underlines=None,*,expected_links=None):
     """Normal strict validator with an exact allowance for owned underlines."""
     from .validation import _canonical,related,assert_characters,trace_chars,assert_pixels,_ink_exclusions
     from .tagged import assert_structure
@@ -970,7 +1089,10 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
             if i != page_number and unchanged_pages.unchanged(i):
                 reports.append(unchanged_pages.report(i))
                 continue
-            if without_underlines(a,old_underlines if i==page_number else [])!=without_underlines(b,new_underlines if i==page_number else []):
+            before_related=without_underlines(a,old_underlines if i==page_number else [])
+            if i==page_number and expected_links is not None:
+                before_related['links']=_canonical(expected_links)
+            if before_related!=without_underlines(b,new_underlines if i==page_number else []):
                 raise EditError('La edición alteró imágenes, vectores, enlaces, anotaciones o campos ajenos.')
             assert_characters([(g.text,g.origin,g.font,g.size) for g in expected] if i==page_number else trace_chars(a),b)
             decorated = old_underlines+new_underlines if pixel_underlines is None else pixel_underlines

@@ -1,9 +1,9 @@
 """Correctable selection scopes and visible draft area controls for version 3."""
 from copy import deepcopy
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QSignalBlocker, QTimer
 from PySide6.QtGui import QTextCursor
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel, QPushButton,
     QTextEdit, QVBoxLayout)
 
@@ -38,6 +38,52 @@ class DraftAreaDialogV300(QDialog):
         return (self.rect[0],self.rect[1],self.rect[0]+pt(self.width.value()),self.rect[1]+pt(self.height.value()))
 
 
+class NeighborLayoutDialogV303(QDialog):
+    """Choose the parent scope before extending the active draft."""
+    def __init__(self,payload,model,mode,parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Redistribuir texto vecino')
+        self.setObjectName('neighborLayoutDialogV303')
+        self.payload=payload;self.model=model
+        layout=QVBoxLayout(self)
+        note=QLabel('Los textos vecinos compatibles se incorporarán a este mismo borrador. '
+                    'Podrás revisar la vista PDF antes de aceptar una sola operación o cancelar todo.')
+        note.setWordWrap(True);layout.addWidget(note)
+        self.scope_box=QComboBox();self.scope_box.setObjectName('neighborLayoutScopeV303')
+        for label,scope in (('Párrafo','paragraph'),('Celda delimitada','cell'),('Área actual del borrador','area')):
+            self.scope_box.addItem(label,scope)
+        default='area' if not payload.get('ids') else ('cell' if mode=='cell' else 'paragraph')
+        self.scope_box.setCurrentIndex(self.scope_box.findData(default))
+        layout.addWidget(self.scope_box)
+        self.preview=QLabel();self.preview.setWordWrap(True);self.preview.setObjectName('neighborLayoutPreviewV303')
+        layout.addWidget(self.preview)
+        self.scope_box.currentIndexChanged.connect(self._update_preview)
+        buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText('Preparar borrador')
+        buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+        self._update_preview()
+
+    def scope(self):return self.scope_box.currentData()
+
+    def _update_preview(self):
+        descriptions={
+            'paragraph':'Usa el párrafo que contiene la selección, respetando sus límites y columnas.',
+            'cell':'Usa la celda delimitada que contiene la selección; sus bordes limitan la redistribución.',
+            'area':'Usa el cuadro actual del borrador y conserva los textos situados fuera de ese cuadro.',
+        }
+        message=descriptions[self.scope()]
+        selected=self.model.selected(self.payload.get('ids',[])) if self.model else []
+        if selected and self.scope() in ('paragraph','cell'):
+            scope=selection_index(self.model).scope(selected[0],self.scope())
+            text=self.model.text(scope.ids)
+            if text:message+='\n\nTexto del ámbito sugerido:\n'+text[:400]+('…' if len(text)>400 else '')
+        rect=self.payload.get('rect')
+        if self.scope()=='area' and rect and len(rect)==4:
+            message+=f'\n\nÁrea: {mm(rect[2]-rect[0]):.2f} × {mm(rect[3]-rect[1]):.2f} mm.'
+        message+='\n\nEl análisis del PDF comprobará qué vecinos pueden incorporarse sin alterar otros elementos.'
+        self.preview.setText(message)
+
+
 class SelectionUiV300Mixin:
     def _init_selection_v300(self):
         # Keep the original extraction block available as an explicit scope.
@@ -64,12 +110,27 @@ class SelectionUiV300Mixin:
         self.property_box.layout().insertRow(2,row)
         self.canvas.selection_changed.connect(self._selection_note_v300)
         self._draft_area_error_v300 = ''
+        self._neighbor_request_v303=None
+        self._neighbor_layout_info_v303=None
         self.draft_area_tools_v300 = QFrame()
         self.draft_area_tools_v300.setObjectName('draftAreaToolsV300')
         draft_layout = QVBoxLayout(self.draft_area_tools_v300); draft_layout.setContentsMargins(0,0,0,0)
         self.draft_area_status_v300 = QLabel(); self.draft_area_status_v300.setWordWrap(True)
         self.draft_area_status_v300.setObjectName('draftAreaStatusV300')
         draft_layout.addWidget(self.draft_area_status_v300)
+        self.draft_overlap_box_v303=QCheckBox('Permitir solapamiento con texto vecino')
+        self.draft_overlap_box_v303.setObjectName('draftTextOverlapV303')
+        self.draft_overlap_box_v303.setToolTip('Autoriza superponer el texto de este borrador. '
+            'El contenido y la posición de los vecinos se conservan; revisa la legibilidad en la vista PDF.')
+        self.draft_overlap_box_v303.toggled.connect(self._set_draft_overlap_v303)
+        draft_layout.addWidget(self.draft_overlap_box_v303)
+        self.draft_neighbors_button_v303=QPushButton('Redistribuir texto vecino…')
+        self.draft_neighbors_button_v303.setObjectName('draftNeighborsV303')
+        self._neighbor_tooltip_v303=('Elige el párrafo, la celda o el área cuyos textos '
+            'compatibles se incorporarán al borrador. Aceptar aplicará el conjunto en una sola operación.')
+        self.draft_neighbors_button_v303.setToolTip(self._neighbor_tooltip_v303)
+        self.draft_neighbors_button_v303.clicked.connect(lambda:self._redistribute_neighbors_draft_v303())
+        draft_layout.addWidget(self.draft_neighbors_button_v303)
         self.draft_area_button_v300 = QPushButton('Ampliar área…')
         self.draft_reflow_button_v300 = QPushButton('Redistribuir líneas')
         self.draft_size_button_v300 = QPushButton('Cambiar tamaño…')
@@ -88,6 +149,7 @@ class SelectionUiV300Mixin:
         self.draft_area_tools_v300.hide()
         self.canvas.editor.document().documentLayout().documentSizeChanged.connect(lambda _:self._update_draft_area_v300())
         self.canvas.editor.visibility_changed.connect(lambda _:QTimer.singleShot(0,self._update_draft_area_v300))
+        self.canvas.editor.toolbar.pdf_button.toggled.connect(lambda _:self._update_draft_area_v300())
 
     def _selection_mode_changed_v300(self):
         if not self.model or not self.canvas.ids or self.canvas.editor.isVisible() or self.busy:
@@ -126,6 +188,7 @@ class SelectionUiV300Mixin:
 
     def _open_rich_payload(self, payload):
         payload = deepcopy(payload)
+        payload.pop('neighbor_layout_info',None)
         natural = union(g.bbox for g in self.model.selected(payload.get('ids', []))) if self.model else None
         # An explicit resize, delimited area or restored draft already carries
         # its chosen rectangle. Apply the cell suggestion only to a fresh
@@ -138,13 +201,40 @@ class SelectionUiV300Mixin:
             inner = (rect[0]+2,rect[1]+2,rect[2]-2,rect[3]-2)
             if inner[2]>inner[0] and inner[3]>inner[1]:
                 payload.update(rect=list(inner),width=inner[2]-inner[0],height=inner[3]-inner[1],auto_width=False,auto_height=False)
+        ids=payload.get('ids',[])
+        if self.model and set(ids)!=set(self.canvas.ids):self.canvas.set_selection(ids,notify=False)
         result = super()._open_rich_payload(payload)
+        self._neighbor_layout_info_v303=None
         self._draft_area_error_v300 = ''
         if hasattr(self,'draft_area_tools_v300'):
+            with QSignalBlocker(self.draft_overlap_box_v303):
+                self.draft_overlap_box_v303.setChecked(bool(self.canvas.editor._payload.get('allow_overlap',False)))
             self.draft_area_tools_v300.show()
             self.selection_shrink_v300.setEnabled(False);self.selection_expand_v300.setEnabled(False)
+            section=getattr(self,'format_tools_section',None)
+            if section is not None:section.set_expanded(True)
+            tools=getattr(self,'tools_scroll',None)
+            if tools is not None:
+                tools.show();QTimer.singleShot(0,lambda:tools.ensureWidgetVisible(self.draft_area_tools_v300))
             QTimer.singleShot(0,self._update_draft_area_v300)
         return result
+
+    def _refresh_actions(self):
+        result=super()._refresh_actions()
+        self._update_draft_area_v300()
+        return result
+
+    def _rich_accept(self,payload):
+        if getattr(self,'_neighbor_request_v303',None):return
+        result=super()._rich_accept(payload)
+        self._update_draft_area_v300()
+        return result
+
+    def _rich_pump(self):
+        if getattr(self,'_neighbor_request_v303',None):
+            if self._rich_active and self._rich_pending is not None:self._rich_timer.start(50)
+            return
+        return super()._rich_pump()
 
     def _rich_changed(self, payload):
         self._draft_area_error_v300 = ''
@@ -153,8 +243,14 @@ class SelectionUiV300Mixin:
         return result
 
     def _rich_failed(self, command, message):
+        if command=='rich_redistribute':
+            request=self._neighbor_request_v303
+            if request is None:return
+            self._neighbor_request_v303=None
+            if not self._neighbor_request_current_v303(request):
+                self._update_draft_area_v300();return
         result = super()._rich_failed(command,message)
-        if self._rich_active and command in ('rich_preview','rich_apply','rich_prepare','rich_commit'):
+        if self._rich_active and command in ('rich_preview','rich_apply','rich_prepare','rich_commit','rich_redistribute'):
             self._draft_area_error_v300 = message
             self._update_draft_area_v300()
         return result
@@ -162,6 +258,7 @@ class SelectionUiV300Mixin:
     def _end_rich(self):
         result = super()._end_rich()
         self._draft_area_error_v300 = ''
+        self._neighbor_request_v303=None;self._neighbor_layout_info_v303=None
         self.canvas.draft_overflow_rect_v300 = None
         if hasattr(self,'draft_area_tools_v300'):self.draft_area_tools_v300.hide()
         self.canvas._draw_overlays()
@@ -182,6 +279,7 @@ class SelectionUiV300Mixin:
         # A validation failure is authoritative; the local draft measurement
         # merely highlights likely overflow before the PDF worker replies.
         size_error = any(word in self._draft_area_error_v300.lower() for word in ('altura','anchura','cuadro','espacio disponible','área','borde'))
+        overlap_error=any(word in self._draft_area_error_v300.lower() for word in ('solap','superpon','overlap'))
         active_overflow = size_error or (overflow[0] and not payload.get('auto_width')) or (overflow[1] and not payload.get('auto_height'))
         if active_overflow:
             self.canvas.draft_overflow_rect_v300 = (rect[0],rect[1],max(rect[2],rect[0]+required_width),max(rect[3],rect[1]+required_height))
@@ -193,10 +291,102 @@ class SelectionUiV300Mixin:
             message = 'Área del borrador: puedes ajustar el cuadro y redistribuir líneas conservando el formato. Aceptar comprueba el resultado.'
             if self._draft_area_error_v300:message = 'El borrador se conserva: '+self._draft_area_error_v300
             self.draft_area_status_v300.setStyleSheet('')
+        if overlap_error:
+            message+=' Puedes permitir el solapamiento con texto vecino.'
+            message+=(' También puedes redistribuir esos textos en el mismo borrador.' if payload.get('ids') else
+                      ' Para redistribuir vecinos, abre el borrador desde una selección de texto existente.')
+            self.draft_area_status_v300.setStyleSheet('color: #a32b22;')
+        info=getattr(self,'_neighbor_layout_info_v303',None)
+        if info:
+            count=info.get('neighbor_count')
+            message+=('\nSe han incorporado '+str(count)+' caracteres vecinos al borrador.' if count is not None
+                      else '\nLos textos vecinos compatibles forman parte del borrador.')
+            message+=' Revisa el conjunto antes de aceptar; Cancelar conserva el PDF anterior.'
         self.draft_area_status_v300.setText(message)
-        enabled = not self._rich_accept_pending and not self.canvas.editor.pdf_view
+        enabled = (not self._rich_accept_pending and not self.canvas.editor.pdf_view
+                   and not getattr(self,'_save_transaction_v300',None))
         for button in (self.draft_area_button_v300,self.draft_reflow_button_v300,self.draft_size_button_v300):button.setEnabled(enabled)
+        self.draft_overlap_box_v303.setEnabled(enabled)
+        self.draft_neighbors_button_v303.setEnabled(enabled and bool(payload.get('ids'))
+            and not self.busy and not self._neighbor_request_v303)
+        self.draft_neighbors_button_v303.setToolTip(self._neighbor_tooltip_v303 if payload.get('ids') else
+            'Redistribuir vecinos requiere seleccionar texto existente antes de abrir el borrador.')
+        self.canvas.editor.toolbar.accept.setEnabled(not self._rich_accept_pending and not self._neighbor_request_v303
+            and not getattr(self,'_save_transaction_v300',None))
         self.canvas._draw_overlays()
+
+    def _schedule_draft_persistence_v303(self):
+        timer=getattr(self,'_workspace_timer_v200',None)
+        if timer is not None:timer.start(750)
+
+    def _set_draft_overlap_v303(self,checked):
+        editor=self.canvas.editor
+        if not self._rich_active or self._rich_accept_pending or editor.pdf_view:return
+        editor._payload['allow_overlap']=bool(checked)
+        editor._draft_changed=True
+        self._rich_changed(editor.payload())
+        self._schedule_draft_persistence_v303()
+
+    def _neighbor_context_v303(self):
+        return (getattr(self,'_active_session_v200',None),self.page_number,self.model.revision,
+                tuple(self.canvas.ids)) if self.model else None
+
+    def _neighbor_request_current_v303(self,request):
+        return (self._rich_active and self._rich_generation==request['generation']
+                and self._rich_serial==request['serial'] and self._neighbor_context_v303()==request['context']
+                and self.canvas.editor.payload()==request['payload'])
+
+    def _redistribute_neighbors_draft_v303(self,scope=None):
+        editor=self.canvas.editor
+        if (not self._rich_active or self._rich_accept_pending or editor.pdf_view or self.busy
+                or self._neighbor_request_v303 or not self.model or not editor._payload.get('ids')):return False
+        was_active=self._rich_timer.isActive();remaining=self._rich_timer.remainingTime()
+        self._rich_timer.stop()
+        if scope is None:
+            dialog=NeighborLayoutDialogV303(editor.payload(),self.model,self.mode_box.currentData(),self)
+            if self._exec_edit_dialog(dialog)!=QDialog.Accepted:
+                if was_active and self._rich_pending is not None:self._rich_timer.start(max(0,remaining))
+                return False
+            scope=dialog.scope()
+        if scope not in ('paragraph','cell','area'):
+            if was_active and self._rich_pending is not None:self._rich_timer.start(max(0,remaining))
+            return False
+        self._rich_timer.stop()
+        self._rich_serial+=1;self._rich_pending=None
+        context=self._neighbor_context_v303()
+        request={'generation':self._rich_generation,'serial':self._rich_serial,'context':context,
+                 'payload':deepcopy(editor.payload())}
+        self._neighbor_request_v303=request
+        self._update_draft_area_v300()
+        def ready(result):
+            if self._neighbor_request_v303 is not request:return
+            self._neighbor_request_v303=None
+            if not self._neighbor_request_current_v303(request):
+                self._update_draft_area_v300()
+                return
+            payload=deepcopy(result)
+            info=payload.pop('neighbor_layout_info',None)
+            if payload.get('revision')!=self.model.revision or payload.get('page')!=self.page_number:
+                self._update_draft_area_v300();return
+            valid_ids={glyph.id for glyph in self.model.glyphs}
+            if not set(payload.get('ids',[])).issubset(valid_ids):
+                self._draft_area_error_v300='La propuesta no corresponde a los caracteres del documento actual.'
+                self._update_draft_area_v300()
+                return
+            payload['_explicit_area_v300']=True
+            self._rich_generation+=1
+            self._open_rich_payload(payload)
+            self._neighbor_layout_info_v303=info or {'scope':scope}
+            self._editing_context=(self.page_number,self.model.revision,tuple(self.canvas.ids))
+            self._rich_changed(editor.payload())
+            self._schedule_draft_persistence_v303()
+            editor.setFocus()
+        try:accepted=self._submit('rich_redistribute',{'request':request['payload'],'scope':scope},ready)
+        except Exception as exc:
+            self._rich_failed('rich_redistribute',str(exc));return False
+        if not accepted:
+            self._rich_failed('rich_redistribute','No se pudo preparar la redistribución. El texto sigue en el borrador.')
+        return bool(accepted)
 
     def _modify_draft_area_v300(self):
         if not self._rich_active or self._rich_accept_pending or not self.model:return

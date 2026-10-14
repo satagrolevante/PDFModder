@@ -78,6 +78,9 @@ class PageModel:
     # these as barriers and can infer bounded cells without document templates.
     selection_boundaries: list[tuple] = field(default_factory=list)
     logical_text_runs: list[dict] = field(default_factory=list)
+    # Verified logical /P groups on this immutable revision, when available.
+    # Kept once per group instead of repeating the tuple for every glyph.
+    semantic_paragraph_scopes: list[tuple[int, ...]] = field(default_factory=list)
 
     def selected(self, ids):
         ids = set(ids)

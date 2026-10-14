@@ -21,6 +21,22 @@ def edit_with_layout(data,request,resolver=None):
         raise EditError('El interlineado debe ser positivo.')
     if not math.isfinite(request.paragraph_spacing) or request.paragraph_spacing<0:
         raise EditError('La separación entre párrafos no puede ser negativa.')
+    if request.text == '' and request.ids and request.ocr_mode == 'visible':
+        # Supr uses the side-panel route even when on-page writing uses rich
+        # native operators. Pure deletion needs the same tagged semantics and
+        # retained clipping/cursor advances, rather than regional redaction.
+        from .clipping import CLIP_ISSUE
+        with fitz.open(stream=data,filetype='pdf') as doc:
+            model=extract_page(doc,request.page,data)
+            selected=model.selected(request.ids)
+        if (CLIP_ISSUE in model.issues and selected and
+                all(g.mode==0 and g.opacity>0 and g.reliable and
+                    abs(g.direction[0]-1)<1e-6 and abs(g.direction[1])<1e-6
+                    for g in selected)):
+            from .native_panel import edit_native_panel
+            output,report=edit_native_panel(data,request,model,resolver)
+            report['native_deletion']=True
+            return output,report
     automatic=request.auto_width and request.text is not None and not request.reflow and '\n' not in request.text and request.ocr_mode=='visible'
     if not automatic:
         with fitz.open(stream=data,filetype='pdf') as doc:

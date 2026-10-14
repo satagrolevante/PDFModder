@@ -15,9 +15,35 @@ from .model import EditError, union
 
 
 def boundaries_from_drawings(drawings):
-    """Return only painted straight edges; filled backgrounds are not borders."""
+    """Return painted straight edges and centerlines of proven thin filled bars."""
     edges = []
     for drawing in drawings:
+        if drawing.get('type') == 'f':
+            items = drawing.get('items', [])
+            # Use the actual rectangle path, never the drawing's bounding box.
+            # Compound fills can contain holes or several unrelated shapes.
+            if (drawing.get('fill') is None or drawing.get('fill_opacity') != 1.
+                    or len(items) != 1 or not items[0] or items[0][0] != 're'):
+                continue
+            try:
+                x0, y0, x1, y1 = map(float, items[0][1])
+            except (IndexError, TypeError, ValueError):
+                continue
+            if not all(isfinite(value) for value in (x0, y0, x1, y1)):
+                continue
+            width, height = x1-x0, y1-y0
+            thickness, length = min(width, height), max(width, height)
+            # Half the bar thickness must fit the existing .75 pt edge-joining
+            # tolerance. Broad fills and short decorative marks stay excluded.
+            if not (0 < thickness <= 1.5 and length >= max(5., 10*thickness)):
+                continue
+            if width > height:
+                middle = (y0+y1)/2
+                edges.append((x0, middle, x1, middle))
+            else:
+                middle = (x0+x1)/2
+                edges.append((middle, y0, middle, y1))
+            continue
         if drawing.get('type') not in ('s', 'fs') or drawing.get('stroke_opacity', 1.) <= 0:
             continue
         for item in drawing.get('items', []):
@@ -64,6 +90,17 @@ class SelectionScope:
 class SelectionIndex:
     def __init__(self, model):
         self.model = model
+        by_id = {g.id:g for g in model.glyphs}
+        self.semantic_by_id = {}
+        for ids in getattr(model, 'semantic_paragraph_scopes', ()) or ():
+            # These scopes come from the immutable snapshot's verified /P
+            # owners. Incomplete or overlapping evidence never broadens a click.
+            if not ids or len(set(ids)) != len(ids) or any(i not in by_id for i in ids):
+                continue
+            members = tuple(by_id[i] for i in ids)
+            for i in ids:
+                previous = self.semantic_by_id.get(i, members)
+                self.semantic_by_id[i] = members if previous == members else None
         self.edges = list(getattr(model, 'selection_boundaries', []) or [])
         self.horizontal = sorted((y0,min(x0,x1),max(x0,x1)) for x0,y0,x1,y1 in self.edges if abs(y1-y0)<.5 and abs(x1-x0)>.5)
         self.vertical = sorted((x0,min(y0,y1),max(y0,y1)) for x0,y0,x1,y1 in self.edges if abs(x1-x0)<.5 and abs(y1-y0)>.5)
@@ -128,6 +165,29 @@ class SelectionIndex:
         return False
 
     def _paragraph(self, glyph):
+        semantic = self.semantic_by_id.get(glyph.id)
+        if semantic:
+            members = [g for g in semantic if _family(g) == _family(glyph)]
+            cell = self.cell_rect(glyph)
+            if cell:
+                members = [g for g in members if contains(cell, g.bbox, .5)]
+            rows = {}
+            for g in members:
+                rows.setdefault(id(self.by_id.get(g.id)), []).append(g)
+            direction = _direction(glyph)
+            ordered = sorted(rows.values(),key=lambda row:
+                             _project(union(g.bbox for g in row),direction)[1::-1])
+            position = next((i for i,row in enumerate(ordered)
+                             if any(g.id == glyph.id for g in row)),None)
+            if position is not None:
+                left = right = position
+                while left and not self._separates(union(g.bbox for g in ordered[left-1]),
+                                                   union(g.bbox for g in ordered[left])):
+                    left -= 1
+                while right+1<len(ordered) and not self._separates(union(g.bbox for g in ordered[right]),
+                                                                union(g.bbox for g in ordered[right+1])):
+                    right += 1
+                return [g for row in ordered[left:right+1] for g in row]
         initial = self.by_id.get(glyph.id, [glyph])
         direction = _direction(glyph)
         base = _project(union(g.bbox for g in initial), direction)
@@ -152,12 +212,34 @@ class SelectionIndex:
         if first is None:
             return initial
 
+        block_positions = {}
+        for row in self.lines:
+            if _family(row[0]) == _family(glyph):
+                position = _project(union(g.bbox for g in row),direction)[1]
+                for block in {g.block for g in row}:
+                    block_positions.setdefault(block,set()).add(position)
+        block_steps = {}
+        for block, positions in block_positions.items():
+            ordered = sorted(positions)
+            distances = [b-a for a,b in zip(ordered,ordered[1:])
+                         if base_size*.3 <= b-a <= base_size*2.1]
+            if distances:
+                block_steps[block] = median(distances)
+
         def connected(a, b):
             pa, la = a; pb, lb = b
             size = max(median(g.size for g in la),median(g.size for g in lb))
             # Same-baseline candidates are separate columns/overprinted runs.
             if pb[1]-pa[1] < max(1., size*.3) or pb[1]-pa[1] > size*2.1:
                 return False
+            ablocks,bblocks={g.block for g in la},{g.block for g in lb}
+            if not ablocks & bblocks:
+                steps=[block_steps[block] for block in ablocks|bblocks if block in block_steps]
+                typical=median(steps) if steps else size*1.4
+                # A larger gap across extraction blocks is a paragraph/heading
+                # break, even when the shorter last line aligns with it.
+                if pb[1]-pa[1] > typical*1.35:
+                    return False
             return not self._separates(union(g.bbox for g in la),union(g.bbox for g in lb))
 
         left = right = first
@@ -165,7 +247,44 @@ class SelectionIndex:
             left -= 1
         while right+1 < len(candidates) and connected(candidates[right], candidates[right+1]):
             right += 1
-        return [g for _,line in candidates[left:right+1] for g in line]
+        chosen = candidates[left:right+1]
+        # First-line indentation and a shorter final line need not share the
+        # seed line's left/right edges. Accept a continuation only inside the
+        # established body margin, with the same extraction block, compatible
+        # baseline spacing, and no column or painted-cell barrier.
+        if len(chosen) >= 2:
+            body_left = min(projected[0] for projected,_ in chosen)
+            body_right = max(projected[2] for projected,_ in chosen)
+            blocks = {g.block for _,row in chosen for g in row}
+            selected_rows = {id(row) for _,row in chosen}
+            continuations = []
+            for row in self.lines:
+                if id(row) in selected_rows or _family(row[0]) != _family(glyph):
+                    continue
+                if not all(g.block in blocks for g in row):
+                    continue
+                rect = union(g.bbox for g in row)
+                if cell and not contains(cell, rect, .5):
+                    continue
+                projected = _project(rect,direction)
+                size = median(g.size for g in row)
+                margin = projected[0]-body_left
+                before = projected[1] < chosen[0][0][1]
+                tolerance = max(2.,base_size*.8)
+                if (not -tolerance <= margin <= (base_size*4 if before else tolerance) or
+                        projected[2]>body_right+max(2.,base_size*.8) or
+                        not .67<=size/max(base_size,.1)<=1.5):
+                    continue
+                continuations.append((projected,row))
+            earlier = [pair for pair in continuations if pair[0][1]<chosen[0][0][1]]
+            for continuation in sorted(earlier,key=lambda pair:pair[0][1],reverse=True):
+                if connected(continuation,chosen[0]):
+                    chosen.insert(0,continuation)
+                    break
+            for continuation in sorted(continuations,key=lambda pair:pair[0][1]):
+                if connected(chosen[-1],continuation):
+                    chosen.append(continuation)
+        return [g for _,line in chosen for g in line]
 
     def group(self, glyph, mode):
         if mode == 'character':

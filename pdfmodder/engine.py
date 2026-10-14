@@ -78,6 +78,14 @@ def extract_page(doc, number, data=None):
         model=annotate_font_resources(data,number,model)
     from .typography_v300 import normalize_typography_model
     model=normalize_typography_model(doc,number,model)
+    if data and model.glyphs and doc.xref_get_key(doc.pdf_catalog(),'StructTreeRoot')[0]!='null':
+        from .tagged import analyze_readonly, semantic_paragraph_scopes
+        try:
+            model.semantic_paragraph_scopes=semantic_paragraph_scopes(analyze_readonly(data),number,model)
+        except EditError as error:
+            # Viewing/selecting malformed tagged content must still work;
+            # edit safety keeps the incompatibility on the page model.
+            if str(error) not in model.issues:model.issues.append(str(error))
     return model
 
 
@@ -134,7 +142,7 @@ def _stroke_hits(drawing, rect):
     return False
 
 
-def _safe_selection(page, model, selected, *, preserve_paint_order=False, owned_auxiliary_ids=()):
+def _safe_selection(page, model, selected, *, preserve_paint_order=False, owned_auxiliary_ids=(), linked_text=None):
     if model.issues:
         raise EditError('\n'.join(model.issues))
     if not selected:
@@ -155,7 +163,12 @@ def _safe_selection(page, model, selected, *, preserve_paint_order=False, owned_
                 if item[0]=='stroke-path' and index in drawings and not _stroke_hits(drawings[index],g.bbox):
                     continue
                 raise EditError("Hay un objeto dibujado encima del texto; no puede conservarse su orden visual.")
-        if any(intersects(tuple(link['from']),g.bbox) for link in page.get_links()):
+        for link in page.get_links():
+            if not intersects(tuple(fitz.Rect(link['from'])*page.derotation_matrix),g.bbox):
+                continue
+            from .linked_text_v303 import LinkedTextEdit
+            if isinstance(linked_text,LinkedTextEdit) and linked_text.allows_link(page,link,g):
+                continue
             raise EditError("La selección forma parte de un enlace. No se puede cambiar texto y área activa conjuntamente.")
         if any(intersects(tuple(a.rect),g.bbox) for a in page.annots() or []):
             raise EditError("La selección toca una anotación; edita un fragmento que pueda aislarse.")
@@ -425,6 +438,13 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
             return edit_native_panel(data,request,model,resolver)
         from .clipping import CLIP_ISSUE,edit_clipped_text
         if CLIP_ISSUE in model.issues:
+            if (doc.xref_get_key(doc.pdf_catalog(),'StructTreeRoot')[0]!='null'
+                    and (request.text is not None or request.size is not None
+                         or request.font_name or request.font_file or request.color is not None)):
+                # The operator compositor updates text and tagged semantics
+                # jointly; the older equal-advance clip path cannot own tags.
+                from .native_panel import edit_native_panel
+                return edit_native_panel(data,request,model,resolver)
             return edit_clipped_text(data,request,model)
         if (request.allow_overlap and request.text is None and request.size is None
                 and not request.font_name and not request.font_file and request.color is None):
