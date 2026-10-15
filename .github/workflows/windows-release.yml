@@ -70,6 +70,9 @@ jobs:
       - name: Comprobar, compilar y empaquetar
         run: >-
           .venv/Scripts/python.exe scripts/release_v300.py --headless-qa --tests
+          tests/test_clip_paths_v304.py tests/test_complex_clip_deletion_v304.py
+          tests/test_tagged_irregularities_v304.py tests/test_stroked_native_v304.py
+          tests/test_source_decorations_v304.py
           tests/test_footer_native_v303.py tests/test_marked_content_v303.py
           tests/test_deletion_layout_v303.py tests/test_paragraph_scopes_v303.py
           tests/test_filled_cell_borders_v303.py tests/test_linked_text_v303.py
@@ -102,7 +105,7 @@ jobs:
   publish:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.3')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.4')
     needs: build
     runs-on: windows-2025
     permissions:

@@ -16,6 +16,11 @@ from .model import EditError
 
 SHOW={b'Tj',b'TJ',b"'",b'"'}
 PAINT={b'Do',b'BI',b'INLINE IMAGE',b'S',b's',b'f',b'F',b'f*',b'B',b'B*',b'b',b'b*',b'sh'}
+TEXT_OPERATORS=SHOW|{b'BT',b'ET',b'Tf',b'Tm',b'Td',b'TD',b'T*',b'Tc',b'Tw',b'Tz',b'TL',b'Tr',b'Ts'}
+ARTIFACT_GRAPHICS_OPERATORS={b'q',b'Q',b'cm',b'w',b'J',b'j',b'M',b'd',b'ri',b'i',
+    b'CS',b'cs',b'SC',b'sc',b'G',b'g',b'RG',b'rg',b'K',b'k',b'm',b'l',b'c',b'v',
+    b'y',b'h',b're',b'S',b's',b'f',b'F',b'f*',b'B',b'B*',b'b',b'b*',b'n',b'W',
+    b'W*',b'Do',b'BI',b'INLINE IMAGE',b'sh',b'BMC',b'BDC',b'EMC'}
 
 
 def obj(value):
@@ -243,6 +248,8 @@ class TaggedStructure:
                           for i,a in enumerate(obj(p.get('/Annots',[])))}
         self.nodes={}
         self.node_refs={ref(self.tree):('tree',)}
+        self.detached_nodes={}
+        self.source_irregularities=[]
         self.owners={}
         self.object_owners=[]
         self.operations=[]
@@ -297,7 +304,14 @@ class TaggedStructure:
             fail('un contenido no identifica una página y un padre válidos.')
         key=(self.pages[page],mcid)
         if key in self.owners:
-            fail('MCID repetido en el árbol de una página.')
+            if self.owners[key]!=self.node_refs[parent]:
+                fail('MCID repetido en el árbol de una página con propietarios diferentes.')
+            # Some exporters repeat the very same MCR under the same owner.
+            # There is one marked-content occurrence and one ParentTree owner;
+            # preserve the redundant /K entry, rather than changing the tree.
+            self.source_irregularities.append({'kind':'repeated_same_owner',
+                                               'page':key[0],'mcid':mcid})
+            return
         self.owners[key]=self.node_refs[parent]
 
     def _page(self,number,page):
@@ -371,6 +385,8 @@ class TaggedStructure:
                 fail('ParentTree de página no es una matriz de elementos.')
             for mcid in marks:
                 owner=self.owners.get((page,mcid))
+                if owner is None and mcid<len(array):
+                    owner=self._detached_artifact(page,mcid,array[mcid])
                 if owner is None or mcid>=len(array) or self.node_refs.get(ref(array[mcid]))!=owner:
                     fail(f'MCID {mcid} de página {page+1} no coincide con ParentTree y /K.')
             if isinstance(array,(list,tuple)):
@@ -389,6 +405,100 @@ class TaggedStructure:
             used.add(key)
         if set(self.parents)-used:
             fail('ParentTree contiene asociaciones no verificables.')
+
+    def _graphics_only(self,operations,resources,seen=None):
+        """Prove that an artifact has no text, including invoked Form content."""
+        seen=set() if seen is None else seen
+        if len(seen)>=32:return False
+        resources=obj(resources or {})
+        if not isinstance(resources,dict):return False
+        xobjects=obj(resources.get('/XObject',{}))
+        if not isinstance(xobjects,dict):return False
+        for args,operator in operations:
+            if operator in TEXT_OPERATORS or operator not in ARTIFACT_GRAPHICS_OPERATORS:
+                return False
+            if operator in (b'BMC',b'BDC'):
+                if not args or args[0]!='/Artifact':
+                    return False
+                if operator==b'BDC':
+                    properties=obj(args[1]) if len(args)==2 else None
+                    if not isinstance(properties,dict) or set(properties)-{'/MCID'}:
+                        return False
+            if operator!=b'Do':continue
+            if len(args)!=1 or args[0] not in xobjects:return False
+            raw=xobjects[args[0]];value=obj(raw);identity=ref(raw)
+            if not isinstance(value,dict) or set(value)&{'/OC','/ActualText','/Alt','/E','/StructParents'}:
+                return False
+            if value.get('/Subtype')=='/Image':continue
+            if value.get('/Subtype')!='/Form' or identity in seen or not hasattr(value,'get_data'):
+                return False
+            if not self._graphics_only(ContentStream(raw,self.reader).operations,
+                                       value.get('/Resources',resources),seen|{identity}):
+                return False
+        return True
+
+    def _detached_artifact(self,page,mcid,raw):
+        """Preserve a verified graphical artifact outside the logical /K tree.
+
+        A few source PDFs keep a ParentTree entry for an /Artifact whose small
+        parent chain is disconnected. It has no reading-order text. Its exact
+        node graph (including aliases and reciprocal /P-/K links) is retained
+        in semantic(), while no semantic owner/order is invented for it.
+        """
+        mark=self.marks[page][mcid]
+        identity=ref(raw);leaf=obj(raw)
+        if (identity is None or identity in self.node_refs or mark.tag!='/Artifact'
+                or mark.nested_actual or set(mark.resolved)!={'/MCID'}
+                or not self._graphics_only(self.operations[page][mark.start:mark.end+1],
+                                           self.reader.pages[page].get('/Resources',{}))):
+            return None
+        allowed={'/Type','/S','/P','/Pg','/K','/Lang'}
+        nodes=[];seen=set();child=None;current=raw
+        while current is not None:
+            current_ref=ref(current);node=obj(current)
+            if (current_ref is None or current_ref in seen or len(nodes)>100 or current_ref in self.node_refs
+                    and current_ref not in {ref(n) for n in self.detached_nodes.values()}
+                    or not isinstance(node,dict) or set(node)-allowed
+                    or not isinstance(node.get('/S'),NameObject)
+                    or node.get('/S') in ('/OC','/ReversedChars')
+                    or '/Type' in node and not isinstance(node['/Type'],NameObject)
+                    or node.get('/Type','/StructElem')!='/StructElem'
+                    or ref(node.get('/Pg'))!=ref(self.reader.pages[page])
+                    or '/Lang' in node and not isinstance(obj(node['/Lang']),str)):
+                return None
+            seen.add(current_ref)
+            children=obj(node.get('/K'))
+            if child is None:
+                if node.get('/S')!='/Artifact' or not isinstance(children,int) or isinstance(children,bool) or children!=mcid:
+                    return None
+            else:
+                children=children if isinstance(children,(list,tuple)) else [children]
+                if sum(ref(value)==child for value in children)!=1:
+                    return None
+                # Other integer entries are retained source references, never
+                # adopted as logical owners of this disconnected parent.
+                if any(ref(value)!=child and (not isinstance(value,int)
+                       or isinstance(value,bool) or value not in self.marks[page]) for value in children):
+                    return None
+            nodes.append(node)
+            child=current_ref
+            current=node.get('/P')
+        # Register stable, reference-independent identities only after proving
+        # the entire chain. Canonical snapshots then retain parent/child aliases
+        # without treating their natural back-references as arbitrary cycles.
+        leaf_path=None
+        for index,node in enumerate(nodes):
+            node_ref=ref(node)
+            path=self.node_refs.get(node_ref)
+            if path is None:
+                path=('detached-artifact',page,mcid,index)
+                self.node_refs[node_ref]=path
+                self.detached_nodes[path]=node
+            if index==0:leaf_path=path
+        self.owners[(page,mcid)]=leaf_path
+        self.source_irregularities.append({'kind':'detached_graphical_artifact',
+                                           'page':page,'mcid':mcid})
+        return leaf_path
 
     def semantic(self):
         def canonical(value,seen=None):
@@ -409,11 +519,14 @@ class TaggedStructure:
             if isinstance(value,NullObject):return None
             if type(value).__name__=='BooleanObject':return value.value
             return str(value)
-        return {'tree':canonical(dict(self.tree)),
+        result={'tree':canonical(dict(self.tree)),
                 'nodes':{path:canonical(dict(node)) for path,node in self.nodes.items()},
                 'catalog':{k:canonical(self.root.get(k)) for k in ('/MarkInfo','/Lang','/ViewerPreferences')},
                 'pages':[(p.get('/StructParents'),p.get('/Tabs')) for p in self.reader.pages],
                 'marks':[{mcid:(str(m.tag),canonical(dict(m.resolved))) for mcid,m in marks.items()} for marks in self.marks]}
+        if self.detached_nodes:
+            result['detached_nodes']={path:canonical(dict(node)) for path,node in self.detached_nodes.items()}
+        return result
 
     def glyph_contexts(self,page,model):
         """Probe only: color each show op to identify its MCID without decoding fonts.
@@ -559,9 +672,15 @@ def assert_structure(before,after,expected=None):
 
 
 class TaggedEdit:
-    def __init__(self,structure,page,model,selected,planned,original_selection,rewriting,*,native_inplace=False):
+    def __init__(self,structure,page,model,selected,planned,original_selection,rewriting,*,native_inplace=False,decoration_policy=None):
         self.structure=structure
         self.native_inplace=native_inplace
+        self.decoration_policy=decoration_policy
+        if decoration_policy is not None:
+            from .source_decorations_v304 import SourceDecorationPolicy
+            if (not native_inplace or not isinstance(decoration_policy,SourceDecorationPolicy)
+                    or not decoration_policy.matches_source(structure,page,model,selected,planned)):
+                fail('la decoración original no tiene una asociación verificable con esta edición.')
         self.page=page
         self.model=model
         self.contexts=structure.glyph_contexts(page,model)
@@ -589,9 +708,11 @@ class TaggedEdit:
                 fail('la etiqueta combina texto con gráficos o propiedades semánticas anidadas; no puede reconstruirse de forma inequívoca.')
             original=[g for g in model.glyphs if self.contexts[g.id]==mcid]
             chosen=[i for i,g in enumerate(original) if g.id in removed]
-            if not chosen or chosen!=list(range(min(chosen),max(chosen)+1)):
+            if not chosen or (chosen!=list(range(min(chosen),max(chosen)+1))
+                              and not (native_inplace and not planned)):
                 fail('la edición afecta fragmentos separados dentro de una etiqueta.')
-            actual=original[:min(chosen)]+replacement.get(mcid,[])+original[max(chosen)+1:]
+            actual=([g for g in original if g.id not in removed] if native_inplace and not planned
+                    else original[:min(chosen)]+replacement.get(mcid,[])+original[max(chosen)+1:])
             self.original[mcid]=original
             self.planned[mcid]=actual
         if native_inplace:
@@ -687,7 +808,9 @@ class TaggedEdit:
                 sizes={round(g.size,3) for g in original}
                 if any(g.bbox[0]<left-.035 or g.bbox[2]>right+.035
                        or round(g.origin[1],3) not in baselines or round(g.size,3) not in sizes for g in planned):
-                    fail('la nueva disposición necesita actualizar la decoración original conjuntamente.')
+                    if not (self.decoration_policy is not None
+                            and self.decoration_policy.allows_decoration(path,original,planned)):
+                        fail('la nueva disposición necesita actualizar la decoración original conjuntamente.')
         # Direct attributes override classes. Conflicting definitions inside
         # either group need revision/precedence interpretation beyond this
         # editor's proof, even when every individual field is recognized.
@@ -892,4 +1015,5 @@ class TaggedEdit:
         return {'verified':True,'mcids':sorted(self.affected),'structure_preserved':True,
                 'logical_text_verified':True,'actual_text_updates':len(self.actual_updates)+len(self.marker_updates),
                 'layout_attribute_updates':len(self.layout_updates),
+                'preserved_source_irregularities':copy.deepcopy(self.structure.source_irregularities),
                 'scope':'Preservación de estructura y relaciones verificadas; no certificación PDF/UA.'}

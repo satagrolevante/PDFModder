@@ -18,13 +18,14 @@ from pypdf.generic import ArrayObject,ByteStringObject,ContentStream,FloatObject
 from .clipping import CLIP_ISSUE,operator_glyph_map,_advance,_raw,_serialize,_signature,_strings
 from .model import EditError,intersects,union
 from .validation import document_issues,validate_transition
+from .clip_paths_v304 import RectanglePath
 
 def _state_at(operations,index,resources=None):
     state={'size':None,'tc':0.,'tw':0.,'tz':1.,'tr':0,'ctm':fitz.Matrix(1,0,0,1,0,0),
            'clip':None,'unknown':False}
     stack=[]
     text_matrix=fitz.Matrix(1,0,0,1,0,0)
-    path,pending=None,False
+    path,pending=RectanglePath(),None
     text_clips=False
     for args,op in operations[:index]:
         if op==b'q':stack.append(dict(state))
@@ -41,16 +42,15 @@ def _state_at(operations,index,resources=None):
         elif op==b'Tw':state['tw']=float(args[0])
         elif op==b'Tz':state['tz']=float(args[0])/100
         elif op==b'Tr':state['tr']=int(args[0])
-        elif op==b're':
-            x,y,w,h=map(float,args)
-            path=fitz.Rect(min(x,x+w),min(y,y+h),max(x,x+w),max(y,y+h))*state['ctm'] if path is None and state['ctm'].is_rectilinear else False
-        elif op in (b'm',b'l',b'c',b'v',b'y',b'h'):path=False
-        elif op in (b'W',b'W*'):pending=True
+        elif op in (b're',b'm',b'l',b'c',b'v',b'y',b'h'):
+            path.add(args,op,state['ctm'])
+        elif op in (b'W',b'W*'):pending=op
         elif op in (b'n',b'S',b's',b'f',b'F',b'f*',b'B',b'B*',b'b',b'b*'):
             if pending:
-                if path is None or path is False:state['unknown']=True
-                else:state['clip']=path if state['clip'] is None else state['clip']&path
-            path,pending=None,False
+                rectangle=path.rectangle(even_odd=pending==b'W*')
+                if rectangle is None:state['unknown']=True
+                else:state['clip']=rectangle if state['clip'] is None else state['clip']&rectangle
+            path,pending=RectanglePath(),None
         elif op==b'gs':
             # Only /Font changes the text font size. An opacity-only gs must
             # retain Tf. With no resources supplied keep the conservative

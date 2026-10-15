@@ -535,6 +535,10 @@ def edit_rich_pdf(data, request, resolver=None):
             raise EditError('La selección pertenece a una revisión anterior.')
         if not selected:
             raise EditError('Selecciona un texto para el editor por fragmentos.')
+        if not any(str(run.get('text','')) for run in request.runs):
+            from .paired_deletion_v304 import try_delete_paired_text
+            paired=try_delete_paired_text(data,request,model)
+            if paired is not None:return paired
         clean=replace(model,issues=[v for v in model.issues if v!=CLIP_ISSUE])
         metadata=_read_metadata(doc,request.page)
         from .linked_text_v303 import prepare_linked_text
@@ -547,6 +551,8 @@ def edit_rich_pdf(data, request, resolver=None):
         doc[request.page].set_rotation(rotation)
     chosen={g.id for g in selected}
     others=[g for g in model.glyphs if g.id not in chosen]
+    pure_delete=not any(str(run.get('text','')) for run in request.runs)
+    retained_complex_clip=False
     unchanged = _unchanged_rich_request(data, request, resolver, model)
     if unchanged is not None:
         # No reinsertion, cursor compensation or clipping changes are needed.
@@ -579,9 +585,10 @@ def edit_rich_pdf(data, request, resolver=None):
         show=byop[op];unit=_unit(show)
         if operations[op][1] not in (b'Tj',b'TJ') or show['render_mode']!=0:
             raise EditError('El operador de texto utiliza un salto o modo de pintura no compatible.')
-        if (state['unknown'] or state['size'] is None or state['size']<=0 or state['tz']<=0 or
+        if ((state['unknown'] and not pure_delete) or state['size'] is None or state['size']<=0 or state['tz']<=0 or
             abs(state['matrix'].b)+abs(state['matrix'].c)>1e-6 or state['matrix'].a<=0 or state['matrix'].d<=0):
             raise EditError('El campo usa una transformación o un recorte complejo no reproducible.')
+        retained_complex_clip=retained_complex_clip or state['unknown']
         source_clips.append(state['clip']*page_matrix if state['clip'] is not None else page_bounds)
         raw=b''.join(_raw(v) for _,v in _strings(*operations[op]))
         if len(raw)!=unit*len(show['glyphs']):
@@ -760,11 +767,21 @@ def edit_rich_pdf(data, request, resolver=None):
         # separate text SHOWs across intervening artwork.
         if planned:_safe_native_consolidation(safety[request.page],selected,planned)
     structure=analyze_readonly(data)
+    from .source_decorations_v304 import prepare_source_decorations
+    bound_decoration=prepare_source_decorations(data,request.page,model,selected,
+                                               structure,operations,mapping)
+    # Keep ordinary style changes on their existing validation path. Only a
+    # compatible change to the owned text bounds needs the joint vector plan.
+    source_decoration=(bound_decoration if bound_decoration is not None
+                       and bound_decoration.needs_update(planned) else None)
+    if source_decoration:source_decoration.plan(planned,allow_overlap=request.allow_overlap)
     from .tagged_artifacts import verified_artifact_selection
     artifact=(structure is not None and verified_artifact_selection(
         structure,request.page,request.ids,mapping,operations,model=model,planned=planned))
-    tagged=(TaggedEdit(structure,request.page,model,selected,planned,selected,True,native_inplace=True)
+    tagged=(TaggedEdit(structure,request.page,model,selected,planned,selected,True,native_inplace=True,
+                       decoration_policy=source_decoration)
             if structure is not None and not artifact else None)
+    if source_decoration and tagged:source_decoration.expected_structure(tagged.expected)
     matrix=first_state['matrix'];linear=first_state['ctm']*page_matrix;inverse=~linear
     insertion=[];new_underlines=[];groups=[]
     for t in laid:
@@ -792,7 +809,9 @@ def edit_rich_pdf(data, request, resolver=None):
                           ([_number(0)],b'Tw'),([_number(tz)],b'Tz'),([_number(v) for v in t['color']],b'rg'),
                           ([encoded],b'TJ'),([],b'Q')])
     for t in laid:
-        if t['underline']:
+        # A verified source underline already covers this logical text scope.
+        # Adding per-character vectors would duplicate its original painting.
+        if t['underline'] and bound_decoration is None:
             thickness=max(.35,t['size']/18)
             box=(t['origin'][0],t['origin'][1]+t['size']*.12,t['origin'][0]+t['width'],t['origin'][1]+t['size']*.12+thickness)
             if box[2]>box[0]:new_underlines.append(dict(rect=box,color=t['color'],index=t['index']))
@@ -855,6 +874,7 @@ def edit_rich_pdf(data, request, resolver=None):
         changed_ops.extend(replacements.get(op,[copy.deepcopy(item)]))
     for record in keep_records:
         for item in record.get('underlines',[]):item['start']=index_map[item['start']]
+    if source_decoration:source_decoration.apply_operations(changed_ops,index_map)
     # New underlines are plain vector content in page coordinates; they carry
     # no annotations. A private metadata record allows precise later removal.
     # Wrap whole content, so any inherited CTM cannot affect these final paths.
@@ -879,13 +899,16 @@ def edit_rich_pdf(data, request, resolver=None):
         removed_groups=_drop_affected_groups(output_doc,request.page,selected)
         if tagged:
             tagged.apply_updates(output_doc)
+        if source_decoration:source_decoration.apply_structure(output_doc)
         if linked_text:linked_text.apply(output_doc)
         output=full_write(output_doc)
     if metric_clip_exception:
         _assert_clip_paint(output, request.page, [union(g.bbox for g in planned)],
                            'El texto nuevo queda parcialmente oculto por el recorte original.')
     _assert_typography(output,request.page,others+planned)
-    report=_validate(data,output,request.page,others+planned,selected+planned,old_underlines,new_underlines,
+    old_validation_shapes=old_underlines+(source_decoration.old_shapes if source_decoration else [])
+    new_validation_shapes=new_underlines+(source_decoration.new_shapes if source_decoration else [])
+    report=_validate(data,output,request.page,others+planned,selected+planned,old_validation_shapes,new_validation_shapes,
                      tagged.expected if tagged else None,expected_links=linked_text.expected_links if linked_text else None)
     if linked_text:
         linked_text.validate(output)
@@ -894,6 +917,7 @@ def edit_rich_pdf(data, request, resolver=None):
             report.setdefault('warnings',[]).append(warning)
             report['warning']=warning
     if tagged:report['accessibility']=tagged.validate(output)
+    if source_decoration:report['source_decoration']=source_decoration.validate(output)
     carets=[dict(index=t['index'],text=t['char'],origin=t['origin'],bbox=t['bbox'],
                  end=(t['origin'][0]+t['width']+t['spacing'],t['origin'][1])) for t in laid]
     if carets:
@@ -911,6 +935,8 @@ def edit_rich_pdf(data, request, resolver=None):
         report['warning']=warning
     if source_metric_overhang:
         report['clip_metric_overhang_verified']=True
+    if pure_delete and retained_complex_clip:
+        report['complex_clip_preserved_by_deletion']=True
     if metric_clip_exception:
         report['clip_paint_verified']=True
     if artifact:report['artifact_preserved']=True

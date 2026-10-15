@@ -1,8 +1,20 @@
-# PDF Modder 3.0.3
+# PDF Modder 3.0.4
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Corrección 3.0.4
+
+Amplía la edición en celdas cuyo recorte rectangular está construido con segmentos,
+y conserva irregularidades de etiquetado existentes cuando su propiedad puede
+verificarse. Añade el borrado nativo de texto pintado con relleno y trazo, y permite
+borrar texto bajo recortes complejos sin reconstruir su pintura. Actualiza ciertos
+subrayados originales junto con su texto cuando se comprueba su relación lógica y
+su geometría. [Cambios, comprobaciones y límites](docs/NOTAS_3.0.4.md).
+
+El instalador se publica en GitHub Releases después de completar las
+comprobaciones de Windows.
 
 ## Corrección 3.0.3
 
@@ -53,7 +65,7 @@ Los PDF escaneados siguen llegando con el OCR externo ya hecho.
 [Uso, límites y protocolo de comprobación](docs/GUIA_V300.md).
 
 La compilación Windows produce artefactos de prueba. La rama de entrega
-`version-3.0.3` publica sólo después de sus comprobaciones; también se conserva
+`version-3.0.4` publica sólo después de sus comprobaciones; también se conserva
 la publicación manual desde `main`.
 El informe `ENTREGA.json` de cada paquete distingue pruebas offscreen y escritorio
 nativo; las pruebas de versiones anteriores no acreditan la revisión actual.
@@ -96,15 +108,15 @@ Las comprobaciones son dirigidas a los cambios; no se repite todo el corpus hist
 Descargas y versiones públicas: [GitHub Releases](https://github.com/satagrolevante/PDFModder/releases).
 El botón **Buscar actualizaciones** consulta este mismo repositorio, sin iniciar sesión.
 
-Instalador de esta versión: `releases/v3.0.3/PDFModder-v3.0.3-Instalar.exe`,
+Instalador previsto: `releases/v3.0.4/PDFModder-v3.0.4-Instalar.exe`,
 generado después de sus comprobaciones. Incluye las dependencias
 y registra su desinstalador en Aplicaciones instaladas. La alternativa portable
 requiere toda la carpeta `PDFModder`, con `_internal` junto a `PDFModder.exe`.
-Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 3.0.3** desde
+Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 3.0.4** desde
 el acceso creado. **Actualizar ahora** descarga, verifica e instala la actualización,
 cierra la aplicación tras resolver los cambios pendientes y retira la instalación
 anterior identificada cuando la nueva instalación termina correctamente. Conserva
-documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 3.0.3** o
+documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 3.0.4** o
 la entrada correspondiente de Aplicaciones instaladas de Windows.
 
 Desde el código, con Python 3.12 x64:

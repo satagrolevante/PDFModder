@@ -416,6 +416,10 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
             return edit_searchable(data,request,model)
         if any(g.mode==3 for g in selected):
             raise EditError("Texto OCR invisible: activa explícitamente Corregir capa OCR buscable. La imagen escaneada conservará su apariencia.")
+        if request.text=='':
+            from .paired_deletion_v304 import try_delete_paired_text
+            paired=try_delete_paired_text(data,request,model)
+            if paired is not None:return paired
         if selected:
             from .ocr import clean_overlay
             cleaned,current,ocr_report=clean_overlay(data,request,model,selected)
