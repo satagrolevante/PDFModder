@@ -111,7 +111,7 @@ def test_combine_one_file_offers_adding_more_and_cancel_preserves_sources(shell_
 
 
 def test_convert_submits_once_and_opens_single_pdf_after_worker_finishes(shell_window, tmp_path):
-    (source,) = files(tmp_path, 'revisión <final>.DOCX')
+    (source,) = files(tmp_path, 'revisión & (final).DOCX')
     assert shell_window.start_shell_action_v305('convert', [source, source])
     command, payload, _callback = shell_window.submissions[-1]
     assert command == 'convert_office'
@@ -121,7 +121,7 @@ def test_convert_submits_once_and_opens_single_pdf_after_worker_finishes(shell_w
     progress = shell_window._office_conversion_v305['progress']
     assert progress.isVisible()
     assert not shell_window.opened
-    output = str(tmp_path / 'revisión <final>.pdf')
+    output = str(tmp_path / 'revisión & (final).pdf')
     shell_window.complete({'results': [{'path': output}], 'errors': [], 'cancelled': False})
     assert not ticket.exists()
     assert shell_window._office_conversion_v305 is None

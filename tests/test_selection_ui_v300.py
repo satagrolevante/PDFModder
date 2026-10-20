@@ -15,6 +15,8 @@ class Harness(SelectionUiV300Mixin, RichEditing, QMainWindow):
     """Uses the actual canvas/editor without an unrelated multiprocessing job."""
     def __init__(self):
         super().__init__()
+        from pdfmodder.draft_control_v305 import DraftControl
+        self._draft_control_v305 = DraftControl()
         self.busy=False;self.application_mode='editing';self._closed=False;self.page_number=0
         self.toolbar=QToolBar(self);self.addToolBar(self.toolbar)
         central=QWidget();self.setCentralWidget(central);layout=QVBoxLayout(central)
@@ -43,6 +45,10 @@ class Harness(SelectionUiV300Mixin, RichEditing, QMainWindow):
     def _refresh_actions(self):pass
     def _notice(self,message):pass
     def _rich_pump(self):self._rich_timer.stop()
+
+    def closeEvent(self, event):
+        self._draft_control_v305.close()
+        super().closeEvent(event)
 
 
 @pytest.fixture

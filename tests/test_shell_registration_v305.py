@@ -22,21 +22,31 @@ using System.Security.Principal;
 using System.Web.Script.Serialization;
 using Microsoft.Win32;
 class ShellRegistrationHarness {
-    [DllImport("advapi32.dll")] static extern int RegOverridePredefKey(IntPtr key, IntPtr replacement);
     static BindingFlags Flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
     const string ConvertId="{2C75E6DF-A2CB-49C1-871F-B0D9E30CB26E}", CombineId="{F43E797E-C01B-4C4E-929A-1C6258406FC5}";
     static RegistryKey Root;
     static Type Installer, Cleaner, Result;
     static List<object> Cases=new List<object>();
+    static List<string> LastWarnings=new List<string>();
     static void Check(bool value,string name) { if(!value) throw new Exception(name); }
     static void Pass(string name) { Cases.Add(new {name=name,passed=true}); }
     static void Put(string path,string name,string value) { using(var key=Root.CreateSubKey(path)) key.SetValue(name,value); }
     static string Get(string path,string name) { using(var key=Root.OpenSubKey(path)) return key==null ? null : key.GetValue(name,null) as string; }
     static bool Exists(string path) { using(var key=Root.OpenSubKey(path)) return key!=null; }
+    static void RemoveFixture(RegistryKey parent,string path) {
+        using(var key=parent.OpenSubKey(path,true)) {
+            if(key==null) return;
+            foreach(string child in key.GetSubKeyNames()) RemoveFixture(key,child);
+        }
+        parent.DeleteSubKey(path,false);
+    }
     static string Verb(string extension) { return @"Software\Classes\SystemFileAssociations\"+extension+@"\shell\"+(extension==".pdf"?"PDFModder.CombinePdf":"PDFModder.ConvertToPdf"); }
     static string Class(string clsid) { return @"Software\Classes\CLSID\"+clsid; }
     static bool Register(string path) {
-        return (bool)Installer.GetMethod("RegisterShellActions",Flags).Invoke(null,new object[]{path,Activator.CreateInstance(Result,true)});
+        object result=Activator.CreateInstance(Result,true);
+        bool registered=(bool)Installer.GetMethod("RegisterShellActions",Flags).Invoke(null,new object[]{path,result});
+        LastWarnings=new List<string>((List<string>)Result.GetField("warnings",BindingFlags.Instance|BindingFlags.Public).GetValue(result));
+        return registered;
     }
     static void Remove(string path) {
         var warnings=new List<string>();
@@ -61,12 +71,13 @@ class ShellRegistrationHarness {
     }
     static int Main(string[] args) {
         string temporary=args[0], work=args[1], report=args[4];
-        var outcome=new Dictionary<string,object>(); bool overridden=false; int code=0;
+        var outcome=new Dictionary<string,object>(); int code=0;
         Check(temporary.StartsWith(@"Software\PDFModderShellTests\",StringComparison.Ordinal),"Unsafe test key");
         try {
             Root=Registry.CurrentUser.CreateSubKey(temporary);
-            Check(RegOverridePredefKey(new IntPtr(unchecked((int)0x80000001)),Root.Handle.DangerousGetHandle())==0,"HKCU override failed");
-            overridden=true;
+            // Both production classes expose an internal root for this harness.
+            // Avoid remapping process-wide predefined handles: it is redundant
+            // and can change the native HKCU Software\\Classes registry view.
             var install=Assembly.LoadFile(Path.GetFullPath(args[2]));
             var uninstall=Assembly.LoadFile(Path.GetFullPath(args[3]));
             Installer=install.GetType("PdfModderInstallation.Installer",true);
@@ -145,11 +156,21 @@ class ShellRegistrationHarness {
             outcome["ok"]=true;
         } catch(Exception ex) { outcome["ok"]=false; outcome["error"]=ex.ToString(); code=1; }
         finally {
-            if(overridden) Check(RegOverridePredefKey(new IntPtr(unchecked((int)0x80000001)),IntPtr.Zero)==0,"Could not restore HKCU");
-            if(Root!=null) Root.Dispose();
-            Registry.CurrentUser.DeleteSubKeyTree(temporary,false);
-            outcome["scenarios"]=Cases; outcome["temporary_registry_removed"]=true;
-            File.WriteAllText(report,new JavaScriptSerializer().Serialize(outcome));
+            var cleanup=new List<string>();
+            try { if(Root!=null) Root.Dispose(); } catch(Exception ex) { cleanup.Add(ex.ToString()); }
+            try {
+                RemoveFixture(Registry.CurrentUser,temporary);
+                using(var remaining=Registry.CurrentUser.OpenSubKey(temporary))
+                    outcome["temporary_registry_removed"]=remaining==null;
+                if(!(bool)outcome["temporary_registry_removed"]) cleanup.Add("Temporary registry root remains.");
+            } catch(Exception ex) { cleanup.Add(ex.ToString()); outcome["temporary_registry_removed"]=false; }
+            if(cleanup.Count>0) { outcome["ok"]=false; outcome["cleanup_errors"]=cleanup; code=1; }
+            outcome["scenarios"]=Cases; outcome["last_registration_warnings"]=LastWarnings;
+            string serialized=new JavaScriptSerializer().Serialize(outcome);
+            // A cleanup error must never replace the original test exception.
+            try { File.WriteAllText(report,serialized); }
+            catch(Exception ex) { Console.Error.WriteLine("Could not write test report: "+ex); code=1; }
+            if(code!=0) Console.Error.WriteLine(serialized);
         }
         return code;
     }
@@ -393,10 +414,11 @@ def _compile(work, name, sources, *, main=None, library=False):
     return output
 
 
-def _run(args, work):
+def _run(args, work, *, report=None):
     result = subprocess.run([str(a) for a in args], cwd=work, capture_output=True, text=True,
                             creationflags=subprocess.CREATE_NO_WINDOW, timeout=90)
-    assert result.returncode == 0, result.stdout + result.stderr
+    details = report.read_text(encoding='utf-8-sig') if result.returncode and report and report.exists() else ''
+    assert result.returncode == 0, result.stdout + result.stderr + details
 
 
 def _report(name, report_path, sources):
@@ -435,7 +457,7 @@ def test_production_shell_registration_in_isolated_registry(tmp_path):
     key = 'Software\\PDFModderShellTests\\' + uuid.uuid4().hex
     report = tmp_path / 'registry.json'
     try:
-        _run([executable, key, tmp_path, *libraries, report], tmp_path)
+        _run([executable, key, tmp_path, *libraries, report], tmp_path, report=report)
         result = _report('shell-registration-v305.json', report, sources)
         assert len(result['scenarios']) == 7 and result['temporary_registry_removed']
         assert [snapshot(path) for path in paths] == before, 'Real shell registration was changed'
