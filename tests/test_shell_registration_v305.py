@@ -117,7 +117,15 @@ class ShellRegistrationHarness {
                 AssertCurrent(current);
             } finally {
                 using(var key=Root.OpenSubKey(deniedPath,RegistryKeyPermissionCheck.ReadWriteSubTree,
-                      RegistryRights.ChangePermissions | RegistryRights.ReadKey)) key.SetAccessControl(originalAcl);
+                      RegistryRights.ChangePermissions | RegistryRights.ReadKey)) {
+                    // GetAccessControl returns an unmodified descriptor. Mark
+                    // its DACL modified so SetAccessControl actually restores it.
+                    var restored=new RegistrySecurity();
+                    restored.SetSecurityDescriptorBinaryForm(originalAcl.GetSecurityDescriptorBinaryForm(),AccessControlSections.Access);
+                    key.SetAccessControl(restored);
+                    Check(key.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access)==
+                          originalAcl.GetSecurityDescriptorSddlForm(AccessControlSections.Access),"Fixture DACL was not restored");
+                }
             }
             Pass("intermediate_registry_failure_restores_every_previous_verb_and_class");
             File.Delete(Path.Combine(old,"PDFModderShellActions.exe"));

@@ -60,8 +60,15 @@ def main(suites=None):
     suites = (CURRENT_SUITE,) if suites is None else suites
     # The installer now updates shared PDF handler entries. A private directory
     # alone does not isolate that registration from an existing user installation.
+    shell_verbs = {
+        r'Software\Classes\SystemFileAssociations\.doc\shell\PDFModder.ConvertToPdf': ('Convertir a PDF', '{2C75E6DF-A2CB-49C1-871F-B0D9E30CB26E}'),
+        r'Software\Classes\SystemFileAssociations\.docx\shell\PDFModder.ConvertToPdf': ('Convertir a PDF', '{2C75E6DF-A2CB-49C1-871F-B0D9E30CB26E}'),
+        r'Software\Classes\SystemFileAssociations\.pdf\shell\PDFModder.CombinePdf': ('Combinar archivos PDF', '{F43E797E-C01B-4C4E-929A-1C6258406FC5}'),
+    }
+    shell_classes = ['Software\\Classes\\CLSID\\' + value for value in sorted({value[1] for value in shell_verbs.values()})]
+    shell_keys = [*shell_verbs, *shell_classes]
     for path in (r'Software\Classes\Applications\PDFModder.exe',
-                 r'Software\Classes\PDFModder.Document', r'Software\PDFModder\Capabilities'):
+                 r'Software\Classes\PDFModder.Document', r'Software\PDFModder\Capabilities', *shell_keys):
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path):
                 raise RuntimeError('Existe una asociación PDF Modder real. Use una cuenta de Windows de prueba; para el registro aislado ejecute tests/test_pdf_associations_v202.py.')
@@ -87,6 +94,17 @@ def main(suites=None):
         installed = json.loads(install_report.read_text(encoding='utf-8-sig'))
         assert installed['ok'] and not installed['warnings'], installed
         assert (target / 'PDFModder.exe').is_file() and (target / 'Desinstalar.exe').is_file()
+        assert (target / 'PDFModderShellActions.exe').is_file()
+        for path, (label, clsid) in shell_verbs.items():
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+                assert winreg.QueryValueEx(key, 'MUIVerb')[0] == label
+                assert Path(winreg.QueryValueEx(key, 'PDFModderInstallRoot')[0]) == target
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path + r'\command') as key:
+                assert winreg.QueryValueEx(key, 'DelegateExecute')[0] == clsid
+        for path in shell_classes:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path + r'\LocalServer32') as key:
+                assert winreg.QueryValueEx(key, '')[0] == f'"{target / "PDFModderShellActions.exe"}" --com-server'
+        report['tests'].append({'name': 'menus_contextuales_del_instalador_real', 'passed': True})
         records = (target / '.pdfmodder-files.tsv').read_text(encoding='utf-8-sig').splitlines()
         assert any(row.endswith('\tDesinstalar.exe') for row in records)
         values = registry()
@@ -138,6 +156,12 @@ def main(suites=None):
         assert not (target / '.pdfmodder-installation.json').exists()
         assert not (target / '.pdfmodder-files.tsv').exists()
         assert registry() is None and not app_link.exists() and not uninstall_link.exists()
+        for path in shell_keys:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path):
+                    raise AssertionError('La desinstalación conservó un menú propio: ' + path)
+            except FileNotFoundError:
+                pass
         remaining = sorted(p.relative_to(target).as_posix() for p in target.rglob('*') if p.is_file())
         assert remaining == ['_internal/README.md', 'documento-personal.pdf'], remaining
         report['tests'].append({'name': 'desinstalacion_real_conserva_documento_y_modificado', 'passed': True,
