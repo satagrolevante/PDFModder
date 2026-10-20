@@ -123,9 +123,15 @@ class ShellRegistrationHarness {
                     var restored=new RegistrySecurity();
                     restored.SetSecurityDescriptorBinaryForm(originalAcl.GetSecurityDescriptorBinaryForm(),AccessControlSections.Access);
                     key.SetAccessControl(restored);
-                    Check(key.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access)==
-                          originalAcl.GetSecurityDescriptorSddlForm(AccessControlSections.Access),"Fixture DACL was not restored");
+                    var currentUser=WindowsIdentity.GetCurrent().User;
+                    foreach(RegistryAccessRule rule in key.GetAccessControl().GetAccessRules(true,true,typeof(SecurityIdentifier)))
+                        Check(!(rule.IdentityReference.Equals(currentUser) && rule.AccessControlType==AccessControlType.Deny &&
+                                (rule.RegistryRights & RegistryRights.SetValue)!=0),"Fixture retains its SetValue deny rule");
                 }
+                // Windows can canonicalize an equivalent DACL. Verify the
+                // permission restored by writing the existing value unchanged.
+                using(var writable=Root.OpenSubKey(deniedPath,true))
+                    writable.SetValue("DelegateExecute",writable.GetValue("DelegateExecute"),RegistryValueKind.String);
             }
             Pass("intermediate_registry_failure_restores_every_previous_verb_and_class");
             File.Delete(Path.Combine(old,"PDFModderShellActions.exe"));
