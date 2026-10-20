@@ -187,7 +187,14 @@ def finish(report_path):
     installed = read(report_path)
     assert installed['ok'] and installed['installer_sha256'] == digest(installer)
     assert installed['application_version'] == __version__
-    assert len(installed['tests']) == 4 and all(t['passed'] for t in installed['tests'])
+    required_install_tests = {
+        'instalacion_registro_inventario_accesos', 'todos_los_archivos_instalados_coinciden',
+        'editor_instalado_editar_guardar_reabrir',
+        'desinstalacion_real_conserva_documento_y_modificado',
+        'menus_contextuales_del_instalador_real',
+    }
+    assert required_install_tests <= {t['name'] for t in installed['tests']}
+    assert all(t['passed'] for t in installed['tests'])
     # Publish only fixed summary fields. The private reports may contain paths,
     # source text, or identifiers which are deliberately excluded here.
     summary_fields = {'name', 'passed', 'files', 'steps', 'removed', 'preserved', 'remaining'}

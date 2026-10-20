@@ -13,7 +13,8 @@ cuando se demuestra su identidad. La escritura evita recomprimir y buscar objeto
 duplicados en todo el PDF para cada cambio. Se aplica y guarda la misma revisión
 validada. [Alcance y comprobaciones](docs/NOTAS_3.0.5.md).
 
-Esta revisión está preparada en el código, pendiente de compilación y publicación.
+Esta revisión cuenta con un instalador de prueba compilado y comprobado en Windows;
+está pendiente de publicación.
 
 ## Menú contextual de Windows
 

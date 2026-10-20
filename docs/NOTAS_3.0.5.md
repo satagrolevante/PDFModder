@@ -74,5 +74,13 @@ exacta del resultado validado. Esta verificación Linux fuera de pantalla no
 acredita todavía el instalador ni un escritorio Windows.
 
 La cancelación es cooperativa y los cambios complejos siguen teniendo un coste.
-Esta revisión está preparada en las fuentes, pendiente de compilación y
-publicación del instalador Windows.
+El instalador de prueba se ha compilado y comprobado en Windows. Las acciones del
+Explorador incluyen pruebas de selección múltiple, activación COM entre procesos,
+registro aislado, actualización, restauración tras un fallo del registro e
+instalación y desinstalación reales en una cuenta de prueba. DOCX y DOC binario se
+convirtieron también con LibreOffice, conservando dos páginas, tabla, texto y los
+originales. La automatización de Word se comprueba mediante contratos y simulación;
+su ejecución real requiere un equipo con Word instalado. Estas comprobaciones
+automáticas no sustituyen una revisión visual de documentos en un escritorio físico.
+
+La publicación pública del instalador continúa pendiente.
