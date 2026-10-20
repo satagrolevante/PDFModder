@@ -74,7 +74,7 @@ class ReadingUiV171Mixin:
     def _reading_command_allowed_v171(self, command):
         if self.application_mode == 'editing':
             return True
-        if command in ('open', 'close', 'page', 'reading_info', 'reading_copy_range', 'prepare_editing', 'search', 'document_properties', 'clipboard_copy'):
+        if command in ('open', 'close', 'page', 'reading_info', 'reading_copy_range', 'prepare_editing', 'search', 'document_properties', 'clipboard_copy', 'convert_office', 'combine'):
             return True
         self._notice('Pulsa «Herramientas» para activar el modo Edición.')
         return False

@@ -42,6 +42,7 @@ from .progressive_ui_v300 import PageListV300, ProgressiveOpeningV300Mixin
 from .saving_ui_v300 import SavingV300Mixin
 from .object_ui_v300 import ObjectEditorV300Mixin
 from .compatibility_ui_v300 import CompatibilityUiV300Mixin
+from .shell_ui_v305 import ShellActionsUiMixin
 from . import __version__
 
 
@@ -63,7 +64,7 @@ def _dispatch(command, payload):
     return dispatch(command, payload)
 
 
-class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixin,ClipboardUiV170Mixin,WorkspaceUiV170Mixin,SigningUiMixin,ToolsWorkspaceV150Mixin,PageActionsV150Mixin,InsertionUiV150Mixin,RichEditing,ObjectEditing,AdvancedEditing,ExtendedEditing,QMainWindow):
+class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixin,ClipboardUiV170Mixin,WorkspaceUiV170Mixin,SigningUiMixin,ToolsWorkspaceV150Mixin,PageActionsV150Mixin,InsertionUiV150Mixin,RichEditing,ObjectEditing,AdvancedEditing,ExtendedEditing,QMainWindow):
     operation_finished = Signal(str, object)
     error_raised = Signal(str)
     page_ready = Signal()
@@ -76,6 +77,9 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
         self.future = None
         self._callback = None
         self._command = ""
+        from .draft_control_v305 import DraftControl
+        self._draft_control_v305 = DraftControl()
+        self._draft_submission_v305 = None
         self._thumbnail_busy = False
         self._pending_text_preview = None
         self._closed = False
@@ -392,6 +396,13 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
         self._thumbnail_busy = command == "page" and bool((payload or {}).get("thumbnail"))
         payload = dict(payload or {})
         self._background_ui_v200 = payload.pop('_background_ui', False)
+        if command in ('rich_preview','rich_prepare'):
+            payload['_draft_control_v305']=self._draft_control_v305.ticket()
+            self._draft_submission_v305={
+                'generation':self._rich_generation,'serial':self._rich_serial,
+                'request':payload.get('request')}
+        else:
+            self._draft_submission_v305=None
         self.future = self.pool.submit(_dispatch,command,payload)
         self.statusBar().showMessage({"open":"Abriendo PDF…","page":"Renderizando página…","preview":"Validando y renderizando la modificación…","apply":"Validando movimiento…","save":"Validando y guardando copia…"}.get(command,"Procesando…"))
         self._refresh_actions()
@@ -402,11 +413,22 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
             return
         future,command,callback = self.future,self._command,self._callback
         was_thumbnail = self._thumbnail_busy
+        draft_submission=self._draft_submission_v305
+        self._draft_submission_v305=None
+        obsolete_draft=(command in ('rich_preview','rich_prepare') and draft_submission is not None
+            and (draft_submission['generation']!=self._rich_generation
+                 or draft_submission['serial']!=self._rich_serial))
         self.future = None
         self._callback = None
         self._thumbnail_busy = False
         try:
             result = future.result()
+            if result.get('draft_cancelled_v305') or obsolete_draft:
+                # Superseded work has no authority to update the UI or history.
+                self._refresh_actions()
+                if self._rich_active and self._rich_pending is not None:
+                    self._rich_timer.start(0)
+                return
             if "state" in result and not self._background_ui_v200:
                 self.state = result["state"]
             self._refresh_actions()
@@ -414,6 +436,11 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
                 callback(result)
             self.operation_finished.emit(command,result)
         except Exception as exc:
+            if obsolete_draft:
+                self._refresh_actions()
+                if self._rich_active and self._rich_pending is not None:
+                    self._rich_timer.start(0)
+                return
             if command == 'prepare_editing':
                 self._mode_preparing_v171 = False
                 self._set_mode_v171('reading')
@@ -1136,9 +1163,11 @@ class MainWindowCore(ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixi
             event.ignore()
             return
         if not self._closed:
+            self.close_shell_actions_v305()
             self._close_workspace_v170()
             self._finish_signature_placement(closing=True)
             self._closed = True
+            self._draft_control_v305.close()
             self.poller.stop()
             self.thumbnail_timer.stop()
             self.reader_timer_v180.stop()
@@ -1157,6 +1186,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="PDF Modder — editor local conservador")
     parser.add_argument("pdf",nargs="?")
     group=parser.add_mutually_exclusive_group()
+    group.add_argument('--shell-request', metavar='REQUEST_JSON', help=argparse.SUPPRESS)
     group.add_argument("--smoke-test",metavar="REPORT_JSON",help="Probar apertura, edición, movimiento, guardado y reapertura; generar informe y cerrar")
     group.add_argument("--smoke-extended",metavar="REPORT_JSON",help="Probar también texto nuevo, imágenes, extracción, eliminación y unión de páginas")
     group.add_argument("--smoke-tagged",metavar="REPORT_JSON",help="Probar PDF etiquetado, doble clic, ajuste de línea, accesibilidad e historial")
@@ -1176,6 +1206,16 @@ def main(argv=None):
     group.add_argument("--smoke-v201",metavar="REPORT_JSON",help="Prueba de edición e impresión con vista previa, sin enviar trabajos a impresoras físicas")
     group.add_argument("--smoke-v300",metavar="REPORT_JSON",help="Prueba de apertura, selección, objetos, tipografía, guardado y cierre 3.0.0")
     args = parser.parse_args(argv)
+    if args.shell_request and args.pdf:
+        parser.error('La acción del menú contextual no admite un PDF adicional.')
+    shell_action = None
+    shell_error = None
+    if args.shell_request:
+        from .shell_requests_v305 import consume_shell_request
+        try:
+            shell_action = consume_shell_request(args.shell_request)
+        except (OSError, ValueError, TypeError) as exc:
+            shell_error = str(exc)
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("PDF Modder")
     app.setOrganizationName("PDFModder")
@@ -1197,6 +1237,10 @@ def main(argv=None):
     if not application_icon.isNull():
         window.setWindowIcon(application_icon)
     window.show()
+    if shell_action:
+        QTimer.singleShot(0, lambda: window.start_shell_action_v305(*shell_action))
+    elif shell_error:
+        QTimer.singleShot(0, lambda: window._error(shell_error))
     if smoke_report:
         if args.smoke_v300:
             from .smoke_v300 import SmokeV300 as Smoke

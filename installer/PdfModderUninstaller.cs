@@ -451,6 +451,8 @@ namespace PdfModderUninstallation
         const string OpenWithRegistryPath = @"Software\Classes\.pdf\OpenWithProgids";
         const string CapabilitiesRegistryPath = @"Software\PDFModder\Capabilities";
         const string RegisteredApplicationsRegistryPath = @"Software\RegisteredApplications";
+        const string ShellConvertClsid = "{2C75E6DF-A2CB-49C1-871F-B0D9E30CB26E}";
+        const string ShellCombineClsid = "{F43E797E-C01B-4C4E-929A-1C6258406FC5}";
         const uint ShellAssociationChanged = 0x08000000; // SHCNE_ASSOCCHANGED
         // Replaceable only through the internal field for isolated external tests.
         internal static RegistryKey UserRegistryRoot = Registry.CurrentUser;
@@ -490,6 +492,50 @@ namespace PdfModderUninstallation
             using (RegistryKey key = UserRegistryRoot.OpenSubKey(path, false))
                 if (key == null || key.ValueCount != 0 || key.SubKeyCount != 0) return;
             UserRegistryRoot.DeleteSubKey(path, false);
+        }
+
+        static bool OwnShellKey(string path, string installationRoot)
+        {
+            return RegistryStringEquals(path, "PDFModderApplicationId", Installation.AppId) &&
+                   RegistryStringEquals(path, "PDFModderInstallRoot", installationRoot);
+        }
+
+        internal static void RemoveShellActions(string installationRoot, List<string> warnings)
+        {
+            bool changed = false;
+            try
+            {
+                string root = Safety.Absolute(installationRoot, "La carpeta de instalación");
+                string[] extensions = { ".doc", ".docx", ".pdf" };
+                foreach (string extension in extensions)
+                {
+                    string clsid = extension == ".pdf" ? ShellCombineClsid : ShellConvertClsid;
+                    string path = @"Software\Classes\SystemFileAssociations\" + extension + @"\shell\" +
+                        (extension == ".pdf" ? "PDFModder.CombinePdf" : "PDFModder.ConvertToPdf");
+                    if (OwnShellKey(path, root) && RegistryStringEquals(path + @"\command", "DelegateExecute", clsid))
+                    {
+                        UserRegistryRoot.DeleteSubKeyTree(path, false); changed = true;
+                    }
+                }
+                string server = "\"" + Path.Combine(root, "PDFModderShellActions.exe") + "\" --com-server";
+                foreach (string clsid in new [] { ShellConvertClsid, ShellCombineClsid })
+                {
+                    string path = @"Software\Classes\CLSID\" + clsid;
+                    if (OwnShellKey(path, root) && RegistryStringEquals(path + @"\LocalServer32", "", server))
+                    {
+                        UserRegistryRoot.DeleteSubKeyTree(path, false); changed = true;
+                    }
+                }
+            }
+            catch (Exception exception) { warnings.Add("No se pudieron retirar los menús contextuales de esta instalación: " + exception.Message); }
+            finally
+            {
+                if (changed)
+                {
+                    try { SHChangeNotify(ShellAssociationChanged, 0, IntPtr.Zero, IntPtr.Zero); }
+                    catch (Exception exception) { warnings.Add("No se pudo actualizar el menú contextual: " + exception.Message); }
+                }
+            }
         }
 
         internal static void RemovePdfAssociations(string installationRoot, List<string> warnings)
@@ -547,6 +593,7 @@ namespace PdfModderUninstallation
         internal static void Remove(string installationRoot, List<string> warnings)
         {
             RemovePdfAssociations(installationRoot, warnings);
+            RemoveShellActions(installationRoot, warnings);
             try
             {
                 using (RegistryKey key = UserRegistryRoot.OpenSubKey(KeyPath, false))

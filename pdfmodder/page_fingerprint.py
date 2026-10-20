@@ -12,6 +12,10 @@ import hashlib
 import io
 import math
 import zlib
+from collections import OrderedDict
+from threading import RLock
+
+from .draft_control_v305 import checkpoint, DraftCancelled
 
 from pypdf import PdfReader
 from pypdf.generic import (
@@ -121,6 +125,7 @@ class _Graph:
 
     def __init__(self, data, *, max_nodes, max_depth, max_stream_bytes,
                  max_total_stream_bytes):
+        checkpoint()
         self.reader = _StrictReader(io.BytesIO(bytes(data)), strict=True)
         if self.reader.is_encrypted:
             raise _NoProof("Encrypted graph")
@@ -145,6 +150,8 @@ class _Graph:
 
     def check(self, depth):
         self.nodes += 1
+        if self.nodes % 256 == 0:
+            checkpoint()
         if self.nodes > self.max_nodes or depth > self.max_depth:
             raise _NoProof("Graph budget exceeded")
 
@@ -304,6 +311,8 @@ class _Graph:
                 result = bytearray()
                 cursor = 0
                 while cursor < len(data):
+                    if cursor % 65536 == 0:
+                        checkpoint()
                     length = data[cursor]
                     cursor += 1
                     if length == 128:
@@ -325,6 +334,7 @@ class _Graph:
         return data
 
     def stream(self, value, depth):
+        checkpoint()
         if "/F" in value or "/FFilter" in value or "/FDecodeParms" in value:
             raise _NoProof("External stream")
         data = value._data
@@ -342,6 +352,7 @@ class _Graph:
         return _digest(kind, metadata + _digest(b"bytes", data))
 
     def page(self, number):
+        checkpoint()
         page = self.pages[number]
         hashes = [self.global_hash, self.dictionary(page, 0, omitted={"/Parent"})]
         ancestor = page.get("/Parent")
@@ -364,13 +375,98 @@ class _Graph:
         return _digest(b"page_graph_v1", b"".join(hashes)).hex()
 
 
+# Only completed digests are retained, never a PdfReader, graph, PDF object or
+# caller-owned byte buffer. The key binds every source byte and all proof
+# budgets. A cache hit is the exact same proof already obtained for that input,
+# not a comparison by xref, size or an edited-page heuristic.
+_PAGE_CACHE_MAX_REVISIONS = 4
+_PAGE_CACHE_BUDGET = 8 * 1024 * 1024
+_page_cache = OrderedDict()
+_page_cache_bytes = 0
+_page_cache_lock = RLock()
+
+
+def clear_page_proof_cache(revision=None):
+    """Release immutable page evidence, optionally for one SHA-256 revision."""
+    global _page_cache_bytes
+    with _page_cache_lock:
+        for key in list(_page_cache):
+            if revision is None or key[0].hex() == revision:
+                _page_cache_bytes -= _page_cache.pop(key)[2]
+
+
+def _page_cache_get(key, page=None):
+    with _page_cache_lock:
+        entry = _page_cache.get(key)
+        if entry is None:
+            return None
+        _page_cache.move_to_end(key)
+        return entry[0] if page is None else entry[1].get(page)
+
+
+def _page_cache_put(key, count, page=None, fingerprint=None):
+    global _page_cache_bytes
+    # Never publish a result from work made obsolete while hashing a stream.
+    checkpoint()
+    with _page_cache_lock:
+        entry = _page_cache.get(key)
+        if entry is None:
+            entry = [count, {}, 512]
+            _page_cache[key] = entry
+            _page_cache_bytes += entry[2]
+        elif entry[0] != count:
+            return  # Defensive: incompatible evidence must never be combined.
+        if page is not None and page not in entry[1]:
+            entry[1][page] = fingerprint
+            entry[2] += 192
+            _page_cache_bytes += 192
+        _page_cache.move_to_end(key)
+        while (_page_cache and (_page_cache_bytes > _PAGE_CACHE_BUDGET
+                               or len(_page_cache) > _PAGE_CACHE_MAX_REVISIONS)):
+            _, removed = _page_cache.popitem(last=False)
+            _page_cache_bytes -= removed[2]
+
+
+class _RevisionGraph:
+    """A private lazy reader; shared evidence consists only of digest strings."""
+
+    def __init__(self, data, limits):
+        self.data = bytes(data)
+        self.key = (hashlib.sha256(self.data).digest(), len(self.data),
+                    tuple(sorted(limits.items())))
+        self.limits = limits
+        self.graph = None
+        self.page_count = _page_cache_get(self.key)
+        if self.page_count is None:
+            self._open()
+
+    def _open(self):
+        if self.graph is None:
+            self.graph = _Graph(self.data, **self.limits)
+            self.page_count = self.graph.page_count
+            _page_cache_put(self.key, self.page_count)
+        return self.graph
+
+    def page(self, page):
+        checkpoint()
+        if page >= self.page_count:
+            raise _NoProof("Page outside document")
+        result = _page_cache_get(self.key, page)
+        if result is not None:
+            return result
+        graph = self._open()
+        result = graph.page(page)
+        _page_cache_put(self.key, self.page_count, page, result)
+        return result
+
+
 class PageProof:
     """Prove unchanged renderer inputs, independently of xref numbering.
 
-    Construct per transition. Failure is cached only on this instance and always
-    falls back to ordinary validation. ``report`` contains inferred zero deltas
-    justified by graph identity; it explicitly declares that no pixels were
-    rendered or measured. Document-wide semantic validators remain necessary.
+    Completed positive page digests may be reused for exactly identical source
+    bytes and proof limits. Readers and their mutable PDF objects remain local
+    to this transition. Failure is local and always falls back to ordinary
+    validation. Document-wide semantic validators remain necessary.
     """
 
     def __init__(self, before_data, after_data, *, max_nodes=1_000_000,
@@ -378,17 +474,31 @@ class PageProof:
                  max_total_stream_bytes=256 * 1024 * 1024):
         self._results = {}
         self._graphs = None
+        self._revisions = None
         try:
             limits = dict(max_nodes=max_nodes, max_depth=max_depth,
                           max_stream_bytes=max_stream_bytes,
                           max_total_stream_bytes=max_total_stream_bytes)
-            before, after = _Graph(before_data, **limits), _Graph(after_data, **limits)
-            if len(before.pages) == len(after.pages):
+            before, after = _RevisionGraph(before_data, limits), _RevisionGraph(after_data, limits)
+            self._revisions = before.key[:2], after.key[:2]
+            if before.page_count == after.page_count:
                 self._graphs = before, after
+        except DraftCancelled:
+            raise
         except Exception:
             pass
 
+    def matches(self, before_data, after_data):
+        """Bind reuse by another validator to both complete immutable revisions."""
+        checkpoint()
+        if self._revisions is None:
+            return False
+        revisions = tuple((hashlib.sha256(bytes(data)).digest(), len(data))
+                          for data in (before_data, after_data))
+        return revisions == self._revisions
+
     def unchanged(self, page):
+        checkpoint()
         if not isinstance(page, int) or isinstance(page, bool) or page < 0:
             return False
         if page not in self._results:
@@ -398,6 +508,8 @@ class PageProof:
                     before, after = (graph.page(page) for graph in self._graphs)
                     if before == after:
                         fingerprint = before
+            except DraftCancelled:
+                raise
             except Exception:
                 pass
             self._results[page] = fingerprint

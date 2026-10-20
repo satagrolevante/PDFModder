@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 from pdfmodder import __version__
 from scripts.collect_licenses import source_files
 from scripts.build_uninstaller import build as build_uninstaller
+from scripts.build_shell_actions import build as build_shell_actions
 
 
 BUNDLE = ROOT / "dist" / "PDFModder"
@@ -154,6 +155,7 @@ def build() -> None:
     if TARGET.exists():
         raise FileExistsError('Ya existe el instalador; conserve la entrega anterior: ' + str(TARGET))
     build_uninstaller(BUNDLE / 'Desinstalar.exe')
+    build_shell_actions(BUNDLE / 'PDFModderShellActions.exe')
     manifest_files = write_payload()
     template = (ROOT / 'installer/PdfModderInstaller.cs').read_text(encoding='utf-8-sig')
     template_version = re.search(r'const string Version = "([0-9.]+)"', template).group(1)

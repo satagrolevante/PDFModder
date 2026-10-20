@@ -17,6 +17,7 @@ from pypdf import PdfReader
 from pypdf.generic import ArrayObject, ByteStringObject, ContentStream, DecodedStreamObject, DictionaryObject, FloatObject, NameObject, NumberObject
 
 from .model import EditError, intersects, union
+from .draft_control_v305 import DraftCancelled, checkpoint
 
 CLIP_ISSUE = 'Página con recortes gráficos explícitos: no se puede reconstruir el texto con seguridad.'
 SHOW = {b'Tj', b'TJ', b"'", b'"'}
@@ -105,6 +106,7 @@ def _signature(value,depth=0):
 
 def operator_glyph_map(data,number,model):
     """Relaciona glifos y Tf por color de cada SHOW, sin interpretar su texto."""
+    checkpoint()
     reader = PdfReader(BytesIO(data),strict=True)
     page = reader.pages[number]
     operations = ContentStream(page.get_contents(),reader).operations
@@ -125,6 +127,7 @@ def operator_glyph_map(data,number,model):
     render_mode = 0
     probing = []
     for index,(args,op) in enumerate(operations):
+        if index % 256 == 0:checkpoint()
         if op == b'q':
             stack.append((resource,render_mode))
         elif op == b'Q':
@@ -186,6 +189,7 @@ def operator_glyph_map(data,number,model):
                 else:widget_glyph_ids.add(glyph.id)
             if cursor!=len(remaining):
                 _fail('no se pudo separar la apariencia del formulario del contenido de la página.')
+    checkpoint()
     with fitz.open(stream=data,filetype='pdf') as probe:
         xref = probe.get_new_xref()
         probe.update_object(xref,'<<>>')
@@ -211,6 +215,7 @@ def operator_glyph_map(data,number,model):
         mapping[glyph.id] = {'operation':show['operation'],'font_xref':show['xref'],
                              'font_resource':show['resource'],'render_mode':show['render_mode']}
         show['glyphs'].append(glyph)
+    checkpoint()
     return reader,operations,list(shows.values()),mapping
 
 
@@ -220,6 +225,8 @@ def annotate_font_resources(data,number,model):
         return model
     try:
         _,_,_,mapping = operator_glyph_map(data,number,model)
+    except DraftCancelled:
+        raise
     except Exception:
         return model
     return replace(model,glyphs=[replace(g,font_xref=mapping[g.id]['font_xref'],

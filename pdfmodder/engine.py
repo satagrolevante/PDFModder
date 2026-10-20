@@ -17,9 +17,11 @@ import pymupdf as fitz
 from .model import Glyph, PageModel, EditRequest, EditError, union, intersects
 from .fonts import FontResolver, FontError
 from .validation import document_issues, page_issues, assert_characters, assert_pixels, validate_transition, trace_chars
+from .draft_control_v305 import checkpoint
 
 
 def extract_page(doc, number, data=None):
+    checkpoint()
     page = doc[number]
     # Selection uses the visible glyphs. ActualText is checked and updated
     # separately by tagged.py; it must not replace visual character geometry.
@@ -27,6 +29,7 @@ def extract_page(doc, number, data=None):
     raw_chars = []
     line_id = 0
     for block in raw['blocks']:
+        checkpoint()
         if block['type'] != 0:
             continue
         lines = block['lines']
@@ -50,6 +53,7 @@ def extract_page(doc, number, data=None):
         raw_index.setdefault(key,[]).append(item)
     glyphs = []
     for span_no,span in enumerate(page.get_texttrace()):
+        if span_no % 32 == 0:checkpoint()
         for ch in span['chars']:
             text, origin, trace_bbox = chr(ch[0]), tuple(ch[2]), tuple(ch[3])
             nearby=raw_index.get((text,round(origin[0],1),round(origin[1],1)),[])
@@ -60,6 +64,7 @@ def extract_page(doc, number, data=None):
                                 tuple(span['color']),float(span['opacity']),bid,lid,si,
                                 tuple(span['dir']),int(span['type']),span.get('layer',''),span['seqno'],
                                 bool(found) and not span.get('wmode') and not span.get('bidi_lvl')))
+    checkpoint()
     issues = page_issues(data,number) if data else []
     # Form presence is not a page-wide incompatibility. Selected invocations
     # are isolated before editing; untouched Forms retain their own resources.
@@ -86,6 +91,7 @@ def extract_page(doc, number, data=None):
             # Viewing/selecting malformed tagged content must still work;
             # edit safety keeps the incompatibility on the page model.
             if str(error) not in model.issues:model.issues.append(str(error))
+    checkpoint()
     return model
 
 

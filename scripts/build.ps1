@@ -27,6 +27,8 @@ try {
     Assert-Exit 'La compilación del desinstalador'
     & $pythonPath (Join-Path $PSScriptRoot 'build_signing_bridge.py')
     Assert-Exit 'La compilación del acceso a certificados de Windows'
+    & $pythonPath (Join-Path $PSScriptRoot 'build_shell_actions.py')
+    Assert-Exit 'La compilación del menú contextual de Windows'
     $executable = Join-Path $projectRoot 'dist/PDFModder/PDFModder.exe'
     if (-not (Test-Path -LiteralPath $executable)) { throw 'La compilación no ha producido PDFModder.exe.' }
     Write-Host "Paquete creado: $executable"

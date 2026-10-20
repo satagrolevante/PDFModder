@@ -414,6 +414,9 @@ class WorkspaceV200Mixin(SelectionUiV300Mixin):
         return super().cancel()
 
     def _offer_recovery_v200(self):
+        if getattr(self,'_modal_depth_v200',0):
+            QTimer.singleShot(300,self._offer_recovery_v200)
+            return
         # A document opened immediately at startup takes priority. Recovery
         # remains available from its action, without interrupting that work.
         if self._closed or self.state:return

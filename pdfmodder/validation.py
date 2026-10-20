@@ -1,5 +1,5 @@
 """Validación transaccional de contenido, geometría y apariencia (144 ppp)."""
-from collections import Counter
+from collections import Counter, OrderedDict
 import hashlib
 import io
 import math
@@ -8,9 +8,11 @@ import pymupdf as fitz
 from pypdf import PdfReader
 from pypdf.generic import ContentStream, IndirectObject, StreamObject
 from .model import EditError, transform_rect
+from .draft_control_v305 import DraftCancelled, checkpoint
 
 
 def document_issues(data, doc, *, operation=None):
+    checkpoint()
     issues = []
     encrypted=bool(doc.is_encrypted or doc.needs_pass or (doc.metadata or {}).get('encryption'))
     if encrypted:
@@ -45,6 +47,8 @@ def document_issues(data, doc, *, operation=None):
         for f in (reader.get_fields() or {}).values():
             if f.get('/FT') == '/Sig':
                 issues.append("Contiene un campo de firma digital; se conserva el original y se bloquea la edición.")
+    except DraftCancelled:
+        raise
     except Exception:
         if not encrypted:
             issues.append("El analizador independiente no puede verificar la estructura de este PDF.")
@@ -70,6 +74,7 @@ def form_preservation_snapshot(data, *, reader=None):
             raise EditError('La estructura AcroForm no es un diccionario verificable.')
         pages = {}
         for number, page in enumerate(reader.pages):
+            checkpoint()
             ref = page.indirect_reference
             if ref is not None:
                 pages[(ref.idnum, ref.generation)] = number
@@ -121,6 +126,7 @@ def form_preservation_snapshot(data, *, reader=None):
             fields(field, (index,))
         widgets = []
         for number, page in enumerate(reader.pages):
+            checkpoint()
             annotations = page.get('/Annots', [])
             annotations = annotations.get_object() if isinstance(annotations, IndirectObject) else annotations
             page_widgets = []
@@ -182,7 +188,7 @@ def form_preservation_snapshot(data, *, reader=None):
             'page_actions': tuple(semantic(page.get('/AA'), ('pages', number, '/AA'))
                                   for number, page in enumerate(reader.pages)),
         }
-    except EditError:
+    except (EditError, DraftCancelled):
         raise
     except Exception as exc:
         raise EditError('No se pudo verificar el árbol AcroForm, sus recursos y sus acciones.') from exc
@@ -232,12 +238,25 @@ def page_issues(data, number):
                 issues.append(str(exc))
         from .graphics_state import page_color_issues
         issues.extend(page_color_issues(reader, page, ops))
+    except DraftCancelled:
+        raise
     except Exception as exc:
         issues.append(f"No se pudo analizar los operadores de esta página: {type(exc).__name__}.")
     return list(dict.fromkeys(issues))
 
 
-def assert_text_object_structure(data, *, reader=None, tagged_structure=None):
+# Only successful BT/ET verification of the exact graph can populate this
+# process-local LRU. Entries contain no readers, PDF text or resource objects.
+_TEXT_SCOPE_CACHE_LIMIT = 2048
+_verified_text_scope_graphs = OrderedDict()
+
+
+def clear_text_scope_cache():
+    _verified_text_scope_graphs.clear()
+
+
+def assert_text_object_structure(data, *, reader=None, tagged_structure=None,
+                                 before_data=None, unchanged_pages=None):
     """Verify concatenated page contents and only Forms invoked by that page.
 
     PDF parsers can read an orphan ET without reporting it. Painting and text
@@ -251,6 +270,14 @@ def assert_text_object_structure(data, *, reader=None, tagged_structure=None):
     falls back to ordinary parsing; UI validation flags never authorize reuse.
     """
     try:
+        # A supplied parser is only evidence for its exact immutable bytes.
+        # In particular a stale reader must never populate the graph cache for
+        # a different candidate. Non-memory and non-strict readers fall back.
+        if (reader is not None and not
+                (isinstance(reader, PdfReader) and reader.strict
+                 and isinstance(reader.stream, io.BytesIO)
+                 and reader.stream.getvalue() == bytes(data))):
+            reader = None
         page_operations = None
         if tagged_structure is not None:
             from .tagged import TaggedStructure
@@ -275,6 +302,13 @@ def assert_text_object_structure(data, *, reader=None, tagged_structure=None):
                 # into the fallback check of the current byte revision.
                 reader = None
         reader = reader or PdfReader(io.BytesIO(data), strict=True)
+        from .page_fingerprint import PageProof
+        # PageProof binds both immutable revisions, budgets and strict object
+        # graphs. An unknown graph or arbitrary caller flag never skips scopes.
+        proof = (unchanged_pages if type(unchanged_pages) is PageProof
+                 and before_data is not None
+                 and unchanged_pages.matches(before_data, data) else None)
+        verified_graphs = []
         checked = set()
         active = set()
 
@@ -291,7 +325,8 @@ def assert_text_object_structure(data, *, reader=None, tagged_structure=None):
             inside = False
             invoked = []
             operations = ContentStream(stream, reader).operations if operations is None else operations
-            for operands, operator in operations:
+            for op_index, (operands, operator) in enumerate(operations):
+                if op_index % 256 == 0:checkpoint()
                 if operator == b'BT':
                     if inside:
                         raise EditError(f'Validación: {label} contiene bloques BT anidados.')
@@ -321,11 +356,27 @@ def assert_text_object_structure(data, *, reader=None, tagged_structure=None):
             checked.add(key)
 
         for number, page in enumerate(reader.pages):
+            checkpoint()
+            fingerprint = (proof.report(number).get('fingerprint')
+                           if proof is not None else None)
+            if fingerprint is not None and fingerprint in _verified_text_scope_graphs:
+                verified_graphs.append(fingerprint)
+                continue
             resources = resolved(page.get('/Resources', {}))
             operations = page_operations[number] if page_operations is not None else None
             stream = page.get_contents() if operations is None else None
             verify(stream, resources, f'la página {number+1}', ('page', number), operations=operations)
-    except EditError:
+            if fingerprint is not None:
+                verified_graphs.append(fingerprint)
+        checkpoint()
+        # Commit reusable evidence only after every page and invoked Form
+        # passes, and after the final cooperative cancellation checkpoint.
+        for fingerprint in verified_graphs:
+            _verified_text_scope_graphs[fingerprint] = None
+            _verified_text_scope_graphs.move_to_end(fingerprint)
+        while len(_verified_text_scope_graphs) > _TEXT_SCOPE_CACHE_LIMIT:
+            _verified_text_scope_graphs.popitem(last=False)
+    except (EditError, DraftCancelled):
         raise
     except Exception as exc:
         raise EditError('Validación: no se pudieron verificar los bloques de texto del PDF.') from exc
@@ -505,11 +556,14 @@ def _exclude_pixels(mask, rect, matrix, pixmap):
 
 
 def pixel_diff(before, after, excluded=(), dpi=144):
+    checkpoint()
     scale = dpi/72
     if before.rect.width*before.rect.height*scale*scale > 16_000_000:
         raise EditError("Página demasiado grande para la validación visual limitada a 16 millones de píxeles.")
     a = before.get_pixmap(matrix=fitz.Matrix(scale,scale), alpha=False, colorspace=fitz.csRGB)
+    checkpoint()
     b = after.get_pixmap(matrix=fitz.Matrix(scale,scale), alpha=False, colorspace=fitz.csRGB)
+    checkpoint()
     if (a.width,a.height) != (b.width,b.height):
         raise EditError("La validación detectó un cambio de dimensiones de página.")
     aa = np.frombuffer(a.samples,dtype=np.uint8).reshape(a.height,a.width,3)
@@ -560,6 +614,7 @@ def validate_transition(before_data, after_data, page_number, expected, excluded
         if _canonical(before.get_toc(False)) != _canonical(after.get_toc(False)):
             raise EditError("La validación detectó cambios en los marcadores.")
         for i in range(before.page_count):
+            checkpoint()
             a,b = before[i],after[i]
             if (tuple(a.mediabox),tuple(a.cropbox),a.rotation) != (tuple(b.mediabox),tuple(b.cropbox),b.rotation):
                 raise EditError("Se alteraron los límites o la rotación de una página.")

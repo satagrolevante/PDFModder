@@ -11,7 +11,7 @@ from pypdf.generic import (
     TextStringObject,
 )
 
-from pdfmodder.page_fingerprint import PageProof, _Graph
+from pdfmodder.page_fingerprint import PageProof, _Graph, clear_page_proof_cache
 
 
 def dictionary(**items):
@@ -199,7 +199,8 @@ def test_malformed_input_invalid_indices_and_page_count_fall_back():
         assert not PageProof(data, document.tobytes()).unchanged(0)
 
 
-def test_shared_font_and_stream_resources_are_hashed_once_per_reader(monkeypatch):
+def test_shared_resources_and_completed_revision_digests_are_reused(monkeypatch):
+    clear_page_proof_cache()
     calls = []
     original = _Graph._decoded
     def counted(graph, data, filters):
@@ -212,7 +213,10 @@ def test_shared_font_and_stream_resources_are_hashed_once_per_reader(monkeypatch
     first_count = len(calls)
     assert proof.unchanged(1)
     assert len(calls) == first_count
-    # A new transition owns independent readers and must inspect resources anew.
+    # Repeated immutable input reuses completed digests, without sharing readers.
+    assert PageProof(data, data).unchanged(0)
+    assert len(calls) == first_count
+    clear_page_proof_cache()
     assert PageProof(data, data).unchanged(0)
     assert len(calls) == 2 * first_count
 

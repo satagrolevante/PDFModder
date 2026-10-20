@@ -155,6 +155,7 @@ class Session:
 
     def suspend(self):
         self._cleanup_print()
+        self._release_rich_analysis_v305()
         self._clear_cache();self._close_documents()
         self._reading_info_cache.clear();self._page_caps_cache.clear()
         self.history.suspend()
@@ -584,6 +585,8 @@ class Session:
         """Live previews use final export bytes, without replacing session state."""
         from .richtext import edit_rich_pdf
         from .richmodels import RichTextRequest
+        from .draft_control_v305 import checkpoint
+        checkpoint()
         self._writable()
         if isinstance(request,dict):request=RichTextRequest(**request)
         self._prepared_rich=None
@@ -592,30 +595,43 @@ class Session:
         # and every request field. A changed character, style or area requires a
         # new validation; UI reports and "verified" flags grant no authority.
         cached=getattr(self,'_validated_rich',None)
+        source_state=None
         if cached and cached[0]==self.history.revision and cached[1]==request:
             candidate,report=cached[2],deepcopy(cached[3])
         else:
             self._validated_rich=None
             request_key=deepcopy(request)
-            candidate,report=edit_rich_pdf(self.history.current,request,self.resolver)
+            from .tagged import pin_source_analysis
+            self._analysis_source_revision_v305=self.history.revision
+            with pin_source_analysis(self.history.current):
+                candidate,report=edit_rich_pdf(self.history.current,request,self.resolver)
+                # Source capabilities also read the logical structure. Resolve
+                # them while its verified source is pinned, not after the
+                # output has become the ordinary single-revision cache entry.
+                checkpoint()
+                source_state=self.state()
+            checkpoint()
             report.update(page=request.page,operation='rich_text')
             self._mark_page_edit(report,request.page)
             if len(candidate)<=32*1024*1024:
                 self._validated_rich=(self.history.revision,request_key,candidate,deepcopy(report))
         if prepare:
+            checkpoint()
             token=uuid.uuid4().hex
             self._prepared_rich=(token,self.history.revision,candidate,report)
-            return {'token':token,'report':report,'state':self.state()}
+            return {'token':token,'report':report,'state':source_state or self.state()}
         if apply:
             self._put_preview(candidate,report)
             return self.commit()
         with self._open(candidate) as doc:
+            checkpoint()
             page=doc[request.page]
             scale=max(.1,min(float(zoom),4.))
             if page.rect.width*page.rect.height*scale*scale>16_000_000:
                 scale=(16_000_000/(page.rect.width*page.rect.height))**.5
             png=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False,colorspace=fitz.csRGB).tobytes('png')
-        return {'png':png,'report':report,'zoom':scale,'state':self.state()}
+        checkpoint()
+        return {'png':png,'report':report,'zoom':scale,'state':source_state or self.state()}
 
     def rich_commit(self,token):
         self._writable()
@@ -1056,15 +1072,22 @@ class Session:
                 evidence.append(item)
         return {'evidence':evidence}
 
-    def close(self):
-        self._cleanup_print()
-        self._close_documents()
+    def _release_rich_analysis_v305(self):
+        """Release this session's checked source, candidates and small proofs."""
         from .tagged import clear_readonly_cache
         for prepared in (getattr(self,'_validated_rich',None),getattr(self,'_prepared_rich',None)):
             if prepared:clear_readonly_cache(hashlib.sha256(prepared[2]).hexdigest())
-        self._validated_rich=self._prepared_rich=None
+        source=getattr(self,'_analysis_source_revision_v305',None)
+        if source:clear_readonly_cache(source)
+        self._analysis_source_revision_v305=None
         clear_readonly_cache(self.history.revision)
         if self._pending_digest:clear_readonly_cache(self._pending_digest)
+
+    def close(self):
+        self._cleanup_print()
+        self._close_documents()
+        self._release_rich_analysis_v305()
+        self._validated_rich=self._prepared_rich=None
         self.history.close()
 
 
@@ -1105,9 +1128,33 @@ def _install_v200_tools(command):
 
 
 def dispatch(command,payload=None):
+    """Keep cancellation control outside request values and session metadata."""
+    from .draft_control_v305 import controlled_draft, DraftCancelled
+    payload=dict(payload or {})
+    control=payload.pop('_draft_control_v305',None)
+    if control is None or command not in ('rich_preview','rich_prepare'):
+        return _dispatch_command(command,payload)
+    started=False
+    try:
+        with controlled_draft(control):
+            started=True
+            return _dispatch_command(command,payload)
+    except DraftCancelled:
+        if started and _session is not None:
+            _session._prepared_rich=None
+            _session._validated_rich=None
+        return {'draft_cancelled_v305':True}
+
+
+def _dispatch_command(command,payload=None):
     """ProcessPoolExecutor(max_workers=1, spawn) invokes this serially."""
     global _session
     payload=dict(payload or {})
+    if command=='convert_office':
+        from .shell_worker_v305 import convert_office_batch
+        # Conversion owns no session and never changes an open PDF or history.
+        payload.pop('session_id',None)
+        return convert_office_batch(**payload)
     if command=='list_recovery':
         from .recovery_v200 import list_recovery
         return list_recovery(payload.get('recovery_root'),exclude=[s.recovery_id for s in _sessions.values()])

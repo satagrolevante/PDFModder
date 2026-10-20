@@ -25,6 +25,7 @@ from .fonts import FontResolver, FontError, _font_metadata, normalized_name
 from .model import EditError, Glyph, intersects, union
 from .native_layout import _number, _compact_adjustments
 from .richmodels import RichTextRequest
+from .draft_control_v305 import checkpoint
 
 _BREAKS = '\n\u2028\t'
 _META_KEY = 'PDFModderRichText'
@@ -201,6 +202,7 @@ def selection_payload(data, page, ids, resolver=None, *, page_model=None):
     shaped = shaped_selection(data, page, ids, resolver)
     if shaped is not None:
         return shaped
+    checkpoint()
     from .form_instances_v200 import isolate_selected_forms
     from .model import EditRequest
     isolated = isolate_selected_forms(data, EditRequest(page,tuple(ids)))
@@ -493,8 +495,24 @@ def _assert_clip_paint(data, page, regions, message):
                 raise EditError(message)
 
 
+def _write_rich_transaction(doc):
+    """Write the exact candidate once, without document-wide recompression.
+
+    Level 2 removes obsolete content streams and compacts the xref table on
+    every edit. Unlike level 4 it does not search all streams for duplicates.
+    Existing stream filters stay intact; new edited content is compressed by
+    update_stream itself. Validators and history consume these exact bytes,
+    including when a preview is later accepted without another write.
+    """
+    checkpoint()
+    output = doc.tobytes(garbage=2, deflate=False, incremental=False, no_new_id=True)
+    checkpoint()
+    return output
+
+
 def edit_rich_pdf(data, request, resolver=None):
     """Compose, validate and return a new PDF; callers own preview/history."""
+    checkpoint()
     from .native_codes import verified_catalog
     from .native_font_extension import prepare_native_font
     from .validation import document_issues, assert_characters
@@ -504,6 +522,7 @@ def edit_rich_pdf(data, request, resolver=None):
     started=time.perf_counter()
     if request.revision and request.revision!=hashlib.sha256(data).hexdigest():
         raise EditError('El documento cambió desde la selección. Selecciona el texto de nuevo.')
+    checkpoint()
     canonical_runs=[dict(run,text=unicodedata.normalize('NFC',str(run.get('text','')))) for run in request.runs]
     if any(a.get('text','')!=b['text'] for a,b in zip(request.runs,canonical_runs)):
         output,report=edit_rich_pdf(data,replace(request,runs=canonical_runs),resolver)
@@ -530,6 +549,7 @@ def edit_rich_pdf(data, request, resolver=None):
         issues=document_issues(data,doc,operation="content")
         if issues:raise EditError('\n'.join(issues))
         model=extract_page(doc,request.page,data)
+        checkpoint()
         selected=model.selected(request.ids)
         if len(selected)!=len(set(request.ids)):
             raise EditError('La selección pertenece a una revisión anterior.')
@@ -573,7 +593,9 @@ def edit_rich_pdf(data, request, resolver=None):
         raise EditError('La selección tiene OCR invisible superpuesto. Corrige esa capa por separado antes de usar formato por fragmentos.')
     if any(abs(g.opacity-selected[0].opacity)>.001 for g in selected):
         raise EditError('La selección mezcla opacidades. Edita cada opacidad en una sesión independiente.')
+    checkpoint()
     reader,operations,shows,mapping=operator_glyph_map(data,request.page,model)
+    checkpoint()
     byop={s['operation']:s for s in shows}
     first=selected[0]
     first_op=mapping[first.id]['operation']
@@ -581,6 +603,7 @@ def edit_rich_pdf(data, request, resolver=None):
     first_state=_state_at(operations,first_op,resources)
     states={}; source_clips=[]; source_metric_overhang=False
     for op in {mapping[g.id]['operation'] for g in selected}:
+        checkpoint()
         state=_state_at(operations,op,resources); states[op]=state
         show=byop[op];unit=_unit(show)
         if operations[op][1] not in (b'Tj',b'TJ') or show['render_mode']!=0:
@@ -612,6 +635,7 @@ def edit_rich_pdf(data, request, resolver=None):
     from .native_codes import verified_cid_fallbacks
     expanded_runs=[];subset_sources={}
     for run in request.runs:
+        checkpoint()
         run={key:value for key,value in run.items() if key!='_complementary_source'}
         source=next((s for s in shows if s['resource']==run.get('font_resource')),None)
         text=str(run.get('text','')).replace('\r\n','\n').replace('\r','\n')
@@ -634,6 +658,7 @@ def edit_rich_pdf(data, request, resolver=None):
     request=replace(request,runs=expanded_runs)
     working=data; prepared={};tokens=[]; evidence={}; index=0
     for run_index,original_run in enumerate(request.runs):
+        checkpoint()
         run=dict(original_run)
         text=str(run.get('text','')).replace('\r\n','\n').replace('\r','\n')
         if any((unicodedata.category(c).startswith('C') and c not in _BREAKS) or unicodedata.combining(c) for c in text):
@@ -865,6 +890,7 @@ def edit_rich_pdf(data, request, resolver=None):
         flush();replacements[op]=chunks
     changed_ops=[];index_map={}
     for op,item in enumerate(operations):
+        if op % 256 == 0:checkpoint()
         index_map[op]=len(changed_ops)
         if op in remove_ops:continue
         if tagged and op in {structure.marks[request.page][mcid].start for mcid in tagged.marker_updates}:
@@ -901,15 +927,18 @@ def edit_rich_pdf(data, request, resolver=None):
             tagged.apply_updates(output_doc)
         if source_decoration:source_decoration.apply_structure(output_doc)
         if linked_text:linked_text.apply(output_doc)
-        output=full_write(output_doc)
+        output=_write_rich_transaction(output_doc)
     if metric_clip_exception:
         _assert_clip_paint(output, request.page, [union(g.bbox for g in planned)],
                            'El texto nuevo queda parcialmente oculto por el recorte original.')
+    checkpoint()
     _assert_typography(output,request.page,others+planned)
+    checkpoint()
     old_validation_shapes=old_underlines+(source_decoration.old_shapes if source_decoration else [])
     new_validation_shapes=new_underlines+(source_decoration.new_shapes if source_decoration else [])
     report=_validate(data,output,request.page,others+planned,selected+planned,old_validation_shapes,new_validation_shapes,
                      tagged.expected if tagged else None,expected_links=linked_text.expected_links if linked_text else None)
+    checkpoint()
     if linked_text:
         linked_text.validate(output)
         report['linked_text']=linked_text.report()
@@ -944,6 +973,7 @@ def edit_rich_pdf(data, request, resolver=None):
         report['removed_groups']=removed_groups
         report.setdefault('warnings',[]).append('Se han desagrupado los grupos afectados por el cambio de texto: '+', '.join(removed_groups)+'. Puedes agrupar su contenido de nuevo.')
         report['warning']=report['warnings'][-1]
+    checkpoint()
     return output,report
 
 
@@ -1085,6 +1115,7 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
     from .tagged import assert_structure
     from .validation import assert_form_preservation, assert_content_outside_widgets, assert_text_object_structure
     from .page_fingerprint import PageProof
+    checkpoint()
     assert_form_preservation(before_data, after_data)
     unchanged_pages = PageProof(before_data, after_data)
     def without_underlines(page,items):
@@ -1106,6 +1137,7 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
         if _canonical(before.get_toc(False))!=_canonical(after.get_toc(False)):
             raise EditError('La edición alteró los marcadores.')
         for i in range(before.page_count):
+            checkpoint()
             a,b=before[i],after[i]
             if i == page_number:
                 assert_content_outside_widgets(a, [g.bbox for g in changed])
@@ -1123,12 +1155,16 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
             assert_characters([(g.text,g.origin,g.font,g.size) for g in expected] if i==page_number else trace_chars(a),b)
             decorated = old_underlines+new_underlines if pixel_underlines is None else pixel_underlines
             excluded=[g.bbox for g in changed]+[item['rect'] for item in decorated] if i==page_number else []
+            checkpoint()
             pixels=assert_pixels(a,b,excluded)
             # Publish measured embedded outlines for independent renderers too:
             # their hinting may expose an accent overhang MuPDF did not paint.
             pixels['verified_ink_regions']=list(dict.fromkeys(_ink_exclusions(a,excluded)+_ink_exclusions(b,excluded)))
             reports.append(pixels)
+    checkpoint()
     structure = assert_structure(before_data,after_data,tagged_expected)
     independent = structure.reader if structure is not None else PdfReader(BytesIO(after_data),strict=True)
-    assert_text_object_structure(after_data, reader=independent, tagged_structure=structure)
+    assert_text_object_structure(after_data, reader=independent, tagged_structure=structure,
+                                 before_data=before_data, unchanged_pages=unchanged_pages)
+    checkpoint()
     return dict(verified=True,pages=reports,independent_parser='pypdf')

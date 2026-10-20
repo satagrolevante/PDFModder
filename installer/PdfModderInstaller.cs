@@ -112,6 +112,8 @@ namespace PdfModderInstallation
         const string OpenWithRegistryPath = @"Software\Classes\.pdf\OpenWithProgids";
         const string CapabilitiesRegistryPath = @"Software\PDFModder\Capabilities";
         const string RegisteredApplicationsRegistryPath = @"Software\RegisteredApplications";
+        const string ShellConvertClsid = "{2C75E6DF-A2CB-49C1-871F-B0D9E30CB26E}";
+        const string ShellCombineClsid = "{F43E797E-C01B-4C4E-929A-1C6258406FC5}";
         const uint ShellAssociationChanged = 0x08000000; // SHCNE_ASSOCCHANGED
         // A test harness can replace this field with an isolated registry root.
         // Production always starts with the current user's hive; no command-line override.
@@ -120,7 +122,7 @@ namespace PdfModderInstallation
         [DllImport("shell32.dll")]
         static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
 
-        static readonly string[] Critical = { "PDFModder.exe", "Desinstalar.exe", "_internal/shiboken6/Shiboken.pyd",
+        static readonly string[] Critical = { "PDFModder.exe", "Desinstalar.exe", "PDFModderShellActions.exe", "_internal/shiboken6/Shiboken.pyd",
             "_internal/shiboken6/shiboken6.abi3.dll", "_internal/PySide6/Qt6Core.dll",
             "_internal/PySide6/Qt6Gui.dll", "_internal/PySide6/Qt6Widgets.dll",
             "_internal/PySide6/plugins/platforms/qwindows.dll" };
@@ -526,6 +528,175 @@ namespace PdfModderInstallation
                     throw new IOException("Windows no conservó el registro de PDF Modder: " + path);
         }
 
+        static void RequireShellOwner(string path)
+        {
+            using (RegistryKey key = UserRegistryRoot.OpenSubKey(path, false))
+                if (key != null && !String.Equals(key.GetValue("PDFModderApplicationId", null) as string,
+                                                   AppId, StringComparison.Ordinal))
+                    throw new IOException("Existe un registro ajeno con el identificador de una acción de PDF Modder.");
+        }
+
+        sealed class ShellRegistrySnapshot
+        {
+            internal sealed class Value
+            {
+                internal object Data;
+                internal RegistryValueKind Kind;
+            }
+            internal readonly Dictionary<string, Value> Values = new Dictionary<string, Value>(StringComparer.OrdinalIgnoreCase);
+            internal readonly Dictionary<string, ShellRegistrySnapshot> Children = new Dictionary<string, ShellRegistrySnapshot>(StringComparer.OrdinalIgnoreCase);
+
+            internal static ShellRegistrySnapshot Read(string path)
+            {
+                using (RegistryKey key = UserRegistryRoot.OpenSubKey(path, false))
+                {
+                    if (key == null) return null;
+                    var saved = new ShellRegistrySnapshot();
+                    foreach (string name in key.GetValueNames())
+                        saved.Values.Add(name, new Value { Kind = key.GetValueKind(name),
+                            Data = key.GetValue(name, null, RegistryValueOptions.DoNotExpandEnvironmentNames) });
+                    foreach (string name in key.GetSubKeyNames()) saved.Children.Add(name, Read(path + "\\" + name));
+                    return saved;
+                }
+            }
+
+            static bool SameValue(object first, object second)
+            {
+                Array left = first as Array, right = second as Array;
+                if (left == null || right == null) return Object.Equals(first, second);
+                if (left.Length != right.Length) return false;
+                for (int index = 0; index < left.Length; index++)
+                    if (!Object.Equals(left.GetValue(index), right.GetValue(index))) return false;
+                return true;
+            }
+
+            internal static bool Same(ShellRegistrySnapshot first, ShellRegistrySnapshot second)
+            {
+                if (first == null || second == null) return first == second;
+                if (first.Values.Count != second.Values.Count || first.Children.Count != second.Children.Count) return false;
+                foreach (var value in first.Values)
+                {
+                    Value other;
+                    if (!second.Values.TryGetValue(value.Key, out other) || value.Value.Kind != other.Kind ||
+                        !SameValue(value.Value.Data, other.Data)) return false;
+                }
+                foreach (var child in first.Children)
+                {
+                    ShellRegistrySnapshot other;
+                    if (!second.Children.TryGetValue(child.Key, out other) || !Same(child.Value, other)) return false;
+                }
+                return true;
+            }
+
+            internal static void Restore(string path, ShellRegistrySnapshot saved)
+            {
+                ShellRegistrySnapshot current = Read(path);
+                if (Same(current, saved)) return;
+                if (saved == null) { UserRegistryRoot.DeleteSubKeyTree(path, false); return; }
+                using (RegistryKey key = AssociationKey(path))
+                {
+                    foreach (string name in key.GetValueNames()) if (!saved.Values.ContainsKey(name)) key.DeleteValue(name, false);
+                    foreach (var value in saved.Values) key.SetValue(value.Key, value.Value.Data, value.Value.Kind);
+                    foreach (string name in key.GetSubKeyNames()) if (!saved.Children.ContainsKey(name)) key.DeleteSubKeyTree(name, false);
+                }
+                foreach (var child in saved.Children) Restore(path + "\\" + child.Key, child.Value);
+            }
+        }
+
+        static void RegisterShellClass(string clsid, string target, string server)
+        {
+            string path = @"Software\Classes\CLSID\" + clsid;
+            using (RegistryKey key = AssociationKey(path))
+            {
+                key.SetValue("", "PDF Modder: acciones del Explorador", RegistryValueKind.String);
+                key.SetValue("PDFModderApplicationId", AppId, RegistryValueKind.String);
+                key.SetValue("PDFModderInstallRoot", target, RegistryValueKind.String);
+            }
+            using (RegistryKey key = AssociationKey(path + @"\LocalServer32"))
+                key.SetValue("", server, RegistryValueKind.String);
+            RequireRegistryString(path + @"\LocalServer32", "", server);
+        }
+
+        static void RegisterShellVerb(string extension, string name, string label,
+                                      string clsid, string target, string icon)
+        {
+            string path = @"Software\Classes\SystemFileAssociations\" + extension + @"\shell\" + name;
+            using (RegistryKey key = AssociationKey(path))
+            {
+                key.SetValue("MUIVerb", label, RegistryValueKind.String);
+                key.SetValue("Icon", icon, RegistryValueKind.String);
+                key.SetValue("MultiSelectModel", "Player", RegistryValueKind.String);
+                key.SetValue("PDFModderApplicationId", AppId, RegistryValueKind.String);
+                key.SetValue("PDFModderInstallRoot", target, RegistryValueKind.String);
+            }
+            using (RegistryKey key = AssociationKey(path + @"\command"))
+            {
+                key.SetValue("", "", RegistryValueKind.String);
+                key.SetValue("DelegateExecute", clsid, RegistryValueKind.String);
+            }
+            RequireRegistryString(path, "MUIVerb", label);
+            RequireRegistryString(path, "MultiSelectModel", "Player");
+            RequireRegistryString(path + @"\command", "DelegateExecute", clsid);
+        }
+
+        internal static bool RegisterShellActions(string target, Result result)
+        {
+            bool changed = false;
+            var snapshots = new Dictionary<string, ShellRegistrySnapshot>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                target = Absolute(target);
+                string helper = Path.Combine(target, "PDFModderShellActions.exe");
+                string exe = Path.Combine(target, "PDFModder.exe");
+                if (!File.Exists(helper) || !File.Exists(exe))
+                    throw new IOException("Falta el componente del menú contextual de Windows.");
+                string[] extensions = { ".doc", ".docx", ".pdf" };
+                foreach (string extension in extensions)
+                    snapshots.Add(@"Software\Classes\SystemFileAssociations\" + extension + @"\shell\" +
+                        (extension == ".pdf" ? "PDFModder.CombinePdf" : "PDFModder.ConvertToPdf"), null);
+                snapshots.Add(@"Software\Classes\CLSID\" + ShellConvertClsid, null);
+                snapshots.Add(@"Software\Classes\CLSID\" + ShellCombineClsid, null);
+                var paths = new List<string>(snapshots.Keys);
+                foreach (string path in paths) RequireShellOwner(path);
+                foreach (string path in paths) snapshots[path] = ShellRegistrySnapshot.Read(path);
+                changed = true;
+                string server = Quoted(helper) + " --com-server";
+                RegisterShellClass(ShellConvertClsid, target, server);
+                RegisterShellClass(ShellCombineClsid, target, server);
+                string icon = Quoted(exe) + ",0";
+                RegisterShellVerb(".doc", "PDFModder.ConvertToPdf", "Convertir a PDF", ShellConvertClsid, target, icon);
+                RegisterShellVerb(".docx", "PDFModder.ConvertToPdf", "Convertir a PDF", ShellConvertClsid, target, icon);
+                RegisterShellVerb(".pdf", "PDFModder.CombinePdf", "Combinar archivos PDF", ShellCombineClsid, target, icon);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                result.warnings.Add("La aplicación está instalada, pero Windows no pudo registrar sus menús contextuales: " + exception.Message);
+                if (changed)
+                    foreach (var snapshot in snapshots)
+                    {
+                        try
+                        {
+                            RequireShellOwner(snapshot.Key);
+                            ShellRegistrySnapshot.Restore(snapshot.Key, snapshot.Value);
+                        }
+                        catch (Exception rollback)
+                        {
+                            result.warnings.Add("No se pudo restaurar un menú contextual anterior; se conservará la instalación anterior: " + rollback.Message);
+                        }
+                    }
+                return false;
+            }
+            finally
+            {
+                if (changed)
+                {
+                    try { SHChangeNotify(ShellAssociationChanged, 0, IntPtr.Zero, IntPtr.Zero); }
+                    catch (Exception exception) { result.warnings.Add("No se pudo actualizar el menú contextual: " + exception.Message); }
+                }
+            }
+        }
+
         internal static bool RegisterPdfAssociations(string target, Result result)
         {
             bool changed = false;
@@ -754,6 +925,7 @@ namespace PdfModderInstallation
                 string installed = DisplayPath(target);
                 bool installationRegistered = RegisterInstallation(installed, result);
                 bool associationsRegistered = RegisterPdfAssociations(installed, result);
+                if (!RegisterShellActions(installed, result)) associationsRegistered = false;
                 StartMenuShortcuts(installed, result);
                 if (options.Shortcut) Shortcut(installed, result);
                 if (installationRegistered && associationsRegistered) RetirePrevious(previous, installed, result, progress);

@@ -663,6 +663,10 @@ class SavingV300Mixin:
         event.ignore()
         if self._save_transaction_v300 is not None or self._close_waiting_v300:
             return
+        conversion = getattr(self, '_office_conversion_v305', None)
+        if conversion is not None:
+            conversion['cancelled'] = True
+            conversion['channel'].invalidate()
         if self.busy:
             self._close_waiting_v300 = True
             def idle():

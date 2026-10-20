@@ -92,12 +92,22 @@ class RichEditing:
 
     def _rich_changed(self,payload):
         if not self._rich_active:return
+        # This channel reaches the occupied process immediately. A queued
+        # worker command would have to wait for the obsolete preview itself.
+        submission=getattr(self,'_draft_submission_v305',None)
+        if submission is not None and submission['request']!=payload:
+            self._draft_control_v305.invalidate()
         self._rich_serial+=1;self._rich_pending=deepcopy(payload)
         self.rich_result_message.setText('Actualizando el PDF… El borrador aún no está aplicado.')
         self._rich_timer.start(350)
 
     def _rich_accept(self,payload):
         if not self._rich_active or self._rich_accept_pending:return
+        submission=getattr(self,'_draft_submission_v305',None)
+        if submission is not None and submission['request']!=payload:
+            self._draft_control_v305.invalidate()
+        # An in-flight preview of exactly these values is allowed to finish:
+        # its fully validated bytes can satisfy the ensuing prepare instantly.
         self._rich_serial+=1;self._rich_pending=deepcopy(payload);self._rich_accept_pending=True
         self.canvas.editor.set_accepting(True)
         self.canvas.editor.toolbar.status.setText('Preparando el último borrador para aplicar…')
@@ -145,6 +155,7 @@ class RichEditing:
             self.rich_result_message.setText('Borrador no validado: '+message)
 
     def _end_rich(self):
+        self._draft_control_v305.invalidate()
         self._rich_generation+=1;self._rich_active=False;self._rich_loading=False
         self._rich_pending=None;self._rich_accept_pending=False;self._rich_timer.stop()
         self.canvas.editor.hide();self.canvas.editor.set_accepting(False);self.rich_result.hide()

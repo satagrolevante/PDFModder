@@ -8,6 +8,10 @@ from io import BytesIO
 import hashlib
 import copy
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+from .draft_control_v305 import checkpoint
 import pymupdf as fitz
 from pypdf import PdfReader
 from pypdf.generic import (ContentStream,DecodedStreamObject,IndirectObject,
@@ -239,8 +243,9 @@ class Mark:
 
 class TaggedStructure:
     def __init__(self,data):
-        self.data=data
-        self.reader=PdfReader(BytesIO(data),strict=True)
+        checkpoint()
+        self.data=bytes(data)
+        self.reader=PdfReader(BytesIO(self.data),strict=True)
         self.root=self.reader.trailer['/Root']
         self.tree=obj(self.root['/StructTreeRoot'])
         self.pages={ref(p):n for n,p in enumerate(self.reader.pages)}
@@ -259,10 +264,12 @@ class TaggedStructure:
         self.page_parent_keys={}
         self._walk(self.tree.get('/K',[]),(),ref(self.tree),None,0)
         for number,page in enumerate(self.reader.pages):
+            checkpoint()
             self._page(number,page)
         self._validate_links()
 
     def _walk(self,value,path,parent,inherited_page,depth):
+        if len(self.nodes) % 256 == 0:checkpoint()
         if depth>100 or len(self.nodes)>100000:
             fail('la estructura supera los límites de profundidad o tamaño.')
         value_raw=value
@@ -323,6 +330,7 @@ class TaggedStructure:
         resources=obj(page.get('/Resources',{}))
         properties=obj(resources.get('/Properties',{}))
         for index,(args,operator) in enumerate(ops):
+            if index % 256 == 0:checkpoint()
             if operator in (b'BMC',b'BDC'):
                 if not args or args[0]=='/OC':
                     fail('contenido de capa u operador marcado no compatible.')
@@ -379,6 +387,7 @@ class TaggedStructure:
 
     def _validate_links(self):
         for page,marks in enumerate(self.marks):
+            checkpoint()
             key=obj(self.reader.pages[page].get('/StructParents'))
             array=self.parents.get(key,[])
             if marks and not isinstance(array,(list,tuple)):
@@ -414,7 +423,8 @@ class TaggedStructure:
         if not isinstance(resources,dict):return False
         xobjects=obj(resources.get('/XObject',{}))
         if not isinstance(xobjects,dict):return False
-        for args,operator in operations:
+        for index,(args,operator) in enumerate(operations):
+            if index % 256 == 0:checkpoint()
             if operator in TEXT_OPERATORS or operator not in ARTIFACT_GRAPHICS_OPERATORS:
                 return False
             if operator in (b'BMC',b'BDC'):
@@ -501,7 +511,12 @@ class TaggedStructure:
         return leaf_path
 
     def semantic(self):
+        checkpoint()
+        calls=0
         def canonical(value,seen=None):
+            nonlocal calls
+            calls+=1
+            if calls % 512 == 0:checkpoint()
             seen=set() if seen is None else seen
             identity=ref(value)
             if isinstance(value,IndirectObject):
@@ -534,11 +549,13 @@ class TaggedStructure:
         Text cursor advances, matrices and encodings are untouched. Probe bytes
         are never exported. Character count/text/origins must match the source.
         """
+        checkpoint()
         markers={None:1}
         for mcid in self.marks[page]:markers[mcid]=len(markers)+1
         if len(markers)>65535:fail('demasiados grupos de contenido en una página.')
         ops=[]
-        for (args,operator),mcid in zip(self.operations[page],self.contexts[page]):
+        for index,((args,operator),mcid) in enumerate(zip(self.operations[page],self.contexts[page])):
+            if index % 256 == 0:checkpoint()
             if operator in SHOW:
                 value=markers[mcid]
                 rgb=((value>>16)&255,(value>>8)&255,value&255)
@@ -554,7 +571,8 @@ class TaggedStructure:
         if len(probed)!=len(model.glyphs):fail('no se puede relacionar cada carácter con su etiqueta.')
         inverse={value:key for key,value in markers.items()}
         result={}
-        for g,(text,point,color) in zip(model.glyphs,probed):
+        for index,(g,(text,point,color)) in enumerate(zip(model.glyphs,probed)):
+            if index % 256 == 0:checkpoint()
             if text!=g.text or any(abs(a-b)>.035 for a,b in zip(point,g.origin)) or len(color)!=3:
                 fail('el sondeo de etiquetas no conserva la geometría del texto.')
             value=(round(color[0]*255)<<16)|(round(color[1]*255)<<8)|round(color[2]*255)
@@ -564,20 +582,35 @@ class TaggedStructure:
 
 
 def analyze(data):
+    checkpoint()
     reader=PdfReader(BytesIO(data),strict=True)
     if not reader.trailer['/Root'].get('/StructTreeRoot'):
         return None
     return TaggedStructure(data)
 
 
-_READONLY_CACHE_BUDGET = 128 * 1024 * 1024
+# GC2 preserves resource aliases instead of deduplicating them. The checked
+# candidate can therefore be slightly larger than its source. Keep both
+# eligible for reuse without retaining more than one source and one candidate.
+_READONLY_CACHE_BUDGET = 160 * 1024 * 1024
 _readonly_cache = None
 _readonly_verdict = None
+# One session source may survive output validation. This opt-in is used only
+# inside the serial PDF worker; it does not authorize mutable planners to share
+# a graph. TaggedAddition and other writers continue to call analyze().
+_pinned_source_cache = None
+_active_source_pin = ContextVar('pdfmodder_source_analysis_v305', default=None)
 
 
 def clear_readonly_cache(revision=None):
     """Release checked graphs, optionally only for one SHA-256 revision."""
-    global _readonly_cache, _readonly_verdict
+    global _readonly_cache, _readonly_verdict, _pinned_source_cache
+    from .page_fingerprint import clear_page_proof_cache
+    clear_page_proof_cache(revision)
+    from .validation import clear_text_scope_cache
+    clear_text_scope_cache()
+    if _pinned_source_cache is not None and (revision is None or _pinned_source_cache[0][0].hex() == revision):
+        _pinned_source_cache = None
     if _readonly_cache is not None and (revision is None or _readonly_cache[0][0].hex() == revision):
         _readonly_cache = None
     if _readonly_verdict is not None and (revision is None or _readonly_verdict[0][0].hex() == revision):
@@ -589,8 +622,10 @@ def _readonly_size(structure):
     if structure is None:
         return 0
     # Include the source plus its reader buffer, parsed PDF objects, structural
-    # nodes, content operands and per-operation contexts. Never retain several
-    # large document revisions to make an advisory check faster.
+    # nodes, content operands and per-operation contexts. This eligibility
+    # estimate is not an RSS cap: pypdf can resolve a few more objects lazily.
+    # The worker pins at most one source and keeps one latest candidate; it
+    # never accumulates graphs for a succession of previews or document tabs.
     return (2 * len(structure.data) + 1024 * len(structure.nodes)
             + 512 * sum(len(ops) for ops in structure.operations)
             + 1024 * len(structure.reader.resolved_objects)
@@ -607,8 +642,12 @@ def analyze_readonly(data):
     later in-place change cannot contaminate this revision's cached evidence.
     """
     global _readonly_cache, _readonly_verdict
+    checkpoint()
     source = bytes(data)
     key = (hashlib.sha256(source).digest(), len(source))
+    pin = _active_source_pin.get()
+    if pin is not None and pin is _pinned_source_cache and pin[0] == key:
+        return pin[1]
     if _readonly_cache is not None and _readonly_cache[0] == key:
         _, structure, error = _readonly_cache
         if error is not None:
@@ -622,15 +661,54 @@ def analyze_readonly(data):
         # Retain only the diagnostic, never an exception/traceback that keeps
         # the rejected document and partially parsed graph alive.
         message = str(exc)
+        checkpoint()
         if len(message.encode('utf-8')) <= 64 * 1024:
             _readonly_verdict = (key, False, message)
         if len(message.encode('utf-8')) <= _READONLY_CACHE_BUDGET:
             _readonly_cache = (key, None, message)
         raise
+    checkpoint()
     _readonly_verdict = (key, structure is not None, None)
     if _readonly_size(structure) <= _READONLY_CACHE_BUDGET:
         _readonly_cache = (key, structure, None)
     return structure
+
+
+@contextmanager
+def pin_source_analysis(data):
+    """Keep one verified immutable revision available during serial drafts.
+
+    This internal worker scope pins the existing read-only graph, never a
+    writable planning model or a request's expected semantic snapshot. Outputs
+    are parsed independently and at most one latest candidate is retained for
+    committing without reparsing. Together the two graphs are bounded by twice
+    the existing per-graph eligibility estimate. Lazy reader resolution can
+    add objects later, so this is not a process-memory cap. A new source
+    revision replaces the old pin; an over-budget source follows the ordinary
+    complete-analysis path instead.
+    """
+    global _pinned_source_cache
+    checkpoint()
+    source = bytes(data)
+    key = (hashlib.sha256(source).digest(), len(source))
+    pin = _pinned_source_cache
+    if pin is None or pin[0] != key:
+        _pinned_source_cache = None
+        structure = analyze_readonly(source)
+        if _readonly_size(structure) <= _READONLY_CACHE_BUDGET:
+            checkpoint()
+            pin = (key, structure, None)
+            _pinned_source_cache = pin
+        else:
+            pin = None
+    token = _active_source_pin.set(pin)
+    try:
+        checkpoint()
+        yield
+    finally:
+        _active_source_pin.reset(token)
+        # Keep the latest candidate for a cheap commit. The pin is a single
+        # global slot, not a per-tab cache; session release clears both slots.
 
 
 def validate_tagged(data):
@@ -717,7 +795,9 @@ class TaggedEdit:
             self.planned[mcid]=actual
         if native_inplace:
             self._check_native_nested_scopes()
-        self.expected=copy.deepcopy(structure.semantic())
+        # semantic() creates fresh primitive containers; the planner owns this
+        # snapshot and may update it without copying the entire tree twice.
+        self.expected=structure.semantic()
         self.actual_updates={}
         self.marker_updates={}
         self.layout_updates={}
@@ -740,12 +820,14 @@ class TaggedEdit:
         # Append in owner insertion order, including cross-page contents and
         # the empty root path, so ActualText checks retain their exact scope.
         contents_by_path={}
-        for key,owner in structure.owners.items():
+        for index,(key,owner) in enumerate(structure.owners.items()):
+            if index % 256 == 0:checkpoint()
             for depth in range(len(owner)+1):
                 path=owner[:depth]
                 if path in structure.nodes:
                     contents_by_path.setdefault(path,[]).append(key)
-        for path,node in structure.nodes.items():
+        for index,(path,node) in enumerate(structure.nodes.items()):
+            if index % 256 == 0:checkpoint()
             contents=contents_by_path.get(path,())
             relevant=[mcid for p,mcid in contents if p==page and mcid in affected]
             if not relevant:continue
@@ -998,6 +1080,7 @@ class TaggedEdit:
         unchanged_pages=PageProof(self.structure.data,after)
         with fitz.open(stream=after,filetype='pdf') as doc,fitz.open(stream=self.structure.data,filetype='pdf') as source:
             for page in range(doc.page_count):
+                checkpoint()
                 # Structural semantics were checked globally above. Identical
                 # content and resources on another page also prove unchanged
                 # decoded glyphs and their marked-content ownership there.
