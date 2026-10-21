@@ -1034,15 +1034,19 @@ class Session:
             password = None
         return {'path':output,'signature':report,'state':self.state()}
 
-    def search(self,text):
-        if not text:
-            return {'matches':[]}
-        matches=[]
-        with self._open(self.history.current) as doc:
-            for page in doc:
-                for rect in page.search_for(text):
-                    matches.append({'page':page.number,'rect':tuple(rect)})
-        return {'matches':matches}
+    def search(self,text,case_sensitive=False,whole_word=False,original=False):
+        from .search_v306 import search_document
+        revision=self._revision(original)
+        doc=self._document(self._view_source(original),revision)
+        matches=search_document(doc,text,case_sensitive=case_sensitive,whole_word=whole_word)
+        if original:
+            destinations={}
+            for number,key in enumerate(self._page_keys()):
+                if key>=0:destinations.setdefault(key,[]).append(number)
+            matches=[dict(match,page=number) for match in matches
+                     for number in destinations.get(match['page'],[])]
+            matches.sort(key=lambda match:match['page'])
+        return {'matches':matches,'search_revision':revision,'original':bool(original)}
 
     def associate(self,name,path):
         self._require_editing()
@@ -1131,6 +1135,13 @@ def dispatch(command,payload=None):
     """Keep cancellation control outside request values and session metadata."""
     from .draft_control_v305 import controlled_draft, DraftCancelled
     payload=dict(payload or {})
+    search_control=payload.pop('_search_control_v306',None)
+    if command=='search' and search_control is not None:
+        try:
+            with controlled_draft(search_control):
+                return _dispatch_command(command,payload)
+        except DraftCancelled:
+            return {'search_cancelled_v306':True}
     control=payload.pop('_draft_control_v305',None)
     if control is None or command not in ('rich_preview','rich_prepare'):
         return _dispatch_command(command,payload)
@@ -1323,7 +1334,7 @@ def _dispatch_command(command,payload=None):
     if command=='save': return _session.save(**payload)
     if command=='sign_pdf': return _session.sign_pdf(**payload)
     if command=='signature_preview': return _session.signature_preview(**payload)
-    if command=='search': return _session.search(payload['text'])
+    if command=='search': return _session.search(**payload)
     if command=='associate': return _session.associate(**payload)
     if command=='font_evidence': return _session.font_evidence(**payload)
     if command=='close':

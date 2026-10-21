@@ -1,8 +1,25 @@
-# PDF Modder 3.0.5
+# PDF Modder 3.0.6
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Búsqueda 3.0.6
+
+La lupa y **Ctrl+F** abren un panel con el total de coincidencias, la posición
+actual, flechas de anterior y siguiente y una lista de frases con su página.
+Pulsar una frase lleva al punto exacto del resultado. El resultado activo aparece
+en naranja y las demás coincidencias en amarillo. **F3** y **Mayús+F3** recorren
+la lista sin volver a analizar el PDF. Incluye opciones de mayúsculas y palabra
+completa, búsqueda entre líneas y cancelación de consultas sustituidas.
+[Uso y comprobaciones](docs/NOTAS_3.0.6.md).
+
+Las barras de desplazamiento muestran el cursor de flecha. Al actualizar, el
+instalador retira las instalaciones anteriores verificadas y los instaladores
+antiguos reconocidos de su caché, conservando los archivos personales.
+
+Descarga la [versión 3.0.6](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.6)
+o utiliza **Buscar actualizaciones** desde la app.
 
 ## Rendimiento de edición 3.0.5
 
@@ -13,8 +30,8 @@ cuando se demuestra su identidad. La escritura evita recomprimir y buscar objeto
 duplicados en todo el PDF para cada cambio. Se aplica y guarda la misma revisión
 validada. [Alcance y comprobaciones](docs/NOTAS_3.0.5.md).
 
-El instalador de esta revisión se publica en [GitHub Releases](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.5)
-después de sus comprobaciones de Windows. La app lo obtiene mediante **Buscar actualizaciones**.
+Estas mejoras se incluyen en la versión actual, disponible en
+[GitHub Releases](https://github.com/satagrolevante/PDFModder/releases/latest).
 
 ## Menú contextual de Windows
 

@@ -75,6 +75,10 @@ class PdfCanvas(QGraphicsView):
         self.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
+        # Tool cursors belong to the PDF viewport. The surrounding scrollbars
+        # must never inherit a text, move or signature cursor from this view.
+        self.verticalScrollBar().setCursor(Qt.ArrowCursor)
+        self.horizontalScrollBar().setCursor(Qt.ArrowCursor)
         self.model = None
         self.zoom = 1.
         self.ids = []
@@ -121,6 +125,7 @@ class PdfCanvas(QGraphicsView):
         self.changes = []
         self.highlight_changes = False
         self.search_rects = []
+        self.active_search_rects = []
         self.overlays = []
         self._press = None
         self._press_scene = None
@@ -575,6 +580,15 @@ class PdfCanvas(QGraphicsView):
                 self._draw_rotation_handle(rect)
             if self._image_rotate_angle is not None:
                 self._draw_rotation_gesture(rect, self._image_rotate_angle)
+        # The current result remains identifiable among all yellow matches and
+        # text selections. These are display items, never editable PDF objects.
+        for rect in self.active_search_rects:
+            pen = QPen(QColor('#b94b00'), 2.)
+            pen.setCosmetic(True)
+            item = self.scene().addRect(self.scene_rect(rect), pen, QBrush(QColor(255, 166, 0, 120)))
+            item.setZValue(3)
+            item.setAcceptedMouseButtons(Qt.NoButton)
+            self.overlays.append(item)
 
     def mousePressEvent(self, event):
         self._signature_rectangle_ignore_release=False

@@ -33,6 +33,10 @@ class ContinuousReader(QGraphicsView):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
         self.setCursor(Qt.IBeamCursor)
+        # The viewer cursor is inherited by child widgets unless they override
+        # it. Scrollbars remain navigation controls in every interaction mode.
+        self.verticalScrollBar().setCursor(Qt.ArrowCursor)
+        self.horizontalScrollBar().setCursor(Qt.ArrowCursor)
         self.zoom = 1.25
         self._geometries = []
         self._rects = []
@@ -45,6 +49,8 @@ class ContinuousReader(QGraphicsView):
         self._overlays = []
         self._search_overlays = []
         self._search_matches = []
+        self._search_by_page = {}
+        self._active_search_index = -1
         self._pending_reveal = None
         self._anchor = self._focus = None
         self._gesture_anchor = None
@@ -81,6 +87,8 @@ class ContinuousReader(QGraphicsView):
         self._overlays.clear()
         self._search_overlays.clear()
         self._search_matches = []
+        self._search_by_page = {}
+        self._active_search_index = -1
         self._pending_reveal = None
         self.scene().clear()
         self._placeholders = {}
@@ -404,6 +412,18 @@ class ContinuousReader(QGraphicsView):
 
     def set_search_matches(self, matches):
         self._search_matches = list(matches or [])
+        self._search_by_page = {}
+        for index, match in enumerate(self._search_matches):
+            self._search_by_page.setdefault(match['page'], []).append((index, match))
+        self._active_search_index = -1
+        self._draw_search()
+
+    def set_active_search_match(self, index):
+        """Emphasize a result by its document-wide index, without changing selection."""
+        index = index if isinstance(index, int) and 0 <= index < len(self._search_matches) else -1
+        if self._active_search_index == index:
+            return
+        self._active_search_index = index
         self._draw_search()
 
     def reveal_rect(self, number, rect):
@@ -426,20 +446,25 @@ class ContinuousReader(QGraphicsView):
             self.scene().removeItem(item)
         self._search_overlays = []
         visible = set(self.visible_page_numbers())
-        for match in self._search_matches:
-            number = match["page"]
+        for number in visible:
             model = self._models.get(number)
-            if number not in visible or model is None:
+            if model is None:
                 continue
-            x0, y0, x1, y1 = transform_rect(match["rect"], model.rotation_matrix)
             page = self._rects[number]
-            item = self.scene().addRect(QRectF(page.left() + x0 * self.zoom,
-                                               page.top() + y0 * self.zoom,
-                                               (x1 - x0) * self.zoom,
-                                               (y1 - y0) * self.zoom),
-                                        QPen(Qt.NoPen), QColor(255, 193, 7, 100))
-            item.setZValue(1)
-            self._search_overlays.append(item)
+            for index, match in self._search_by_page.get(number, ()):
+                active = index == self._active_search_index
+                pen = QPen(QColor('#b94b00'), 2.) if active else QPen(Qt.NoPen)
+                pen.setCosmetic(True)
+                fill = QColor(255, 166, 0, 120) if active else QColor(255, 219, 0, 85)
+                for rect in match.get('rects') or [match['rect']]:
+                    x0, y0, x1, y1 = transform_rect(rect, model.rotation_matrix)
+                    item = self.scene().addRect(QRectF(page.left() + x0 * self.zoom,
+                                                       page.top() + y0 * self.zoom,
+                                                       (x1 - x0) * self.zoom,
+                                                       (y1 - y0) * self.zoom), pen, fill)
+                    item.setZValue(3 if active else 1)
+                    item.setAcceptedMouseButtons(Qt.NoButton)
+                    self._search_overlays.append(item)
 
     def _word(self, endpoint):
         model = self._models[endpoint["page"]]

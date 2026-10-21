@@ -77,6 +77,9 @@ namespace PdfModderInstallation
         public string directory, backup, error, diagnostic;
         public string previous_directory, previous_version, uninstall_report;
         public bool previous_removed;
+        public List<string> removed_versions = new List<string>();
+        public int removed_installations, cached_installers_removed;
+        public long reclaimed_bytes;
         public int files;
         public double elapsed_seconds;
         public List<string> warnings = new List<string>();
@@ -118,6 +121,8 @@ namespace PdfModderInstallation
         // A test harness can replace this field with an isolated registry root.
         // Production always starts with the current user's hive; no command-line override.
         internal static RegistryKey UserRegistryRoot = Registry.CurrentUser;
+        internal static string PreviousInstallationsRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "PDFModder");
+        internal static string UpdateCacheRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PDFModder", "updates");
 
         [DllImport("shell32.dll")]
         static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
@@ -279,6 +284,21 @@ namespace PdfModderInstallation
             catch { return false; }
         }
 
+        // Published installer versions use strict major.minor.patch SemVer.
+        // Ambiguous, partial or prerelease labels are kept rather than guessed.
+        static bool StableVersion(string value, out System.Version version)
+        {
+            version = null;
+            return value != null && Regex.IsMatch(value, @"\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\z", RegexOptions.CultureInvariant) &&
+                System.Version.TryParse(value, out version);
+        }
+
+        static bool OlderVersion(string value, out System.Version version)
+        {
+            System.Version current;
+            return StableVersion(value, out version) && StableVersion(Version, out current) && version < current;
+        }
+
         static PreviousInstallation Previous(string requested, string target)
         {
             string directory = Absolute(requested), destination = Absolute(target);
@@ -289,10 +309,9 @@ namespace PdfModderInstallation
             if (!File.Exists(marker) || new FileInfo(marker).Length > 32768 || !File.Exists(manifest) || new FileInfo(manifest).Length > 67108864)
                 throw new IOException("La copia anterior no tiene marcador e inventario válidos; se conserva.");
             var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(marker, Encoding.UTF8));
-            object id, savedVersion; System.Version previousVersion, currentVersion;
+            object id, savedVersion; System.Version previousVersion;
             if (data == null || !data.TryGetValue("application_id", out id) || !AppId.Equals(id as string) ||
-                !data.TryGetValue("version", out savedVersion) || !System.Version.TryParse(savedVersion as string, out previousVersion) ||
-                !System.Version.TryParse(Version, out currentVersion) || previousVersion >= currentVersion)
+                !data.TryGetValue("version", out savedVersion) || !OlderVersion(savedVersion as string, out previousVersion))
                 throw new IOException("La copia indicada no es una versión anterior reconocida de PDF Modder; se conserva.");
             string uninstaller = Path.Combine(directory, "Desinstalar.exe"), expectedHash = null;
             long expectedSize = -1;
@@ -317,31 +336,142 @@ namespace PdfModderInstallation
             return new PreviousInstallation { Directory = directory, Version = savedVersion as string, UninstallerHash = expectedHash };
         }
 
-        internal static string DiscoverPrevious(string target)
+        internal static List<PreviousInstallation> DiscoverPreviousInstallations(string target, string explicitPrevious)
         {
-            string best = null; System.Version highest = new System.Version(0, 0, 0);
-            using (RegistryKey root = UserRegistryRoot.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall", false))
+            var found = new List<PreviousInstallation>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!String.IsNullOrEmpty(explicitPrevious))
             {
-                if (root == null) return null;
-                foreach (string name in root.GetSubKeyNames())
+                PreviousInstallation previous = Previous(explicitPrevious, target);
+                seen.Add(previous.Directory); found.Add(previous);
+            }
+            try
+            {
+                using (RegistryKey root = UserRegistryRoot.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall", false))
                 {
-                    if (!name.StartsWith("PDFModder-", StringComparison.Ordinal)) continue;
-                    try
+                    if (root != null) foreach (string name in root.GetSubKeyNames())
                     {
-                        using (RegistryKey key = root.OpenSubKey(name, false))
+                        if (!name.StartsWith("PDFModder-", StringComparison.OrdinalIgnoreCase)) continue;
+                        try
                         {
-                            if (key == null || !AppId.Equals(Convert.ToString(key.GetValue("PDFModderApplicationId", null)))) continue;
-                            string location = Convert.ToString(key.GetValue("InstallLocation", null));
-                            PreviousInstallation previous = Previous(location, target);
-                            if (!previous.Version.Equals(Convert.ToString(key.GetValue("DisplayVersion", null)), StringComparison.Ordinal)) continue;
-                            var version = new System.Version(previous.Version);
-                            if (version > highest) { highest = version; best = previous.Directory; }
+                            using (RegistryKey key = root.OpenSubKey(name, false))
+                            {
+                                if (key == null || !AppId.Equals(Convert.ToString(key.GetValue("PDFModderApplicationId", null)))) continue;
+                                PreviousInstallation previous = Previous(Convert.ToString(key.GetValue("InstallLocation", null)), target);
+                                if (!previous.Version.Equals(Convert.ToString(key.GetValue("DisplayVersion", null)), StringComparison.Ordinal)) continue;
+                                if (seen.Add(previous.Directory)) found.Add(previous);
+                            }
                         }
+                        catch (Exception) { /* Unrecognized entries are never acted on. */ }
                     }
-                    catch (Exception) { /* Unrecognized entries are never acted on. */ }
                 }
             }
-            return best;
+            catch (Exception) { /* Discovery failure never authorizes broader cleanup. */ }
+            try
+            {
+                // Only this application's default parent is searched, one level deep.
+                // Names (including .copia-* names) never establish ownership.
+                string parent = Absolute(PreviousInstallationsRoot); NoLinks(parent);
+                if (System.IO.Directory.Exists(parent)) foreach (string directory in System.IO.Directory.GetDirectories(parent))
+                {
+                    try
+                    {
+                        if (seen.Contains(Absolute(directory)) || !File.Exists(Path.Combine(directory, Marker))) continue;
+                        PreviousInstallation previous = Previous(directory, target);
+                        if (seen.Add(previous.Directory)) found.Add(previous);
+                    }
+                    catch (Exception) { /* Foreign, modified, current and newer copies are kept. */ }
+                }
+            }
+            catch (Exception) { /* An inaccessible parent is left untouched. */ }
+            found.Sort(delegate(PreviousInstallation left, PreviousInstallation right) {
+                int order = new System.Version(right.Version).CompareTo(new System.Version(left.Version));
+                return order == 0 ? StringComparer.OrdinalIgnoreCase.Compare(left.Directory, right.Directory) : order;
+            });
+            return found;
+        }
+
+        internal static string DiscoverPrevious(string target)
+        {
+            List<PreviousInstallation> previous = DiscoverPreviousInstallations(target, null);
+            return previous.Count == 0 ? null : previous[0].Directory;
+        }
+
+        static Dictionary<string, long> CaptureOwnedFileSizes(PreviousInstallation previous)
+        {
+            var sizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            foreach (string row in File.ReadAllLines(Path.Combine(previous.Directory, FileManifest), Encoding.UTF8))
+            {
+                string[] parts = row.Split('\t');
+                if (parts.Length != 3 || String.IsNullOrWhiteSpace(parts[2]) || Path.IsPathRooted(parts[2]) ||
+                    parts[2].IndexOf('\\') >= 0 || parts[2].IndexOf(':') >= 0) continue;
+                bool valid = true;
+                foreach (string part in parts[2].Split('/')) if (part == "" || part == "." || part == "..") valid = false;
+                if (!valid) continue;
+                string path = Path.GetFullPath(Path.Combine(previous.Directory, parts[2].Replace('/', Path.DirectorySeparatorChar)));
+                if (!Inside(path, previous.Directory)) continue;
+                NoLinks(path);
+                if (File.Exists(path)) sizes[path] = new FileInfo(path).Length;
+            }
+            foreach (string name in new[] { Marker, FileManifest })
+            {
+                string path = Path.Combine(previous.Directory, name);
+                if (File.Exists(path)) sizes[path] = new FileInfo(path).Length;
+            }
+            return sizes;
+        }
+
+        static void AccountRemovedFiles(Dictionary<string, long> before, Result result)
+        {
+            if (before == null) return;
+            foreach (KeyValuePair<string, long> item in before)
+            {
+                try
+                {
+                    NoLinks(item.Key);
+                    if (!File.Exists(item.Key) && !System.IO.Directory.Exists(item.Key) && Int64.MaxValue - result.reclaimed_bytes >= item.Value)
+                        result.reclaimed_bytes += item.Value;
+                }
+                catch (Exception) { /* Uncertain bytes are not claimed as recovered. */ }
+            }
+        }
+
+        internal static void CleanupCachedInstallers(Result result)
+        {
+            try
+            {
+                string folder = Absolute(UpdateCacheRoot); NoLinks(folder);
+                if (!System.IO.Directory.Exists(folder)) return;
+                foreach (string path in System.IO.Directory.GetFiles(folder, "PDFModder-v*-Instalar.exe", SearchOption.TopDirectoryOnly))
+                {
+                    try
+                    {
+                        Match match = Regex.Match(Path.GetFileName(path), @"\APDFModder-v(?<version>[0-9.]+)-Instalar\.exe\z", RegexOptions.CultureInvariant);
+                        System.Version version;
+                        if (!match.Success || !OlderVersion(match.Groups["version"].Value, out version) || SameLocation(path, Application.ExecutablePath)) continue;
+                        NoLinks(path);
+                        var information = new FileInfo(path);
+                        if ((information.Attributes & (FileAttributes.ReadOnly | FileAttributes.Directory)) != 0) continue;
+                        // A matching filename alone never authorizes deletion. Require the
+                        // original Windows installer product, title and matching PE version.
+                        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                        {
+                            if (stream.Length < 64 || stream.ReadByte() != 'M' || stream.ReadByte() != 'Z') continue;
+                            FileVersionInfo metadata = FileVersionInfo.GetVersionInfo(path);
+                            if (!"PDF Modder".Equals(metadata.ProductName, StringComparison.Ordinal) ||
+                                !("Instalar PDF Modder " + match.Groups["version"].Value).Equals(metadata.FileDescription, StringComparison.Ordinal) ||
+                                metadata.FileMajorPart != version.Major || metadata.FileMinorPart != version.Minor || metadata.FileBuildPart != version.Build ||
+                                metadata.ProductMajorPart != version.Major || metadata.ProductMinorPart != version.Minor || metadata.ProductBuildPart != version.Build) continue;
+                        }
+                        long size = information.Length;
+                        NoLinks(path); File.Delete(path);
+                        result.cached_installers_removed++;
+                        if (Int64.MaxValue - result.reclaimed_bytes >= size) result.reclaimed_bytes += size;
+                    }
+                    catch (Exception ex) { result.warnings.Add("Se conservó un instalador anterior en " + path + ": " + ex.Message); }
+                }
+            }
+            catch (Exception ex) { result.warnings.Add("No se limpió la caché de instaladores anteriores: " + ex.Message); }
         }
 
         static void WaitForPrevious(Options options, PreviousInstallation previous)
@@ -384,16 +514,19 @@ namespace PdfModderInstallation
         static void RetirePrevious(PreviousInstallation previous, string installed, Result result, Action<int, string> progress)
         {
             if (previous == null) return;
-            result.previous_directory = previous.Directory; result.previous_version = previous.Version;
+            if (result.previous_directory == null) { result.previous_directory = previous.Directory; result.previous_version = previous.Version; }
+            Dictionary<string, long> before = null;
+            string report = null;
             try
             {
                 PreviousInstallation rechecked = Previous(previous.Directory, installed);
                 if (!previous.UninstallerHash.Equals(rechecked.UninstallerHash, StringComparison.Ordinal))
                     throw new IOException("El desinstalador anterior cambió durante la instalación.");
+                before = CaptureOwnedFileSizes(rechecked);
                 progress(97, "Retirando PDF Modder " + previous.Version + "; se conservan sus documentos y archivos modificados…");
-                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PDFModder", "updates");
+                string folder = Absolute(UpdateCacheRoot);
                 NoLinks(folder); System.IO.Directory.CreateDirectory(folder);
-                string report = Path.Combine(folder, "retirada-" + Guid.NewGuid().ToString("N") + ".json");
+                report = Path.Combine(folder, "retirada-" + Guid.NewGuid().ToString("N") + ".json");
                 result.uninstall_report = report;
                 var start = new ProcessStartInfo(Path.Combine(previous.Directory, "Desinstalar.exe"),
                     "--silent --dir " + Quoted(previous.Directory) + " --report " + Quoted(report))
@@ -423,6 +556,8 @@ namespace PdfModderInstallation
                 if (data == null || !data.ContainsKey("ok") || !(data["ok"] is bool) || !(bool)data["ok"])
                     throw new IOException(data != null && data.ContainsKey("error") ? Convert.ToString(data["error"]) : "No se recibió el informe final de retirada.");
                 result.previous_removed = true;
+                result.removed_installations++;
+                if (!result.removed_versions.Contains(previous.Version)) result.removed_versions.Add(previous.Version);
                 if (data.ContainsKey("preserved") && Convert.ToInt32(data["preserved"], CultureInfo.InvariantCulture) > 0)
                     result.warnings.Add("Se retiró la versión anterior y se conservaron documentos o archivos modificados en " + previous.Directory + ".");
                 if (data.ContainsKey("warnings"))
@@ -433,7 +568,65 @@ namespace PdfModderInstallation
             }
             catch (Exception ex)
             {
-                result.warnings.Add("La nueva versión está instalada. La retirada de " + previous.Version + " no terminó: " + ex.Message + " Revise " + (result.uninstall_report ?? previous.Directory) + ".");
+                result.warnings.Add("La nueva versión está instalada. La retirada de " + previous.Version + " no terminó: " + ex.Message + " Revise " + (report ?? previous.Directory) + ".");
+            }
+            finally { AccountRemovedFiles(before, result); }
+        }
+
+        static void CleanupBackupRegistration(PreviousInstallation previous, string installed, Result result)
+        {
+            string path = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PDFModder-" + previous.Version;
+            try
+            {
+                using (RegistryKey key = UserRegistryRoot.OpenSubKey(path, false))
+                {
+                    if (key == null || !AppId.Equals(Convert.ToString(key.GetValue("PDFModderApplicationId", null))) ||
+                        !previous.Version.Equals(Convert.ToString(key.GetValue("DisplayVersion", null)), StringComparison.Ordinal) ||
+                        !SameLocation(Convert.ToString(key.GetValue("InstallLocation", null)), installed)) return;
+                    // An older installation moved aside from this exact destination
+                    // leaves its registration pointing at the newly installed copy.
+                    // Remove it only when both that command and the new marker agree.
+                    string expected = Quoted(Path.Combine(installed, "Desinstalar.exe")) + " --dir " + Quoted(installed);
+                    string marker = Path.Combine(installed, Marker); NoLinks(marker);
+                    var current = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(marker, Encoding.UTF8));
+                    object application, version;
+                    if (!expected.Equals(Convert.ToString(key.GetValue("UninstallString", null)), StringComparison.OrdinalIgnoreCase) ||
+                        current == null || !current.TryGetValue("application_id", out application) || !AppId.Equals(application as string) ||
+                        !current.TryGetValue("version", out version) || !Version.Equals(version as string, StringComparison.Ordinal))
+                        throw new IOException("La entrada antigua cambió o no se pudo confirmar la nueva instalación.");
+                }
+                UserRegistryRoot.DeleteSubKeyTree(path, false);
+            }
+            catch (Exception ex) { result.warnings.Add("Se conservó una entrada de desinstalación antigua de " + previous.Version + ": " + ex.Message); }
+        }
+
+        internal static void CleanupPreviousInstallations(Options options, List<PreviousInstallation> previousInstallations,
+            string installed, Result result, bool installationRegistered, bool associationsRegistered, Action<int, string> progress)
+        {
+            if (!options.RemovePrevious) return;
+            if (installationRegistered && associationsRegistered)
+            {
+                if (result.backup != null)
+                {
+                    try { previousInstallations.Add(Previous(DisplayPath(result.backup), installed)); }
+                    catch (Exception) { /* Same/newer versions and unverified backups are retained. */ }
+                }
+                var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (PreviousInstallation previous in previousInstallations)
+                {
+                    if (!visited.Add(previous.Directory)) continue;
+                    int removed = result.removed_installations;
+                    RetirePrevious(previous, installed, result, progress);
+                    if (result.removed_installations > removed && result.backup != null && SameLocation(previous.Directory, DisplayPath(result.backup)))
+                        CleanupBackupRegistration(previous, installed, result);
+                }
+                CleanupCachedInstallers(result);
+                if (result.backup != null && !System.IO.Directory.Exists(result.backup)) result.backup = null;
+            }
+            else if (previousInstallations.Count > 0)
+            {
+                result.previous_directory = previousInstallations[0].Directory; result.previous_version = previousInstallations[0].Version;
+                result.warnings.Add("Se conservaron las versiones anteriores porque no se completó el registro de la nueva instalación en Windows.");
             }
         }
 
@@ -888,12 +1081,12 @@ namespace PdfModderInstallation
             {
                 string target = Extended(Absolute(options.Directory)); result.directory = DisplayPath(target);
                 ValidateDestination(target);
-                PreviousInstallation previous = null;
+                var previousInstallations = options.RemovePrevious ? DiscoverPreviousInstallations(result.directory, options.PreviousDirectory) : new List<PreviousInstallation>();
                 if (!String.IsNullOrEmpty(options.PreviousDirectory) && options.RemovePrevious)
                 {
-                    previous = Previous(options.PreviousDirectory, result.directory);
-                    progress(0, "Esperando a que termine PDF Modder " + previous.Version + "…");
-                    WaitForPrevious(options, previous);
+                    PreviousInstallation active = Previous(options.PreviousDirectory, result.directory);
+                    progress(0, "Esperando a que termine PDF Modder " + active.Version + "…");
+                    WaitForPrevious(options, active);
                 }
                 parent = Path.GetDirectoryName(target);
                 System.IO.Directory.CreateDirectory(parent);
@@ -928,12 +1121,7 @@ namespace PdfModderInstallation
                 if (!RegisterShellActions(installed, result)) associationsRegistered = false;
                 StartMenuShortcuts(installed, result);
                 if (options.Shortcut) Shortcut(installed, result);
-                if (installationRegistered && associationsRegistered) RetirePrevious(previous, installed, result, progress);
-                else if (previous != null)
-                {
-                    result.previous_directory = previous.Directory; result.previous_version = previous.Version;
-                    result.warnings.Add("Se conservó la versión anterior porque no se completó el registro de la nueva instalación en Windows.");
-                }
+                CleanupPreviousInstallations(options, previousInstallations, installed, result, installationRegistered, associationsRegistered, progress);
                 if (options.Launch)
                 {
                     try { Process.Start(new ProcessStartInfo(Path.Combine(installed, "PDFModder.exe")) { WorkingDirectory = installed, UseShellExecute = false }); }
@@ -985,7 +1173,7 @@ namespace PdfModderInstallation
         readonly TextBox pathBox = new TextBox { Dock = DockStyle.Fill, Name = "destinationPath" };
         readonly CheckBox shortcutCheck = new CheckBox { Text = "Crear acceso directo en el escritorio", Checked = true, AutoSize = true, Name = "createShortcut" };
         readonly CheckBox launchCheck = new CheckBox { Text = "Abrir PDF Modder al terminar", Checked = false, AutoSize = true, Name = "launchApplication" };
-        readonly CheckBox removePreviousCheck = new CheckBox { Text = "Retirar la versión anterior tras instalar correctamente", Checked = true, AutoSize = true, Name = "removePreviousVersion" };
+        readonly CheckBox removePreviousCheck = new CheckBox { Text = "Retirar versiones e instaladores anteriores tras instalar correctamente", Checked = true, AutoSize = true, Name = "removePreviousVersion" };
         readonly Button installButton = new Button { Text = "Instalar", AutoSize = true, Name = "installButton" };
         readonly Button closeButton = new Button { Text = "Cancelar", AutoSize = true, Name = "closeButton" };
         readonly Button browseButton = new Button { Text = "Elegir…", AutoSize = true };
@@ -1000,9 +1188,7 @@ namespace PdfModderInstallation
             options = initial; pathBox.Text = options.Directory; shortcutCheck.Checked = options.Shortcut;
             if (options.PreviousDirectory == null) options.PreviousDirectory = Installer.DiscoverPrevious(options.Directory);
             removePreviousCheck.Checked = options.RemovePrevious;
-            removePreviousCheck.Enabled = options.PreviousDirectory != null;
-            if (options.PreviousDirectory == null) removePreviousCheck.Checked = false;
-            else launchCheck.Checked = true;
+            if (options.PreviousDirectory != null) launchCheck.Checked = true;
             Text = "Instalar PDF Modder 1.7.0"; Font = new Font("Segoe UI", 10F);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
             catch { }
@@ -1024,7 +1210,7 @@ namespace PdfModderInstallation
             buttons.Controls.Add(closeButton); buttons.Controls.Add(installButton); layout.Controls.Add(buttons, 0, 9);
             Controls.Add(layout); AcceptButton = installButton; CancelButton = closeButton;
             status.Text = options.PreviousDirectory == null ? "Tus PDF y preferencias se conservan. No se ha detectado una instalación anterior reconocida." :
-                "Versión anterior: " + options.PreviousDirectory + "\r\nSe retirará después de instalar correctamente, conservando PDF, preferencias y archivos modificados.";
+                "Copia anterior: " + options.PreviousDirectory + "\r\nSe retirarán todas las versiones e instaladores anteriores verificados después de instalar correctamente; se conservan sus PDF y archivos modificados.";
             closeButton.Click += delegate { Close(); };
             FormClosing += delegate(object sender, FormClosingEventArgs e) { if (busy) e.Cancel = true; };
             browseButton.Click += delegate
@@ -1060,7 +1246,8 @@ namespace PdfModderInstallation
                 {
                     progress.Value = 100; status.ForeColor = Color.DarkGreen;
                     status.Text = "Instalación terminada: " + result.files + " archivos comprobados.\r\n" + result.directory;
-                    if (result.previous_removed) status.Text += "\r\nVersión anterior " + result.previous_version + " retirada.";
+                    if (result.removed_installations > 0) status.Text += "\r\nVersiones retiradas: " + String.Join(", ", result.removed_versions) + " (" + result.removed_installations + " instalaciones).";
+                    if (result.reclaimed_bytes > 0) status.Text += "\r\nEspacio recuperado: " + (result.reclaimed_bytes / 1048576.0).ToString("N1", CultureInfo.CurrentCulture) + " MiB.";
                     if (result.backup != null) status.Text += "\r\nCopia anterior: " + result.backup;
                     if (result.warnings.Count > 0) status.Text += "\r\n" + String.Join("\r\n", result.warnings);
                     installButton.Text = "Instalado";
@@ -1069,7 +1256,7 @@ namespace PdfModderInstallation
                 {
                     status.ForeColor = Color.Firebrick; status.Text = "No se ha completado la instalación. " + (result == null ? "Error desconocido." : result.error);
                     pathBox.Enabled = browseButton.Enabled = shortcutCheck.Enabled = launchCheck.Enabled = installButton.Enabled = true;
-                    removePreviousCheck.Enabled = options.PreviousDirectory != null;
+                    removePreviousCheck.Enabled = true;
                     if (result != null && result.warnings.Count > 0) status.Text += "\r\n" + String.Join("\r\n", result.warnings);
                 }
                 worker.Dispose();

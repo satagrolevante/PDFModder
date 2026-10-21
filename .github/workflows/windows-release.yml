@@ -70,6 +70,9 @@ jobs:
       - name: Comprobar, compilar y empaquetar
         run: >-
           .venv/Scripts/python.exe scripts/release_v300.py --headless-qa --tests
+          tests/test_search_v306.py tests/test_search_session_v306.py
+          tests/test_search_panel_v306.py tests/test_search_render_v306.py tests/test_search_ui_v306.py
+          tests/test_scroll_cursor_v306.py tests/test_upgrade_cleanup_v306.py tests/test_release_cleanup_v306.py
           tests/test_shell_requests_v305.py tests/test_shell_worker_v305.py
           tests/test_shell_ui_v305.py tests/test_office_conversion_v305.py
           tests/test_shell_registration_v305.py tests/test_pdf_associations_v202.py
@@ -102,6 +105,7 @@ jobs:
             output/pytest-v300-results.xml
             output/*v300*smoke*
             output/v300-source-tests.json
+            output/upgrade-cleanup-v306.json
             output/portability/**/resultado.json
             output/portability/**/instalacion.json
             output/portability/**/desinstalacion.json
@@ -113,7 +117,7 @@ jobs:
   publish:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.5')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.6')
     needs: build
     runs-on: windows-2025
     permissions:
@@ -141,3 +145,18 @@ jobs:
         run: >-
           python scripts/publish_github_releases.py --version ${{ needs.build.outputs.version }}
           --notes-file docs/NOTAS_${{ needs.build.outputs.version }}.md
+      - name: Retirar publicaciones anteriores tras verificar la actualización pública
+        if: needs.build.outputs.version == '3.0.6'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/cleanup_previous_releases.py --keep v3.0.6 --apply
+          --report output/github-cleanup-v3.0.6.json
+      - name: Conservar informe de limpieza de publicaciones
+        if: always() && needs.build.outputs.version == '3.0.6'
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFModder-v3.0.6-limpieza-${{ github.sha }}
+          path: output/github-cleanup-v3.0.6.json
+          if-no-files-found: ignore
+          retention-days: 14

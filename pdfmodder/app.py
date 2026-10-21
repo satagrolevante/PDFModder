@@ -43,6 +43,7 @@ from .saving_ui_v300 import SavingV300Mixin
 from .object_ui_v300 import ObjectEditorV300Mixin
 from .compatibility_ui_v300 import CompatibilityUiV300Mixin
 from .shell_ui_v305 import ShellActionsUiMixin
+from .search_ui_v306 import SearchUiV306Mixin
 from . import __version__
 
 
@@ -172,7 +173,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         self.search_action = self._action("Buscar / siguiente", self.search, "F3")
         search_focus = QAction(self)
         search_focus.setShortcut(QKeySequence("Ctrl+F"))
-        search_focus.triggered.connect(self.search_box.setFocus)
+        search_focus.triggered.connect(self.focus_search_v306)
         self.addAction(search_focus)
         central = QWidget()
         outer = QVBoxLayout(central)
@@ -421,6 +422,9 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         self.future = None
         self._callback = None
         self._thumbnail_busy = False
+        if command == 'search' and self._discard_search_reply_v306():
+            self._refresh_actions()
+            return
         try:
             result = future.result()
             if result.get('draft_cancelled_v305') or obsolete_draft:
@@ -580,8 +584,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
             self._thumbnail_pages.clear()
             self._thumbnail_order.clear()
             self.compare_action.setChecked(False)
-            self._search_matches = []
-            self.canvas.search_rects = []
+            self._clear_search_v306()
             self._populate_pages_v300(self.state['page_count'],0)
             if self.state.get('issues'):
                 self._error('\n'.join(self.state['issues']))
@@ -659,7 +662,8 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
             return
         self.page_number = index
         self._restore_ids = self._restore_regions = None
-        self.canvas.search_rects = [m["rect"] for m in self._search_matches if m["page"] == index]
+        self.canvas.search_rects = [rect for m in self._search_matches if m['page'] == index
+                                    for rect in (m.get('rects') or [m['rect']])]
         self.load_page()
 
     def _sync_zoom_control(self):
@@ -882,9 +886,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
             self._restore_image_rect=self._restore_regions[-1] if self._restore_regions else None
             self._restore_regions=None
         self._restore_ids = None
-        self._search_matches = []
-        self._last_search = None
-        self.canvas.search_rects = []
+        self._clear_search_v306('El documento cambió. Pulsa Buscar para actualizar los resultados.')
         self._thumbnail_pages.clear()
         self._thumbnail_order.clear()
         self.pages.clear_icons()
@@ -982,9 +984,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
     def history(self,command):
         self.canvas.editor.hide()
         self._restore_ids = self._restore_regions = None
-        self._search_matches = []
-        self._last_search = None
-        self.canvas.search_rects = []
+        self._clear_search_v306('El documento cambió. Pulsa Buscar para actualizar los resultados.')
         self._thumbnail_pages.clear()
         self._thumbnail_order.clear()
         self.pages.clear_icons()
@@ -1001,41 +1001,6 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
             self._notice(f"Copia validada y guardada: {result['path']}")
             self.statusBar().showMessage("Guardado completo. El archivo original se conserva.")
         return self._submit("save",{"path":str(path)},saved)
-
-    def search(self):
-        text = self.search_box.text()
-        if not text or not self.state or self.busy:
-            return
-        if getattr(self,"_last_search",None) == text and self._search_matches:
-            self._next_match()
-            return
-        self._last_search = text
-        def found(result):
-            self._search_matches = result["matches"]
-            self.reader.set_search_matches(self._search_matches)
-            self._search_index = -1
-            if not self._search_matches:
-                self._notice(f"No se encuentra «{text}» en el documento de trabajo.")
-                self.canvas.search_rects = []
-                self.canvas._draw_overlays()
-            else:
-                self._next_match()
-        self._submit("search",{"text":text},found)
-
-    def _next_match(self):
-        self._search_index = (self._search_index+1)%len(self._search_matches)
-        match = self._search_matches[self._search_index]
-        self._notice(f"Coincidencia {self._search_index+1} de {len(self._search_matches)} · Página {match['page']+1}")
-        self.page_number = match["page"]
-        if self.application_mode == 'reading':
-            self.reader.go_page(self.page_number)
-            self.reader.reveal_rect(self.page_number, match['rect'])
-            return
-        self.pages.blockSignals(True)
-        self.pages.setCurrentRow(self.page_number)
-        self.pages.blockSignals(False)
-        self.canvas.search_rects = [m["rect"] for m in self._search_matches if m["page"]==self.page_number]
-        self.load_page()
 
     def _set_thumbnail(self,number,pixmap):
         if number >= self.pages.count():
@@ -1178,7 +1143,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         event.accept()
 
 
-class MainWindow(CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
+class MainWindow(SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
     """New workspace interceptors precede the existing window implementation."""
 
 

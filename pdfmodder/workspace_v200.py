@@ -257,7 +257,12 @@ class WorkspaceV200Mixin(SelectionUiV300Mixin):
         self._populate_pages_v300(self.state['page_count'],self.page_number)
         self._set_mode_v171(view.get('mode','reading'));self._restore_ids=view.get('ids') or None
         self.load_page();self._refresh_actions()
-        QTimer.singleShot(200,lambda:(self.reader if self.application_mode=='reading' else self.canvas).verticalScrollBar().setValue(view.get('scroll',0)))
+        restore_context=(sid,self.page_number,getattr(self,'_search_generation_v306',0),self._search_index)
+        def restore_scroll():
+            current=(self._active_session_v200,self.page_number,getattr(self,'_search_generation_v306',0),self._search_index)
+            if self._closed or current!=restore_context:return
+            (self.reader if self.application_mode=='reading' else self.canvas).verticalScrollBar().setValue(view.get('scroll',0))
+        QTimer.singleShot(200,restore_scroll)
 
     def _close_tab_v200(self,index):
         if self.busy or self.canvas.editor.isVisible() or self.state.get('preview'):return
