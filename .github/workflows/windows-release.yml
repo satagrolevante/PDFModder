@@ -118,7 +118,7 @@ jobs:
   publish:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.7')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.7-publicacion')
     needs: build
     runs-on: windows-2025
     permissions:
