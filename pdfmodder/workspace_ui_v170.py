@@ -309,7 +309,7 @@ class WorkspaceUiV170Mixin:
 
         self.update_action_v170 = QAction(icon_v170('updates'), 'Buscar actualizaciones…', self)
         self.update_action_v170.setObjectName('updateActionV170')
-        self.update_action_v170.setToolTip('Buscar y descargar versiones públicas de PDF Modder; sólo al pulsar.')
+        self.update_action_v170.setToolTip('Buscar actualizaciones ahora; la comprobación diaria se configura en Configuración.')
         self.update_action_v170.triggered.connect(self.show_updates_v170)
         self.toolbar.addAction(self.update_action_v170)
         update_button = self.toolbar.widgetForAction(self.update_action_v170)
@@ -385,11 +385,16 @@ class WorkspaceUiV170Mixin:
         self.recent_files_v170.setEnabled(self.open_action.isEnabled())
         self.update_action_v170.setEnabled(not self.busy and not getattr(self, '_closed', False))
 
-    def show_updates_v170(self):
+    def show_updates_v170(self, *, start_update=False):
+        before_manual = getattr(self, '_before_manual_updates_v307', None)
+        if before_manual is not None:
+            before_manual()
         if self._updater_v170._cancel.is_set():
             self._updater_v170 = AppUpdater(__version__, self._local_data_v170 / 'updates')
             self.destroyed.connect(lambda _=None, updater=self._updater_v170: updater.cancel())
         dialog = UpdatesDialog(self, self._updater_v170)
+        if start_update:
+            QTimer.singleShot(0, dialog._check)
         dialog.exec()
 
     def _close_workspace_v170(self):

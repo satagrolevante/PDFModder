@@ -23,7 +23,9 @@ def make_pdf(path, text='Fecha 10/09/2026'):
 
 
 @pytest.fixture
-def saving_window(qtbot, tmp_path):
+def saving_window(qtbot, tmp_path, monkeypatch):
+    # Save transactions own this worker; startup recovery is tested separately.
+    monkeypatch.setattr(MainWindow, '_offer_recovery_v200', lambda _self: None)
     history = tmp_path / 'history'
     history.mkdir()
     window = MainWindow(config_path=tmp_path / 'fonts.json', history_dir=history)

@@ -24,6 +24,8 @@ class NoPdfPool:
 def tools_window(qtbot, monkeypatch):
     import pdfmodder.app as application
     monkeypatch.setattr(application, 'ProcessPoolExecutor', NoPdfPool)
+    # This fixture deliberately has no PDF worker for startup recovery either.
+    monkeypatch.setattr(application.MainWindow, '_offer_recovery_v200', lambda _self: None)
     window = application.MainWindow()
     def close_without_document(widget):
         # Qt closes registered widgets before this yield fixture finalizes.

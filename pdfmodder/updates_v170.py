@@ -1,7 +1,8 @@
 """Public GitHub Releases updater with bounded downloads and SHA-256.
 
-There is no startup request, login, telemetry, embedded credential or automatic
-installation. Workers expose plain status snapshots and never call Qt widgets.
+The UI may request a daily startup check when enabled. There is no login,
+telemetry, embedded credential or automatic installation. Workers expose plain
+status snapshots and never call Qt widgets.
 API contract: https://docs.github.com/en/rest/releases/releases#get-the-latest-release
 Asset contract: https://docs.github.com/en/rest/releases/assets#get-a-release-asset
 """

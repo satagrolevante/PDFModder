@@ -44,6 +44,7 @@ from .object_ui_v300 import ObjectEditorV300Mixin
 from .compatibility_ui_v300 import CompatibilityUiV300Mixin
 from .shell_ui_v305 import ShellActionsUiMixin
 from .search_ui_v306 import SearchUiV306Mixin
+from .daily_updates_ui_v307 import DailyUpdatesUiV307Mixin
 from . import __version__
 
 
@@ -1143,7 +1144,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         event.accept()
 
 
-class MainWindow(SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
+class MainWindow(DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
     """New workspace interceptors precede the existing window implementation."""
 
 
@@ -1202,6 +1203,8 @@ def main(argv=None):
     if not application_icon.isNull():
         window.setWindowIcon(application_icon)
     window.show()
+    if not smoke_report:
+        window.start_daily_update_check_v307()
     if shell_action:
         QTimer.singleShot(0, lambda: window.start_shell_action_v305(*shell_action))
     elif shell_error:
