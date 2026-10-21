@@ -45,4 +45,5 @@ instaladores durante ellas.
 El instalador Windows x64 está disponible en GitHub Releases y mediante
 **Buscar actualizaciones**. La entrega se publica después de comprobar las
 fuentes, el ejecutable, la instalación y desinstalación y el canal público de
-actualizaciones. La comprobación de la GUI en CI usa Qt offscreen.
+actualizaciones. La comprobación de la GUI en CI usa Qt offscreen. La entrega
+incluye también la versión portable y el código fuente.
