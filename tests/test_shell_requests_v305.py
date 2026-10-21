@@ -114,6 +114,7 @@ def test_main_consumes_request_and_routes_after_show(inbox, monkeypatch, action,
         def __init__(self, initial):
             assert initial is None
         def show(self): events.append('show')
+        def start_daily_update_check_v307(self): events.append('daily')
         def start_shell_action_v305(self, action, paths): events.append((action, paths))
     monkeypatch.setattr(app, 'QApplication', Application)
     monkeypatch.setattr(app, 'MainWindow', Window)
@@ -123,5 +124,5 @@ def test_main_consumes_request_and_routes_after_show(inbox, monkeypatch, action,
     paths = [str(inbox / ('archivo con ñ' + extension))]
     request = write_request(inbox, action, paths)
     assert app.main(['--shell-request', str(request)]) == 0
-    assert events == ['show', (action, paths)]
+    assert events == ['show', 'daily', (action, paths)]
     assert not request.exists()

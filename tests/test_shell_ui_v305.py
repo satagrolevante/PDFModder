@@ -212,6 +212,8 @@ def real_shell_window(qtbot, tmp_path):
     qtbot.addWidget(window, before_close_func=lambda widget: setattr(widget, '_allow_close', True))
     window.show()
     window.thumbnail_timer.stop()
+    qtbot.waitUntil(lambda: window._command == 'list_recovery' and not window.busy,
+                   timeout=30000)
     yield window
     window._allow_close = True
     window.close()
@@ -231,7 +233,7 @@ def test_real_window_combines_reordered_selection_without_recovery_during_modal(
     first = make_pdf(tmp_path / 'primero.pdf', 'First page 1', 'First page 2')
     second = make_pdf(tmp_path / 'segundo.pdf', 'Second document')
     originals = {path: Path(path).read_bytes() for path in (first, second)}
-    calls, completed, observed = [], [], []
+    calls, completed, observed, recovery_attempts = [], [], [], []
     submit = window._submit
 
     def record(command, payload=None, callback=None):
@@ -247,8 +249,9 @@ def test_real_window_combines_reordered_selection_without_recovery_during_modal(
             assert isinstance(dialog, MergeDialog)
             assert dialog.paths() == [first, second]
             assert window._modal_depth_v200 == 1
-            # Startup's 250 ms recovery callback has had time to run inside
-            # the nested modal event loop, where it must defer its query.
+            # An explicit 250 ms recovery callback runs inside the nested
+            # modal event loop, where it must defer its query.
+            assert recovery_attempts == [1]
             assert not any(command == 'list_recovery' for command, _depth in calls)
             dialog.files.setCurrentRow(1)
             dialog.move(-1)
@@ -258,8 +261,23 @@ def test_real_window_combines_reordered_selection_without_recovery_during_modal(
             if dialog is not None and dialog.result() != QDialog.Accepted:
                 dialog.reject()
 
-    QTimer.singleShot(360, accept_after_startup_recovery_timer)
-    assert window.start_shell_action_v305('combine', [first, second])
+    def request_recovery_during_dialog():
+        recovery_attempts.append(window._modal_depth_v200)
+        window._offer_recovery_v200()
+
+    recovery_timer = QTimer(window)
+    recovery_timer.setSingleShot(True)
+    recovery_timer.timeout.connect(request_recovery_during_dialog)
+    accept_timer = QTimer(window)
+    accept_timer.setSingleShot(True)
+    accept_timer.timeout.connect(accept_after_startup_recovery_timer)
+    try:
+        recovery_timer.start(250)
+        accept_timer.start(360)
+        assert window.start_shell_action_v305('combine', [first, second])
+    finally:
+        recovery_timer.stop()
+        accept_timer.stop()
     qtbot.waitUntil(lambda: any(command == 'combine' for command, _result in completed), timeout=30000)
     assert observed == [[second, first]]
     assert sum(command == 'combine' for command, _depth in calls) == 1
