@@ -140,12 +140,15 @@ def test_zero_and_empty_search_clear_results_and_do_not_repeat_known_query(searc
     assert not window.canvas.search_rects and not window.canvas.active_search_rects
 
 
-def test_editing_same_page_next_scrolls_without_reloading_page(search_window, qtbot, monkeypatch):
+@pytest.mark.parametrize('narrow', [False, True])
+def test_editing_same_page_next_scrolls_without_reloading_page(search_window, qtbot, monkeypatch, narrow):
     window = search_window
     settled(qtbot, window)
     window._tools_mode_v171(True)
     qtbot.waitUntil(lambda: window.application_mode == 'editing' and not window.busy
                    and window.model is not None, timeout=30000)
+    if narrow:
+        window.canvas.setFixedWidth(60)
     search(qtbot, window, 'mail@example.org')
     settled(qtbot, window)
     loads = []

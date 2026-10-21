@@ -258,7 +258,12 @@ class SearchUiV306Mixin:
         self._sync_search_visuals_v306()
         key = (self._search_view_key_v306(), self.page_number, self.zoom)
         if key == self._search_canvas_page_v306:
-            self.canvas.ensureVisible(self.canvas.scene_rect(union(match.get('rects') or [match['rect']])), 35, 55)
+            target = self.canvas.scene_rect(union(match.get('rects') or [match['rect']]))
+            self.canvas.ensureVisible(target, 35, 55)
+            # Qt can align an oversized rectangle's edge beyond its center
+            # when docks leave a narrow viewport. Keep the match itself visible.
+            if not self.canvas.viewport().rect().contains(self.canvas.mapFromScene(target.center())):
+                self.canvas.centerOn(target.center())
         else:
             self._search_navigation_v306 = index
             self._search_timer_v306.start()

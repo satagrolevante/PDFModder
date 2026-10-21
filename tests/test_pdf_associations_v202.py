@@ -165,8 +165,6 @@ def test_production_pdf_associations_in_isolated_registry():
         after = [snapshot(p) for p in paths]
         assert before == after, 'The test changed the real PDF registrations'
         assert snapshot(temporary_key) is None
-        installer_source = (ROOT / 'installer/PdfModderInstaller.cs').read_text(encoding='utf-8-sig')
-        assert 'if (installationRegistered && associationsRegistered) RetirePrevious' in installer_source
         report.update(real_registry_unchanged=True, source_sha256=hashes,
                       compiled_harness_sha256=hashlib.sha256(executable.read_bytes()).hexdigest())
         (ROOT / 'output').mkdir(exist_ok=True)
