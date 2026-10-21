@@ -13,8 +13,8 @@ cuando se demuestra su identidad. La escritura evita recomprimir y buscar objeto
 duplicados en todo el PDF para cada cambio. Se aplica y guarda la misma revisión
 validada. [Alcance y comprobaciones](docs/NOTAS_3.0.5.md).
 
-Esta revisión cuenta con un instalador de prueba compilado y comprobado en Windows;
-está pendiente de publicación.
+El instalador de esta revisión se publica en [GitHub Releases](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.5)
+después de sus comprobaciones de Windows. La app lo obtiene mediante **Buscar actualizaciones**.
 
 ## Menú contextual de Windows
 

@@ -83,4 +83,6 @@ originales. La automatización de Word se comprueba mediante contratos y simulac
 su ejecución real requiere un equipo con Word instalado. Estas comprobaciones
 automáticas no sustituyen una revisión visual de documentos en un escritorio físico.
 
-La publicación pública del instalador continúa pendiente.
+El instalador Windows y el manifiesto para **Buscar actualizaciones** se publican
+juntos en [GitHub Releases](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.5)
+después de superar las comprobaciones de esta entrega.
