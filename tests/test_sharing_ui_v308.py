@@ -57,8 +57,13 @@ def test_copy_file_exports_file_urls_and_rejects_later_changes(qtbot, tmp_path):
     dialog = ShareDialogV308(*verified)
     qtbot.addWidget(dialog)
     dialog.copy_file()
-    assert QApplication.clipboard().mimeData().urls()[0].toLocalFile() == str(path)
-    QApplication.clipboard().clear()
+    try:
+        # Qt emits portable separators, including on Windows. Compare the
+        # actual file identity, not the platform's display spelling.
+        copied = QApplication.clipboard().mimeData().urls()[0].toLocalFile()
+        assert Path(copied).resolve() == path.resolve()
+    finally:
+        QApplication.clipboard().clear()
     path.write_bytes(b'externally replaced PDF')
     dialog.copy_file()
     data = QApplication.clipboard().mimeData()
