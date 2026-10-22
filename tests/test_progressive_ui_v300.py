@@ -21,6 +21,26 @@ def test_virtual_page_list_has_no_resident_item_per_pdf_page(qtbot):
     pages.clear();assert pages.count()==0
 
 
+def test_page_thumbnails_fill_available_width_when_sidebar_resizes(qtbot):
+    pages=PageListV300();qtbot.addWidget(pages)
+    pages.setViewMode(PageListV300.IconMode);pages.setFlow(PageListV300.TopToBottom)
+    pages.setWrapping(False);pages.setSpacing(6);pages.resize(220,600)
+    pages.set_page_count_v300(100_000);pages.show()
+    QApplication.processEvents()
+    qtbot.waitUntil(lambda:pages.visualRect(pages.model().index(0)).width()==pages.gridSize().width())
+    original_width=pages.iconSize().width()
+    assert original_width>170
+    assert pages.viewport().width()-pages.iconSize().width()<=24
+    assert pages.visualRect(pages.model().index(0)).right()<=pages.viewport().width()
+    assert len(pages.visible_page_numbers_v300())<5
+    pages.resize(180,600);QApplication.processEvents()
+    qtbot.waitUntil(lambda:pages.visualRect(pages.model().index(0)).width()==pages.gridSize().width())
+    assert pages.iconSize().width()<original_width
+    assert pages.viewport().width()-pages.iconSize().width()<=24
+    qtbot.waitUntil(lambda:pages.horizontalScrollBar().maximum()==0,timeout=5000)
+    assert pages.model().icons=={}
+
+
 def test_progressive_reader_creates_placeholders_only_for_viewport(qtbot):
     reader=ContinuousReader();qtbot.addWidget(reader);reader.resize(500,450);reader.show()
     reader.reset_document({'page_count':10_000,'default_geometry':{'width':500.,'height':720.},
@@ -101,6 +121,11 @@ def test_real_window_shows_first_page_before_measuring_all_pages(qtbot,tmp_path)
         assert model.text([glyph.id for glyph in model.glyphs])=='Progressive page 1'
         assert window.pages.count()==240 and window.application_mode=='reading'
         assert window.document_views.currentWidget() is window.reader
+        assert abs(window.reader._rects[0].width()-(window.reader.viewport().width()-2*window.reader.MARGIN))<=2
+        assert window.reader.horizontalScrollBar().maximum()==0
+        assert window.pages.width()<=window.workspace_tabs_v170.width()
+        assert window.workspace_tabs_v170.width()-window.pages.iconSize().width()<50
+        assert window.pages.item(0).icon().actualSize(window.pages.iconSize()).width()>150
         assert len(window.reader._exact_geometries)<240
         assert len(window.reader._placeholders)<6
     finally:

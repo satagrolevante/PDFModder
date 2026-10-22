@@ -1,12 +1,12 @@
 """Progressive geometry and virtual thumbnails for file-backed PDF sessions."""
-from PySide6.QtCore import QAbstractListModel,QItemSelectionModel,QModelIndex,QPoint,QSize,Qt,Signal
+from PySide6.QtCore import QAbstractListModel,QEvent,QItemSelectionModel,QModelIndex,QPoint,QSize,Qt,Signal
 from PySide6.QtGui import QIcon,QPixmap
 from PySide6.QtWidgets import QApplication,QListView
 
 
 class _PageModelV300(QAbstractListModel):
     def __init__(self,parent=None):
-        super().__init__(parent);self.count=0;self.icons={}
+        super().__init__(parent);self.count=0;self.icons={};self.row_size=QSize(118,158)
 
     def rowCount(self,parent=QModelIndex()):
         return 0 if parent.isValid() else self.count
@@ -15,7 +15,7 @@ class _PageModelV300(QAbstractListModel):
         if not index.isValid() or not 0<=index.row()<self.count:return None
         if role==Qt.DisplayRole:return f'Página {index.row()+1}'
         if role==Qt.DecorationRole:return self.icons.get(index.row(),QIcon())
-        if role==Qt.SizeHintRole:return QSize(118,158)
+        if role==Qt.SizeHintRole:return self.row_size
         if role==Qt.TextAlignmentRole:return int(Qt.AlignHCenter)
         return None
 
@@ -52,7 +52,28 @@ class PageListV300(QListView):
         self.setModel(self._page_model_v300)
         self.setUniformItemSizes(True)
         self.setLayoutMode(QListView.Batched);self.setBatchSize(64)
+        self.setResizeMode(QListView.Adjust)
         self.setVerticalScrollMode(QListView.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def viewportEvent(self,event):
+        result=super().viewportEvent(event)
+        if event.type()==QEvent.Resize and hasattr(self,'_page_model_v300'):
+            self.setResizeMode(QListView.Adjust)
+            # A scrollbar also changes the usable viewport width. Keep one
+            # full-width column without changing the width of the sidebar.
+            width=max(1,self.viewport().width()-2*self.spacing()-8)
+            icon_size=QSize(width,round(width*2**.5))
+            row_size=QSize(max(1,self.viewport().width()-2*self.spacing()),
+                           icon_size.height()+self.fontMetrics().height()+12)
+            if self.iconSize()!=icon_size or self.gridSize()!=row_size:
+                self._page_model_v300.row_size=row_size
+                self.setIconSize(icon_size)
+                self.setGridSize(row_size)
+                model=self._page_model_v300
+                if model.count:
+                    model.dataChanged.emit(model.index(0),model.index(model.count-1),[Qt.SizeHintRole])
+        return result
 
     def currentChanged(self,current,previous):
         super().currentChanged(current,previous)
@@ -139,6 +160,13 @@ class ProgressiveOpeningV300Mixin:
             def loaded(result):
                 pixmap=QPixmap();pixmap.loadFromData(result['png'],'PNG')
                 self._set_thumbnail(result['number'],pixmap)
-            self._submit('page',{'number':number,'zoom':.18,'thumbnail':True,
+            # Render only visible thumbnails, at the resolution actually used
+            # by the sidebar rather than enlarging the old 100-pixel images.
+            geometries=getattr(self.reader,'_geometries',())
+            width,height=(geometries[number] if number<len(geometries)
+                          else (self.model.width,self.model.height))
+            size=self.pages.iconSize()
+            zoom=max(.1,min(4.,size.width()/max(1.,width),size.height()/max(1.,height)))
+            self._submit('page',{'number':number,'zoom':zoom,'thumbnail':True,
                          'reading':True,'original':self.compare_action.isChecked()},loaded)
             break

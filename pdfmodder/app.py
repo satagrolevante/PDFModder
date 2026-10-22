@@ -45,6 +45,9 @@ from .compatibility_ui_v300 import CompatibilityUiV300Mixin
 from .shell_ui_v305 import ShellActionsUiMixin
 from .search_ui_v306 import SearchUiV306Mixin
 from .daily_updates_ui_v307 import DailyUpdatesUiV307Mixin
+from .menus_ui_v308 import MenusUiV308Mixin
+from .sharing_ui_v308 import SharingUiV308Mixin
+from .view_zoom_ui_v308 import ViewZoomUiV308Mixin
 from . import __version__
 
 
@@ -209,7 +212,6 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         self.pages = PageListV300()
         self.pages.setObjectName("pageList")
         self.pages.setMinimumWidth(110)
-        self.pages.setMaximumWidth(200)
         self.pages.setIconSize(QSize(100,135))
         self.pages.setSpacing(6)
         self.pages.setViewMode(QListView.IconMode)
@@ -1006,7 +1008,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
     def _set_thumbnail(self,number,pixmap):
         if number >= self.pages.count():
             return
-        self.pages.item(number).setIcon(QIcon(pixmap.scaled(100,135,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
+        self.pages.item(number).setIcon(QIcon(pixmap.scaled(self.pages.iconSize(),Qt.KeepAspectRatio,Qt.SmoothTransformation)))
         self._thumbnail_pages.add(number)
         if number in self._thumbnail_order:
             self._thumbnail_order.remove(number)
@@ -1144,7 +1146,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         event.accept()
 
 
-class MainWindow(DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
+class MainWindow(MenusUiV308Mixin,SharingUiV308Mixin,ViewZoomUiV308Mixin,DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
     """New workspace interceptors precede the existing window implementation."""
 
 

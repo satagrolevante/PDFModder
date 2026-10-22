@@ -1,2 +1,2 @@
 """PDF Modder: edición local conservadora de PDF digital."""
-__version__ = "3.0.7"
+__version__ = "3.0.8"
