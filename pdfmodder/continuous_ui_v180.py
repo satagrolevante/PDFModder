@@ -4,6 +4,7 @@ from PySide6.QtGui import QPixmap, QAction
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox
 
 from .ui_icons_v170 import icon_v170
+from .action_state_v310 import set_ui_enabled_v310
 
 
 class ContinuousUiV180Mixin:
@@ -140,18 +141,18 @@ class ContinuousUiV180Mixin:
         if not hasattr(self, 'remove_tags_action'):
             return
         reading = self.application_mode == 'reading'
-        self.remove_tags_action.setEnabled(bool(self.state.get('tagged') and not self.busy
+        set_ui_enabled_v310(self, self.remove_tags_action, bool(self.state.get('tagged') and not self.busy
             and not self.state.get('issues') and not self.state.get('preview') and not reading
             and not self.canvas.editor.isVisible() and not getattr(self, '_rich_active', False)))
         if reading:
-            self.pages.setEnabled(bool(self.state))
+            set_ui_enabled_v310(self, self.pages, bool(self.state))
             if self._command in ('page', 'reading_info') and not self._mode_preparing_v171:
-                self.tools_action.setEnabled(True)
+                set_ui_enabled_v310(self, self.tools_action, True)
 
     def _refresh_clipboard_v170(self):
         super()._refresh_clipboard_v170()
         if hasattr(self, 'reader') and getattr(self, 'application_mode', None) == 'reading' and self._native_clipboard_target_v170() is None:
-            self.copy_action_v170.setEnabled(bool(self.reader.selection_endpoints() and self.state.get('copy_allowed', True)))
+            set_ui_enabled_v310(self, self.copy_action_v170, bool(self.reader.selection_endpoints() and self.state.get('copy_allowed', True)))
 
     def clipboard_copy_v170(self):
         if self.application_mode != 'reading':

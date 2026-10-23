@@ -115,10 +115,12 @@ class PrintOptionsV200(QDialog):
                     'Imprimir abre la confirmación de Windows y las propiedades del controlador. '
                     'Se imprime la apariencia renderizada; Guardar como conserva el PDF vectorial y seleccionable.')
         note.setWordWrap(True);layout.addWidget(note)
+        self.note=note
         self.error=QLabel();self.error.setWordWrap(True);layout.addWidget(self.error)
         buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Cancel).setText('Cancelar')
         buttons.button(QDialogButtonBox.Ok).setText('Preparar vista previa');buttons.accepted.connect(self.validate);buttons.rejected.connect(self.reject)
+        self.buttons=buttons
         layout.addWidget(buttons);self.printer.currentIndexChanged.connect(self.update_capabilities);self.update_capabilities()
 
     def settings(self):

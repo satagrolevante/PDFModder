@@ -1,5 +1,8 @@
 # Impresión — PDF Modder 2.0.1
 
+Guía histórica. El flujo actual utiliza un único cuadro de impresión con vista
+preliminar integrada: [Guía de impresión 3.0.9](GUIA_V309.md).
+
 Pulse **Ctrl+P** o **Imprimir / vista previa**. Acepte o cancele el texto que esté escribiendo antes de imprimir.
 
 1. Elija una impresora instalada en Windows. Si no hay ninguna, podrá preparar la vista previa; para imprimir necesitará una impresora disponible.

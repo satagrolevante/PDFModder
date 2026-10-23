@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QSizePolicy,
     QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
+from .action_state_v310 import set_ui_enabled_v310, ui_enabled_v310
 
 
 def tool_icon(kind):
@@ -363,7 +364,7 @@ class ToolsWorkspaceV150Mixin:
         self.side_format_hint.setVisible(not image_selected)
         self.side_format_button.setVisible(not image_selected)
         active = bool(getattr(self, '_rich_active', False) and editor.rich_mode and not getattr(self, '_rich_accept_pending', False))
-        self.side_format_controls.setEnabled(active)
+        set_ui_enabled_v310(self, self.side_format_controls, active)
         self.side_format_hint.setText('Formato de las letras seleccionadas; sin selección se aplica a lo que escribas.' if active else 'Haz doble clic en el texto para modificar su formato por fragmentos.')
         self._tools_syncing_v150 = True
         try:
@@ -397,17 +398,17 @@ class ToolsWorkspaceV150Mixin:
         writing = self.canvas.editor.isVisible() or getattr(self, '_rich_active', False) or getattr(self, '_rich_loading', False)
         editable = ready and not writing and not self.state.get('issues') and not self.compare_action.isChecked() and not getattr(self, '_placement', None)
         caps = self.state.get('page_capabilities', {})
-        self.edit_content_action.setEnabled(editable)
-        self.export_document_action.setEnabled(ready and not writing)
-        self.rotate_pages_action.setEnabled(editable and caps.get('rotate', False))
-        self.insert_pages_action.setEnabled(editable and caps.get('insert_pdf', False))
-        self.replace_pages_action.setEnabled(editable and caps.get('replace_pdf', caps.get('insert_pdf', False)) and caps.get('delete', False))
-        self.crop_pages_action.setEnabled(editable)
-        self.split_document_action.setEnabled(editable and caps.get('extract', False))
-        self.add_text_properties_action.setEnabled(self.add_text_action.isEnabled())
+        set_ui_enabled_v310(self, self.edit_content_action, editable)
+        set_ui_enabled_v310(self, self.export_document_action, ready and not writing)
+        set_ui_enabled_v310(self, self.rotate_pages_action, editable and caps.get('rotate', False))
+        set_ui_enabled_v310(self, self.insert_pages_action, editable and caps.get('insert_pdf', False))
+        set_ui_enabled_v310(self, self.replace_pages_action, editable and caps.get('replace_pdf', caps.get('insert_pdf', False)) and caps.get('delete', False))
+        set_ui_enabled_v310(self, self.crop_pages_action, editable)
+        set_ui_enabled_v310(self, self.split_document_action, editable and caps.get('extract', False))
+        set_ui_enabled_v310(self, self.add_text_properties_action, ui_enabled_v310(self, self.add_text_action))
         image = self.canvas.selected_image()
         self.image_quick_controls.setVisible(bool(self.canvas.image_mode and image))
-        self.image_quick_controls.setEnabled(editable and bool(image and image.get('editable')))
+        set_ui_enabled_v310(self, self.image_quick_controls, editable and bool(image and image.get('editable')))
         self._sync_format_v150()
 
     def _quick_image_v150(self, operation):

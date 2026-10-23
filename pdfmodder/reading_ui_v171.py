@@ -4,6 +4,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QLabel, QMenu
 
 from .ui_icons_v170 import icon_v170
+from .action_state_v310 import set_ui_enabled_v310
 
 
 class ReadingUiV171Mixin:
@@ -84,8 +85,8 @@ class ReadingUiV171Mixin:
             return
         reading = self.application_mode == 'reading'
         draft = self.canvas.editor.isVisible() or getattr(self, '_rich_active', False) or getattr(self, '_rich_loading', False)
-        self.tools_action.setEnabled(not self.busy and not draft and not self.state.get('preview'))
-        self.reading_action.setEnabled(not self.busy and not draft and not self.state.get('preview'))
+        set_ui_enabled_v310(self, self.tools_action, not self.busy and not draft and not self.state.get('preview'))
+        set_ui_enabled_v310(self, self.reading_action, not self.busy and not draft and not self.state.get('preview'))
         self.canvas.page_navigation_enabled = bool(self.state and not self.busy and not draft and not self.state.get('preview'))
         if not reading:
             return
@@ -100,11 +101,11 @@ class ReadingUiV171Mixin:
                      'add_text_properties_action', 'document_security_action', 'font_button'):
             control = getattr(self, name, None)
             if control is not None:
-                control.setEnabled(False)
+                set_ui_enabled_v310(self, control, False)
         for name in ('property_box', 'line_reflow_box', 'interaction_box', 'side_format_controls', 'image_box', 'image_quick_controls'):
-            getattr(self, name).setEnabled(False)
+            set_ui_enabled_v310(self, getattr(self, name), False)
         for action in self.mode_actions_v170.values():
-            action.setEnabled(False)
+            set_ui_enabled_v310(self, action, False)
         self.edit_steps.hide()
         self._refresh_clipboard_v170()
 
@@ -116,9 +117,9 @@ class ReadingUiV171Mixin:
     def _refresh_clipboard_v170(self):
         super()._refresh_clipboard_v170()
         if getattr(self, 'application_mode', None) == 'reading' and self._native_clipboard_target_v170() is None:
-            self.copy_action_v170.setEnabled(bool(self.model and self.canvas.ids and self.state.get('copy_allowed', True)))
+            set_ui_enabled_v310(self, self.copy_action_v170, bool(self.model and self.canvas.ids and self.state.get('copy_allowed', True)))
             for action in (self.cut_action_v170, self.paste_action_v170, self.delete_action_v170):
-                action.setEnabled(False)
+                set_ui_enabled_v310(self, action, False)
 
     def clipboard_copy_v170(self):
         if self.application_mode != 'reading':

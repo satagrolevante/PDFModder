@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
 from . import __version__
 from .ui_icons_v170 import apply_action_icons_v170, icon_v170
 from .updates_v170 import AppUpdater, RELEASES_URL, detected_installation_directory
+from .action_state_v310 import set_ui_enabled_v310, ui_enabled_v310
 
 
 class RecentFilesStore:
@@ -211,10 +212,10 @@ class UpdatesDialog(QDialog):
         self.progress.setValue(status['progress'])
         retry_at = status.get('retryAt', 0)
         can_query = retry_at <= time.time()
-        self.check_button.setEnabled(not busy and not self._preparing_work_v300 and (can_query or state == 'ready'))
+        set_ui_enabled_v310(self, self.check_button, not busy and not self._preparing_work_v300 and (can_query or state == 'ready'))
         self.check_button.setToolTip('GitHub ha indicado que esperes antes de volver a consultar.' if not can_query else 'Buscar, descargar e instalar la actualización')
-        self.download_button.setEnabled(not busy and not self._preparing_work_v300 and can_query and state == 'available')
-        self.install_button.setEnabled(not busy and not self._preparing_work_v300 and state == 'ready')
+        set_ui_enabled_v310(self, self.download_button, not busy and not self._preparing_work_v300 and can_query and state == 'available')
+        set_ui_enabled_v310(self, self.install_button, not busy and not self._preparing_work_v300 and state == 'ready')
         if self._preparing_work_v300:
             self.message.setText('Preparando los documentos antes de instalar. Puedes guardar los cambios, descartarlos o cancelar.')
         if self._automatic_update and not busy:
@@ -380,10 +381,10 @@ class WorkspaceUiV170Mixin:
         if not hasattr(self, 'mode_actions_v170'):
             return
         for action in self.mode_actions_v170.values():
-            action.setEnabled(self.interaction_box.isEnabled())
+            set_ui_enabled_v310(self, action, ui_enabled_v310(self, self.interaction_box))
         self._sync_modes_v170()
-        self.recent_files_v170.setEnabled(self.open_action.isEnabled())
-        self.update_action_v170.setEnabled(not self.busy and not getattr(self, '_closed', False))
+        set_ui_enabled_v310(self, self.recent_files_v170, ui_enabled_v310(self, self.open_action))
+        set_ui_enabled_v310(self, self.update_action_v170, not self.busy and not getattr(self, '_closed', False))
 
     def show_updates_v170(self, *, start_update=False):
         before_manual = getattr(self, '_before_manual_updates_v307', None)

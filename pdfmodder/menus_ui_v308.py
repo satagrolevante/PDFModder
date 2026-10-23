@@ -2,6 +2,7 @@
 from PySide6.QtCore import QSignalBlocker
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QDialog, QInputDialog, QMenu
+from .action_state_v310 import set_ui_enabled_v310, ui_enabled_v310
 
 
 class MenusUiV308Mixin:
@@ -133,16 +134,16 @@ class MenusUiV308Mixin:
         if not hasattr(self, 'style_actions_v308'):
             return
         locked = bool(getattr(self, '_save_transaction_v300', None) or getattr(self, '_close_waiting_v300', False))
-        self.close_document_action_v308.setEnabled(bool(self.state) and not self.busy and not locked)
-        self.exit_action_v308.setEnabled(not locked)
-        self.share_action_v308.setEnabled(self.save_action.isEnabled() and not locked)
-        self.font_inspector_action_v308.setEnabled(self.font_button.isEnabled() and not locked)
+        set_ui_enabled_v310(self, self.close_document_action_v308, bool(self.state) and not self.busy and not locked)
+        set_ui_enabled_v310(self, self.exit_action_v308, not locked)
+        set_ui_enabled_v310(self, self.share_action_v308, ui_enabled_v310(self, self.save_action) and not locked)
+        set_ui_enabled_v310(self, self.font_inspector_action_v308, ui_enabled_v310(self, self.font_button) and not locked)
         active = self._rich_format_ready_v308()
-        self.font_menu_v308.setEnabled(active)
+        set_ui_enabled_v310(self, self.font_menu_v308, active)
         for action in (self.font_size_action_v308, self.text_color_action_v308,
                        self.paragraph_action_v308, self.typography_action_v308,
                        *self.style_actions_v308.values(), *self.alignment_actions_v308.values()):
-            action.setEnabled(active)
+            set_ui_enabled_v310(self, action, active)
         if active:
             toolbar = self.canvas.editor.toolbar
             toolbar.sync_cursor()
@@ -153,10 +154,10 @@ class MenusUiV308Mixin:
             for key, action in self.alignment_actions_v308.items():
                 with QSignalBlocker(action):
                     action.setChecked(key == alignment)
-        image_ready = self.image_quick_controls.isEnabled() and not locked
-        self.image_format_menu_v308.setEnabled(image_ready)
+        image_ready = ui_enabled_v310(self, self.image_quick_controls) and not locked
+        set_ui_enabled_v310(self, self.image_format_menu_v308, image_ready)
         for action in self.image_format_actions_v308:
-            action.setEnabled(image_ready)
+            set_ui_enabled_v310(self, action, image_ready)
 
     def _populate_fonts_v308(self):
         self.font_menu_v308.clear()

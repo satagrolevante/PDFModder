@@ -6,6 +6,7 @@ from PySide6.QtGui import QAction,QKeySequence
 from PySide6.QtWidgets import (QToolBar,QGroupBox,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QCheckBox,
     QComboBox,QListWidget,QListWidgetItem,QMenu,QFileDialog,QDialog,QApplication,QWidget)
 from .model import mm,pt,union
+from .action_state_v310 import set_ui_enabled_v310
 
 
 class AdvancedEditing:
@@ -67,20 +68,20 @@ class AdvancedEditing:
         if not hasattr(self,'replace_action'):return
         ready=bool(self.state) and not self.busy and not self.state.get('preview') and not self.canvas.editor.isVisible()
         editable=ready and not self.state.get('issues') and not self.compare_action.isChecked()
-        self.replace_action.setEnabled(editable)
+        set_ui_enabled_v310(self, self.replace_action, editable)
         page_caps=self.state.get('page_capabilities',{})
-        self.organize_action.setEnabled(editable and page_caps.get('supported',not self.state.get('tagged')))
+        set_ui_enabled_v310(self, self.organize_action, editable and page_caps.get('supported',not self.state.get('tagged')))
         self.organize_action.setToolTip(page_caps.get('reason') or 'Revisa el orden final antes de aplicar; se conserva la estructura compatible.')
-        self.elements_box.setEnabled(ready)
+        set_ui_enabled_v310(self, self.elements_box, ready)
         image=self.canvas.selected_image()
-        self.image_export_button.setEnabled(ready and bool(image))
-        self.image_edit_button.setEnabled(editable and bool(image and image.get('editable')))
+        set_ui_enabled_v310(self, self.image_export_button, ready and bool(image))
+        set_ui_enabled_v310(self, self.image_edit_button, editable and bool(image and image.get('editable')))
         hidden=bool(self.model and self.canvas.ids and all(g.mode==3 for g in self.model.selected(self.canvas.ids)))
-        self.ocr_mode_box.setEnabled(editable and hidden)
+        set_ui_enabled_v310(self, self.ocr_mode_box, editable and hidden)
         ocr=hidden and self.ocr_mode_box.isChecked()
         for widget in (self.size_box,self.x_box,self.y_box,self.height_box,self.anchor_box,
-                       self.reflow_box,self.line_spacing_box,self.paragraph_spacing_box):widget.setEnabled(not ocr)
-        if ocr:self.line_reflow_box.setEnabled(False)
+                       self.reflow_box,self.line_spacing_box,self.paragraph_spacing_box):set_ui_enabled_v310(self, widget, not ocr)
+        if ocr:set_ui_enabled_v310(self, self.line_reflow_box, False)
 
     def _extend_request(self,request):
         request.allow_overlap=self.allow_overlap_box.isChecked()

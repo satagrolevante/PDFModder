@@ -1,17 +1,21 @@
 """Native UI printing acceptance; never submits a physical print job."""
-from pathlib import Path
 from pypdf import PdfReader
 from PIL import ImageChops
 from PySide6.QtPrintSupport import QPrinter
 from .smoke_v200 import SmokeV200
-from .printing_v201 import PrintOptionsV200,PrintPreviewV201,configure_printer_v201
+from .printing_v201 import configure_printer_v201
+from .printing_v309 import PrintDialogV309
 
 
 class SmokeV201(SmokeV200):
     def finish(self,error=None,terminate=False):
         if error is None and self.stage=='complete' and not getattr(self,'_printing_started',False):
             self._printing_started=True;self.stage='print_options'
-            self.options=PrintOptionsV200(self.page_count,1,self.window);self.options.show()
+            self.options=PrintDialogV309(self.page_count,1,self.window)
+            # Preview is intercepted by Qt; the smoke's final output is also
+            # explicitly a local PDF, never the installed default printer.
+            self.options.preview_printer.setOutputFormat(QPrinter.PdfFormat)
+            self.options.show()
             return
         super().finish(error,terminate)
 
@@ -20,25 +24,28 @@ class SmokeV201(SmokeV200):
             options=self.options
             self._require(options.printer.count()>0 and options.color.count()==2 and options.duplex.count()==3,
                           'Faltan controles de impresora, color o doble cara.')
-            options.scope.setCurrentIndex(options.scope.findData('current'));options.validate()
-            self._require(options.numbers==[1],'Página actual no selecciona la página 2.')
+            options.scope.setCurrentIndex(options.scope.findData('current'))
+            self._require(options.selected_pages()==[1],'Página actual no selecciona la página 2.')
             options.scope.setCurrentIndex(options.scope.findData('range'));options.pages.setText('2,1')
             options.color.setCurrentIndex(options.color.findData(QPrinter.GrayScale));options.dpi.setValue(144)
             options.show();self._require(options.grab().save(str(self.report_path.with_name(self.report_path.stem+'-opciones.png'))),'Falta captura de opciones.')
-            options.validate();self._require(options.numbers==[1,0],'Se cambió el orden de las páginas elegidas.')
+            numbers=options.selected_pages()
+            self._require(numbers==[1,0],'Se cambió el orden de las páginas elegidas.')
             self.print_settings=dict(options.settings(),printer='',duplex=QPrinter.DuplexNone,copies=1)
-            self._step('opciones_impresion_visibles',current_page=2,selected_original_pages=[2,1],color='grayscale',physical_job=False)
+            self._step('opciones_impresion_visibles',current_page=2,selected_original_pages=[2,1],color='grayscale',physical_job=False,single_dialog=True)
             self.stage='print_prepare'
-            self.window._submit('print_pages_v200',{'pages':options.numbers,'dpi':144},self.prepared_print)
+            options.preview_timer.stop()
+            self.window._submit('print_pages_v200',{'pages':numbers,'dpi':144},self.prepared_print)
             return
         if self.stage=='print_prepare':return
         if self.stage=='print_preview_first':
             if self.preview.preview.pageCount()!=1:return
-            self._require(len(self.print_pages)==2 and self.preview.position==0,'La vista previa no está paginada.')
+            self._require(self.preview is self.options and len(self.print_pages)==2 and self.preview.page.value()-1==0,'La vista previa no está integrada y paginada.')
             self._step('vista_previa_una_pagina',original_page=2,cached_preview_pages=1)
             self.stage='print_preview_second';self.preview.page.setValue(2);return
         if self.stage=='print_preview_second':
-            self._require(self.preview.position==1 and self.preview.preview.pageCount()==1,'Cambiar de página acumuló páginas de vista previa.')
+            if self.preview._preview_page['page']!=0:return
+            self._require(self.preview.page.value()-1==1 and self.preview.preview.pageCount()==1,'Cambiar de página acumuló páginas de vista previa.')
             self._require('original 1' in self.preview.summary.text(),'La vista previa no identifica la página original.')
             self._require(self.preview.grab().save(str(self.report_path.with_name(self.report_path.stem+'-impresion.png'))),'Falta captura de vista previa.')
             self.preview.reject()
@@ -63,7 +70,10 @@ class SmokeV201(SmokeV200):
 
     def prepared_print(self,result):
         self.print_pages=result['pages']
-        printer=QPrinter(QPrinter.HighResolution);printer.setOutputFormat(QPrinter.PdfFormat)
-        configure_printer_v201(printer,self.print_settings);self.preview_printer=printer
-        self.preview=PrintPreviewV201(printer,self.print_pages,self.print_settings,self.window._paint_print_v200,self.window)
-        self.stage='print_preview_first';self.preview.show();self.preview.preview.updatePreview()
+        self.preview=self.options
+        self.preview.preview_requested.connect(self._show_selected_print_preview)
+        self.stage='print_preview_first'
+        self._show_selected_print_preview()
+
+    def _show_selected_print_preview(self):
+        self.preview.show_preview(self.print_pages[self.preview.page.value()-1],self.print_settings)

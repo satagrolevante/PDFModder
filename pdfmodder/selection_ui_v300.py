@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 
 from .model import EditError, mm, pt, union
 from .selection_v300 import draft_overflow, enlarged_area, selection_index
+from .action_state_v310 import set_ui_enabled_v310
 
 
 class DraftAreaDialogV300(QDialog):
@@ -168,8 +169,8 @@ class SelectionUiV300Mixin:
 
     def _selection_note_v300(self, ids):
         enabled = bool(ids and self.model and self.application_mode=='editing' and not self.canvas.editor.isVisible())
-        self.selection_shrink_v300.setEnabled(enabled)
-        self.selection_expand_v300.setEnabled(enabled)
+        set_ui_enabled_v310(self, self.selection_shrink_v300, enabled)
+        set_ui_enabled_v310(self, self.selection_expand_v300, enabled)
         if not ids or not self.model:
             self.selection_scope_note_v300.setText('Elige el alcance y pulsa el texto. Ctrl+clic añade o quita fragmentos.')
             return
@@ -305,13 +306,13 @@ class SelectionUiV300Mixin:
         self.draft_area_status_v300.setText(message)
         enabled = (not self._rich_accept_pending and not self.canvas.editor.pdf_view
                    and not getattr(self,'_save_transaction_v300',None))
-        for button in (self.draft_area_button_v300,self.draft_reflow_button_v300,self.draft_size_button_v300):button.setEnabled(enabled)
-        self.draft_overlap_box_v303.setEnabled(enabled)
-        self.draft_neighbors_button_v303.setEnabled(enabled and bool(payload.get('ids'))
+        for button in (self.draft_area_button_v300,self.draft_reflow_button_v300,self.draft_size_button_v300):set_ui_enabled_v310(self, button, enabled)
+        set_ui_enabled_v310(self, self.draft_overlap_box_v303, enabled)
+        set_ui_enabled_v310(self, self.draft_neighbors_button_v303, enabled and bool(payload.get('ids'))
             and not self.busy and not self._neighbor_request_v303)
         self.draft_neighbors_button_v303.setToolTip(self._neighbor_tooltip_v303 if payload.get('ids') else
             'Redistribuir vecinos requiere seleccionar texto existente antes de abrir el borrador.')
-        self.canvas.editor.toolbar.accept.setEnabled(not self._rich_accept_pending and not self._neighbor_request_v303
+        set_ui_enabled_v310(self, self.canvas.editor.toolbar.accept, not self._rich_accept_pending and not self._neighbor_request_v303
             and not getattr(self,'_save_transaction_v300',None))
         self.canvas._draw_overlays()
 

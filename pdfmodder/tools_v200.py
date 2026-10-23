@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QCheckBox,QComboBox,QDialog,QDialogButtonBox,
 
 from .image_editor import CropCanvas
 from .model import PT_PER_MM,transform_rect
+from .action_state_v310 import set_ui_enabled_v310
 
 
 class FormEditorDialog(QDialog):
@@ -157,7 +158,7 @@ class FormsRedactionMixin:
         draft=(self.canvas.editor.isVisible() or getattr(self,'_rich_active',False)
                or getattr(self,'_rich_loading',False) or bool(getattr(self,'_placement',None)))
         ready=ready and not draft
-        self.forms_action_v200.setEnabled(ready);self.redaction_action_v200.setEnabled(ready and not self.state.get('issues'))
+        set_ui_enabled_v310(self, self.forms_action_v200, ready);set_ui_enabled_v310(self, self.redaction_action_v200, ready and not self.state.get('issues'))
 
     def choose_form_editor_v200(self):
         if not self.state or self.busy:return

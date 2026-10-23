@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QTabBar,QLabel,QFileDialog,QMessageBox,
 from .model import pt,mm,transform_rect,union
 from .ui_icons_v170 import icon_v170
 from .selection_ui_v300 import SelectionUiV300Mixin
+from .action_state_v310 import set_ui_enabled_v310
 
 
 class CellDialogV200(QDialog):
@@ -369,23 +370,23 @@ class WorkspaceV200Mixin(SelectionUiV300Mixin):
         super()._refresh_actions()
         if not hasattr(self,'document_tabs_v200'):return
         opened=bool(self.state);draft=self.canvas.editor.isVisible() or self.state.get('preview')
-        self.document_tabs_v200.setEnabled(not self.busy and not draft and not self._cell_draw_v200)
-        self.cell_action_v200.setEnabled(opened and self.application_mode=='editing' and not self.busy and not draft and not self.state.get('issues'))
-        self.recovery_action_v200.setEnabled(not self.busy and not draft)
-        self.split_action_v200.setEnabled(len(self._session_paths_v200)>1 and not self.busy and not draft)
-        if self.state.get('special_only_save') and self.application_mode=='editing':self.save_action.setEnabled(not self.busy and not draft)
+        set_ui_enabled_v310(self, self.document_tabs_v200, not self.busy and not draft and not self._cell_draw_v200)
+        set_ui_enabled_v310(self, self.cell_action_v200, opened and self.application_mode=='editing' and not self.busy and not draft and not self.state.get('issues'))
+        set_ui_enabled_v310(self, self.recovery_action_v200, not self.busy and not draft)
+        set_ui_enabled_v310(self, self.split_action_v200, len(self._session_paths_v200)>1 and not self.busy and not draft)
+        if self.state.get('special_only_save') and self.application_mode=='editing':set_ui_enabled_v310(self, self.save_action, not self.busy and not draft)
         if not self._rich_active:
             self.preview_step_button.setText('Aceptar ✓ · Ctrl+Intro')
             self.edit_step_label.setText('Aceptar valida y aplica una sola operación. Cancelar conserva el PDF anterior.')
             if self.canvas.editor.isVisible():self.apply_step_button.hide()
         if hasattr(self,'forms_action_v200'):self.refresh_forms_redaction_v200()
-        if hasattr(self,'print_action_v200'):self.print_action_v200.setEnabled(opened and not self.busy and not draft)
+        if hasattr(self,'print_action_v200'):set_ui_enabled_v310(self, self.print_action_v200, opened and not self.busy and not draft)
         if self._cell_draw_v200:
-            self.pages.setEnabled(False);self.zoom_box.setEnabled(False)
-            for action in self.findChildren(QAction):action.setEnabled(False)
-            self.cancel_button.setEnabled(True);self.cancel_step_button.setEnabled(True)
+            set_ui_enabled_v310(self, self.pages, False);set_ui_enabled_v310(self, self.zoom_box, False)
+            for action in self.findChildren(QAction):set_ui_enabled_v310(self, action, False)
+            set_ui_enabled_v310(self, self.cancel_button, True);set_ui_enabled_v310(self, self.cancel_step_button, True)
             self.edit_steps.show();self.edit_step_label.setText('Dibuja el área del párrafo o celda. Escape cancela.')
-            self.preview_step_button.setEnabled(False);self.apply_step_button.hide()
+            set_ui_enabled_v310(self, self.preview_step_button, False);self.apply_step_button.hide()
 
     def begin_cell_v200(self):
         if self.busy or not self.model:return

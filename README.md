@@ -1,8 +1,28 @@
-# PDF Modder 3.0.8
+# PDF Modder 3.0.10
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Navegación y controles estables 3.0.10
+
+Cargar páginas y miniaturas no hace parpadear los controles generales. Se aplica
+una sola vez su estado final y se conservan las peticiones de navegación,
+búsqueda y zoom durante el renderizado. Guardar y otros comandos generales
+esperan al motor PDF; los bloqueos de modificación e integridad se mantienen.
+[Detalles y comprobaciones](docs/NOTAS_3.0.10.md).
+
+Entrega Windows x64 disponible desde **Buscar actualizaciones** y GitHub Releases.
+
+## Impresión 3.0.9
+
+Un único cuadro reúne las opciones y la vista preliminar. **Imprimir** envía
+el trabajo directamente, sin otra ventana obligatoria de vista previa ni una
+segunda confirmación de Windows. La vista prepara solo la página mostrada y los
+cambios de presentación reutilizan su imagen. Se mantienen las comprobaciones
+de permisos, copias y doble cara. [Uso](docs/GUIA_V309.md).
+
+Estas mejoras de impresión están incluidas en la entrega 3.0.10.
 
 ## Menús y vista inicial 3.0.8
 
@@ -42,7 +62,7 @@ Las barras de desplazamiento muestran el cursor de flecha. Al actualizar, el
 instalador retira las instalaciones anteriores verificadas y los instaladores
 antiguos reconocidos de su caché, conservando los archivos personales.
 
-Descarga la [versión 3.0.8](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.8)
+Descarga la [versión 3.0.10](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.10)
 o utiliza **Buscar actualizaciones** desde la app.
 
 ## Rendimiento de edición 3.0.5
@@ -158,7 +178,7 @@ Impresión con elección de impresora, color o escala de grises, todas las pági
 página actual o intervalos, doble cara por borde largo/corto cuando el controlador
 la admite, copias agrupadas, papel, orientación, escala y resolución.
 La vista previa permite recorrer las páginas y ajustar el zoom, manteniendo sólo
-una página preparada en la vista. [Uso y límites de impresión](docs/GUIA_V201.md).
+una página preparada en la vista. [Uso y límites de impresión](docs/GUIA_V309.md).
 
 ## Novedades 2.0.0
 
@@ -176,15 +196,15 @@ Las comprobaciones son dirigidas a los cambios; no se repite todo el corpus hist
 Descargas y versiones públicas: [GitHub Releases](https://github.com/satagrolevante/PDFModder/releases).
 El botón **Buscar actualizaciones** consulta este mismo repositorio, sin iniciar sesión.
 
-Instalador: `releases/v3.0.8/PDFModder-v3.0.8-Instalar.exe`,
+Instalador: `releases/v3.0.10/PDFModder-v3.0.10-Instalar.exe`,
 generado después de sus comprobaciones. Incluye las dependencias
 y registra su desinstalador en Aplicaciones instaladas. La alternativa portable
 requiere toda la carpeta `PDFModder`, con `_internal` junto a `PDFModder.exe`.
-Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 3.0.8** desde
+Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 3.0.10** desde
 el acceso creado. **Actualizar ahora** descarga, verifica e instala la actualización,
 cierra la aplicación tras resolver los cambios pendientes y retira la instalación
 anterior identificada cuando la nueva instalación termina correctamente. Conserva
-documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 3.0.8** o
+documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 3.0.10** o
 la entrada correspondiente de Aplicaciones instaladas de Windows.
 
 Desde el código, con Python 3.12 x64:

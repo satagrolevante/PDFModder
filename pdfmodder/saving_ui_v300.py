@@ -13,6 +13,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QLabel,
     QLineEdit, QListWidget, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget, QHBoxLayout, QHeaderView, QToolBar)
+from .action_state_v310 import set_ui_enabled_v310
 
 
 def default_save_path_v300(source):
@@ -225,19 +226,19 @@ class SavingV300Mixin:
                  and not getattr(self, '_mode_preparing_v171', False))
         enabled = bool(ready and ((prepared and permitted) or clean_reading) and not getattr(self, '_rich_loading', False)
                        and not getattr(self, '_signature_placement_dialog', None))
-        self.save_action.setEnabled(enabled)
-        self.save_as_action_v300.setEnabled(enabled)
-        self.save_all_action_v300.setEnabled(bool(self._session_paths_v200) and not self.busy and not locked)
+        set_ui_enabled_v310(self, self.save_action, enabled)
+        set_ui_enabled_v310(self, self.save_as_action_v300, enabled)
+        set_ui_enabled_v310(self, self.save_all_action_v300, bool(self._session_paths_v200) and not self.busy and not locked)
         destination = self.state.get('last_save_path') or self._save_paths_v300.get(self._active_session_v200)
         self.save_action.setToolTip('Guardar en: ' + destination if destination else 'Elegir una copia de salida y guardar · Ctrl+S')
         if locked:
             for toolbar in self.findChildren(QToolBar):
-                toolbar.setEnabled(False)
-            self.centralWidget().setEnabled(False)
+                set_ui_enabled_v310(self, toolbar, False)
+            set_ui_enabled_v310(self, self.centralWidget(), False)
             # Window shortcuts remain active even when their toolbar or
             # button is disabled. They must not cancel a draft mid-save.
             for action in self.findChildren(QAction):
-                action.setEnabled(False)
+                set_ui_enabled_v310(self, action, False)
 
     def _begin_save_flow_v300(self, closing=None):
         if self._save_transaction_v300 is not None or self._closed:

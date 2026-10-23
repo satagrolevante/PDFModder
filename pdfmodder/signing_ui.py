@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from .signing import SIGNING_NOTICE
+from .action_state_v310 import set_ui_enabled_v310
 
 
 class SignatureDialog(QDialog):
@@ -487,15 +488,15 @@ class SigningUiMixin:
             return
         for action, _ in self._signature_actions:
             if action.shortcut() != QKeySequence('Escape'):
-                action.setEnabled(False)
+                set_ui_enabled_v310(self, action, False)
         for widget, _ in self._signature_widgets:
-            widget.setEnabled(False)
+            set_ui_enabled_v310(self, widget, False)
         self.canvas.read_only = bool(self._signature_loading)
         self.edit_steps.show()
         self.edit_step_label.setText('Arrastra para dibujar el sello de firma · Escape: volver al diálogo')
         self.preview_step_button.hide()
         self.apply_step_button.hide()
-        self.cancel_step_button.setEnabled(True)
+        set_ui_enabled_v310(self, self.cancel_step_button, True)
 
     def _signed_document(self, result):
         self._notice('Copia firmada: ' + result['path'] + '\n'

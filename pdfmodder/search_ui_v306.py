@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QDockWidget, QApplication
 from .draft_control_v305 import DraftControl
 from .model import union
 from .search_panel_v306 import SearchPanel
+from .action_state_v310 import set_ui_enabled_v310
 
 
 class SearchUiV306Mixin:
@@ -301,11 +302,11 @@ class SearchUiV306Mixin:
         allowed = self._search_permitted_v306()
         background = self._command in ('page', 'reading_info', 'search')
         interactive = allowed and (not self.busy or background)
-        self.search_box.setEnabled(interactive)
-        self.search_action.setEnabled(interactive)
-        self.search_panel_v306.setEnabled(interactive)
-        self.search_next_action_v306.setEnabled(interactive and bool(self.search_box.text().strip()))
-        self.search_previous_action_v306.setEnabled(interactive and bool(self.search_box.text().strip()))
+        set_ui_enabled_v310(self, self.search_box, interactive)
+        set_ui_enabled_v310(self, self.search_action, interactive)
+        set_ui_enabled_v310(self, self.search_panel_v306, interactive)
+        set_ui_enabled_v310(self, self.search_next_action_v306, interactive and bool(self.search_box.text().strip()))
+        set_ui_enabled_v310(self, self.search_previous_action_v306, interactive and bool(self.search_box.text().strip()))
         self.search_panel_v306.set_busy(bool(self._search_running_v306 or self._search_pending_v306))
 
     def _loaded_page(self, result):

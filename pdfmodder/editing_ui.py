@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QFormLayout,QLabe
     QPushButton,QDialogButtonBox,QDoubleSpinBox,QCheckBox,QLineEdit,QListWidget,
     QFileDialog,QToolBar,QGroupBox,QMessageBox,QAbstractItemView)
 from .model import pt,mm,union
+from .action_state_v310 import set_ui_enabled_v310, ui_enabled_v310
 
 
 class ImageDialog(QDialog):
@@ -180,27 +181,27 @@ class ExtendedEditing:
         tagged=bool(self.state.get('tagged'))
         placing=bool(self._placement)
         for action in (self.add_text_action,self.add_image_action,self.image_mode_action):
-            action.setEnabled(editable and not placing)
+            set_ui_enabled_v310(self, action, editable and not placing)
             action.setToolTip('El contenido nuevo requiere elegir su orden de lectura; las imágenes informativas necesitan una descripción.' if tagged and action is not self.image_mode_action else action.text().replace('&',''))
         capabilities=self.state.get('page_capabilities',{})
         for action,key in ((self.delete_pages_action,'delete'),(self.extract_pages_action,'extract')):
             allowed=capabilities.get(key,not tagged)
-            action.setEnabled(editable and not placing and allowed)
+            set_ui_enabled_v310(self, action, editable and not placing and allowed)
             action.setToolTip(capabilities.get('reason') or 'Se conservarán las etiquetas de las páginas restantes.' if tagged else action.text().replace('&',''))
-        self.format_action.setEnabled(editable and bool(self.canvas.ids) and not placing)
-        self.merge_action.setEnabled(not self.busy and not self.canvas.editor.isVisible() and not self.state.get('preview') and not placing and not tagged)
+        set_ui_enabled_v310(self, self.format_action, editable and bool(self.canvas.ids) and not placing)
+        set_ui_enabled_v310(self, self.merge_action, not self.busy and not self.canvas.editor.isVisible() and not self.state.get('preview') and not placing and not tagged)
         self.merge_action.setToolTip('PDF etiquetado: combinar necesita remapear las etiquetas y todavía no está disponible.' if tagged else 'Combinar PDFs…')
         self.image_box.setVisible(self.canvas.image_mode)
         im=self.canvas.selected_image()
-        self.image_props_button.setEnabled(editable and bool(im and im.get('editable')))
-        self.image_remove_button.setEnabled(self.image_props_button.isEnabled())
+        set_ui_enabled_v310(self, self.image_props_button, editable and bool(im and im.get('editable')))
+        set_ui_enabled_v310(self, self.image_remove_button, ui_enabled_v310(self, self.image_props_button))
         if placing:
             for action in (self.open_action,self.save_action,self.undo_action,self.redo_action,self.compare_action,self.fit_page_action,self.fit_width_action,self.search_action):
-                action.setEnabled(False)
-            self.pages.setEnabled(False)
-            self.zoom_box.setEnabled(False)
-            self.property_box.setEnabled(False)
-            self.cancel_button.setEnabled(not self.busy)
+                set_ui_enabled_v310(self, action, False)
+            set_ui_enabled_v310(self, self.pages, False)
+            set_ui_enabled_v310(self, self.zoom_box, False)
+            set_ui_enabled_v310(self, self.property_box, False)
+            set_ui_enabled_v310(self, self.cancel_button, not self.busy)
 
     def _sync_page_list(self):
         if not self.state:

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from .document_ops_v170 import METADATA_FIELDS, validate_metadata
 from .model import EditError
+from .action_state_v310 import set_ui_enabled_v310
 
 
 def _read_only(value, name):
@@ -227,8 +228,8 @@ class DocumentUiV170Mixin:
             return
         ready = bool(self.state) and not self.busy
         editing = getattr(self, '_rich_active', False) or bool(getattr(self, '_placement', None))
-        self.document_properties_action.setEnabled(ready and not editing)
-        self.document_security_action.setEnabled(ready and not editing and not self.state.get('preview')
+        set_ui_enabled_v310(self, self.document_properties_action, ready and not editing)
+        set_ui_enabled_v310(self, self.document_security_action, ready and not editing and not self.state.get('preview')
                                                   and not self.compare_action.isChecked())
 
     def choose_document_properties_v170(self):

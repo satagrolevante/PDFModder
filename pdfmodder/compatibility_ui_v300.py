@@ -1,6 +1,7 @@
 """Actionable capabilities for the selected operation, without changing a PDF."""
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget,QHBoxLayout,QPushButton,QComboBox
+from .action_state_v310 import set_ui_enabled_v310
 
 
 class CompatibilityUiV300Mixin:
@@ -82,10 +83,10 @@ class CompatibilityUiV300Mixin:
         for name,tooltip in getattr(self,'_operation_tooltips_v300',{}).items():
             action=getattr(self,name)
             if self.state.get('has_form_fields'):
-                action.setEnabled(False)
+                set_ui_enabled_v310(self, action, False)
                 action.setToolTip('Usa «Editar objetos PDF…» para transformar las apariciones de este documento con campos interactivos.')
             else:action.setToolTip(tooltip)
         if hasattr(self,'native_objects_action'):
-            self.native_objects_action.setEnabled(bool(self.model and self.application_mode=='editing'
+            set_ui_enabled_v310(self, self.native_objects_action, bool(self.model and self.application_mode=='editing'
                 and not self.busy and not self.state.get('preview') and not self.canvas.editor.isVisible()
                 and not getattr(self,'_save_transaction_v300',None)))

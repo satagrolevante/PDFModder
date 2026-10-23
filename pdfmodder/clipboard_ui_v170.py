@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QWidget, QLineEdit, QTextEdit, QPlai
 
 from .model import pt
 from .clipboard_formats_v200 import clipboard_has_paste_v200
+from .action_state_v310 import set_ui_enabled_v310
 
 MIME_V170='application/x-pdfmodder-object-v1'
 MAX_BUNDLE_BYTES=64*1024*1024
@@ -130,19 +131,19 @@ class ClipboardUiV170Mixin:
         if target is not None:
             has_selection=target.hasSelectedText() if isinstance(target,QLineEdit) else target.textCursor().hasSelection()
             writable=not target.isReadOnly()
-            self.copy_action_v170.setEnabled(has_selection)
-            self.cut_action_v170.setEnabled(writable and has_selection)
-            self.paste_action_v170.setEnabled(writable and has_paste)
-            self.delete_action_v170.setEnabled(writable)
+            set_ui_enabled_v310(self, self.copy_action_v170, has_selection)
+            set_ui_enabled_v310(self, self.cut_action_v170, writable and has_selection)
+            set_ui_enabled_v310(self, self.paste_action_v170, writable and has_paste)
+            set_ui_enabled_v310(self, self.delete_action_v170, writable)
             return
         image=self.canvas.selected_image()
         selected=bool(self.canvas.ids or image)
         ready=self._clipboard_ready_v170()
         editable=self._clipboard_ready_v170(True)
-        self.copy_action_v170.setEnabled(ready and selected)
-        self.cut_action_v170.setEnabled(editable and selected and (not image or image.get('editable')))
-        self.delete_action_v170.setEnabled(editable and selected and (not image or image.get('editable')))
-        self.paste_action_v170.setEnabled(editable and has_paste)
+        set_ui_enabled_v310(self, self.copy_action_v170, ready and selected)
+        set_ui_enabled_v310(self, self.cut_action_v170, editable and selected and (not image or image.get('editable')))
+        set_ui_enabled_v310(self, self.delete_action_v170, editable and selected and (not image or image.get('editable')))
+        set_ui_enabled_v310(self, self.paste_action_v170, editable and has_paste)
 
     def eventFilter(self,obj,event):
         if event.type()==QEvent.KeyPress and isinstance(obj,QWidget) and obj.window() is self:

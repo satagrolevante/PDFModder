@@ -48,6 +48,10 @@ from .daily_updates_ui_v307 import DailyUpdatesUiV307Mixin
 from .menus_ui_v308 import MenusUiV308Mixin
 from .sharing_ui_v308 import SharingUiV308Mixin
 from .view_zoom_ui_v308 import ViewZoomUiV308Mixin
+from .printing_v309 import PrintingV309Mixin
+from .action_state_v310 import ActionStateV310Mixin, set_ui_enabled_v310, ui_enabled_v310
+from .responsive_ui_v310 import ResponsiveUiV310Mixin
+from .navigation_ui_v310 import NavigationUiV310Mixin
 from . import __version__
 
 
@@ -500,31 +504,31 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         selected = bool(self.canvas.ids) and not original and not preview
         permitted = not self.state.get("issues")
         writing = self.canvas.editor.isVisible() or getattr(self,'_rich_active',False) or getattr(self,'_rich_loading',False)
-        self.open_action.setEnabled(not self.busy and not writing)
-        self.save_action.setEnabled(ready and not preview and (permitted or self.state.get('metadata_only_save',False)) and not writing)
-        self.sign_action.setEnabled(ready and not preview and permitted and not writing and not original)
-        self.undo_action.setEnabled(ready and self.state.get("undo",False) and not writing)
-        self.redo_action.setEnabled(ready and self.state.get("redo",False) and not writing)
-        self.property_box.setEnabled(ready and selected and permitted and not writing)
-        self.commit_button.setEnabled(ready and preview and not original)
-        self.cancel_button.setEnabled(ready and (preview or self.canvas.editor.isVisible()))
-        self.font_button.setEnabled(ready and not preview and not writing)
-        self.pages.setEnabled(ready and not preview and not writing)
+        set_ui_enabled_v310(self, self.open_action, not self.busy and not writing)
+        set_ui_enabled_v310(self, self.save_action, ready and not preview and (permitted or self.state.get('metadata_only_save',False)) and not writing)
+        set_ui_enabled_v310(self, self.sign_action, ready and not preview and permitted and not writing and not original)
+        set_ui_enabled_v310(self, self.undo_action, ready and self.state.get("undo",False) and not writing)
+        set_ui_enabled_v310(self, self.redo_action, ready and self.state.get("redo",False) and not writing)
+        set_ui_enabled_v310(self, self.property_box, ready and selected and permitted and not writing)
+        set_ui_enabled_v310(self, self.commit_button, ready and preview and not original)
+        set_ui_enabled_v310(self, self.cancel_button, ready and (preview or self.canvas.editor.isVisible()))
+        set_ui_enabled_v310(self, self.font_button, ready and not preview and not writing)
+        set_ui_enabled_v310(self, self.pages, ready and not preview and not writing)
         for action in (self.fit_page_action,self.fit_width_action,self.compare_action,self.search_action):
-            action.setEnabled(ready and not preview and not writing)
-        self.search_box.setEnabled(ready and not writing)
-        self.zoom_box.setEnabled(ready and not writing)
-        self.zoom_out_action.setEnabled(ready and not writing and self.zoom > .100001)
-        self.zoom_in_action.setEnabled(ready and not writing and self.zoom < 3.999999)
+            set_ui_enabled_v310(self, action, ready and not preview and not writing)
+        set_ui_enabled_v310(self, self.search_box, ready and not writing)
+        set_ui_enabled_v310(self, self.zoom_box, ready and not writing)
+        set_ui_enabled_v310(self, self.zoom_out_action, ready and not writing and self.zoom > .100001)
+        set_ui_enabled_v310(self, self.zoom_in_action, ready and not writing and self.zoom < 3.999999)
         self.canvas.read_only = not ready or original or preview or not permitted or writing
         self.canvas.allow_background_edit = bool(opened and self._thumbnail_busy and not original and not preview and permitted and not writing)
-        self.line_reflow_box.setEnabled(bool(opened and selected and permitted and not (getattr(self,'_rich_active',False) or getattr(self,'_rich_loading',False)) and (ready or self._thumbnail_busy) and self._line_reflow_available() and self._pending_text_preview is None))
+        set_ui_enabled_v310(self, self.line_reflow_box, bool(opened and selected and permitted and not (getattr(self,'_rich_active',False) or getattr(self,'_rich_loading',False)) and (ready or self._thumbnail_busy) and self._line_reflow_available() and self._pending_text_preview is None))
         if self._thumbnail_busy and writing:
-            self.cancel_button.setEnabled(True)
+            set_ui_enabled_v310(self, self.cancel_button, True)
         self.edit_steps.setVisible(bool(writing or preview or self._pending_text_preview))
-        self.preview_step_button.setEnabled(bool(writing and (ready or self._thumbnail_busy) and not preview and self._pending_text_preview is None))
-        self.apply_step_button.setEnabled(self.commit_button.isEnabled())
-        self.cancel_step_button.setEnabled(self.cancel_button.isEnabled())
+        set_ui_enabled_v310(self, self.preview_step_button, bool(writing and (ready or self._thumbnail_busy) and not preview and self._pending_text_preview is None))
+        set_ui_enabled_v310(self, self.apply_step_button, ui_enabled_v310(self, self.commit_button))
+        set_ui_enabled_v310(self, self.cancel_step_button, ui_enabled_v310(self, self.cancel_button))
         self.edit_step_label.setText('Revisa el PDF modificado y pulsa «Aplicar cambio». Después, «Guardar como…».' if preview else
                                     'Primero genera la vista previa; después podrás aceptar la modificación con «Aplicar cambio».')
         title = Path(self.state.get("path","")).name if opened else "Sin documento"
@@ -534,20 +538,20 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         self.setWindowTitle(f"{title}{mark}{pending}{original_label} — PDF Modder {__version__}")
         origins=self.state.get('original_pages',[])
         if origins and origins[self.page_number] is None:
-            self.compare_action.setEnabled(False)
+            set_ui_enabled_v310(self, self.compare_action, False)
         self._refresh_extended()
         self._refresh_advanced()
         if hasattr(self,'objects_action'):
-            self.objects_action.setEnabled(ready and permitted and not writing and not preview and not original)
-            self.copy_format_action.setEnabled(ready and selected and not writing and permitted)
-            self.paste_format_action.setEnabled(ready and bool(self._format_copy) and not writing and permitted and not preview)
-            self.interaction_box.setEnabled(ready and not writing and not preview)
+            set_ui_enabled_v310(self, self.objects_action, ready and permitted and not writing and not preview and not original)
+            set_ui_enabled_v310(self, self.copy_format_action, ready and selected and not writing and permitted)
+            set_ui_enabled_v310(self, self.paste_format_action, ready and bool(self._format_copy) and not writing and permitted and not preview)
+            set_ui_enabled_v310(self, self.interaction_box, ready and not writing and not preview)
         if getattr(self,'_rich_active',False):
             self.edit_step_label.setText('✓ Aceptar / Ctrl+Intro valida y aplica el borrador. × Cancelar / Esc lo descarta.')
             self.preview_step_button.setText('Aceptar ✓ · Ctrl+Intro')
-            self.preview_step_button.setEnabled(not self._rich_accept_pending)
+            set_ui_enabled_v310(self, self.preview_step_button, not self._rich_accept_pending)
             self.apply_step_button.hide()
-            self.cancel_step_button.setEnabled(not self._rich_accept_pending)
+            set_ui_enabled_v310(self, self.cancel_step_button, not self._rich_accept_pending)
         else:
             self.preview_step_button.setText('1. Ver vista previa · Ctrl+Intro')
             self.preview_step_button.show()
@@ -1146,7 +1150,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         event.accept()
 
 
-class MainWindow(MenusUiV308Mixin,SharingUiV308Mixin,ViewZoomUiV308Mixin,DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
+class MainWindow(ActionStateV310Mixin,ResponsiveUiV310Mixin,NavigationUiV310Mixin,PrintingV309Mixin,MenusUiV308Mixin,SharingUiV308Mixin,ViewZoomUiV308Mixin,DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
     """New workspace interceptors precede the existing window implementation."""
 
 
