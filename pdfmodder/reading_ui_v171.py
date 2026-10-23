@@ -35,7 +35,7 @@ class ReadingUiV171Mixin:
         self.tools_action.blockSignals(blocked)
         self.tools_action.setToolTip('Salir del modo edición y volver a Lectura.' if editing else
                                     'Activar el modo edición de texto, imágenes y páginas.')
-        self.tools_scroll.setVisible(editing)
+        self._set_tools_panel_visible_v312(editing)
         self.canvas.reading_mode = not editing
         self._show_document_mode_v180(mode)
         self.mode_label_v171.setText('Edición' if editing else 'Lectura')

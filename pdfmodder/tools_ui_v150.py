@@ -154,12 +154,37 @@ class ToolsWorkspaceV150Mixin:
         action.triggered.connect(callback)
         return action
 
+    def _set_tools_panel_visible_v312(self, visible):
+        splitter = self.document_splitter
+        index = splitter.indexOf(self.tools_scroll)
+        sizes = splitter.sizes()
+        minimum = self.tools_scroll.minimumWidth()
+        maximum = self.tools_scroll.maximumWidth()
+        if not visible:
+            if not self.tools_scroll.isHidden() and sizes[index] >= minimum:
+                self._tools_panel_width_v312 = min(maximum, sizes[index])
+            self.tools_scroll.hide()
+            return
+        restore = self.tools_scroll.isHidden() or sizes[index] < minimum
+        # Sidebar resizing passes zero for this pane while it is hidden.
+        # A visible tools panel must never inherit that collapsed allocation.
+        splitter.setCollapsible(index, False)
+        self.tools_scroll.show()
+        if restore:
+            sizes = splitter.sizes()
+            width = max(minimum, min(maximum, getattr(self, '_tools_panel_width_v312', 300)))
+            delta = width-sizes[index]
+            sizes[index] = width
+            sizes[1] = max(1, sizes[1]-delta)
+            splitter.setSizes(sizes)
+
     def _create_tools_workspace_v150(self, splitter, scroll, properties_panel):
         self.document_splitter = splitter
         self.tools_scroll = scroll
         self.tools_scroll.setObjectName('toolsPanel')
         self.tools_scroll.setMinimumWidth(285)
         self.tools_scroll.setMaximumWidth(390)
+        splitter.setCollapsible(splitter.indexOf(scroll), False)
         self.tools_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # takeWidget keeps the existing properties and their signals alive.
         self.tools_scroll.takeWidget()
@@ -181,7 +206,9 @@ class ToolsWorkspaceV150Mixin:
         self.thumbnail_action = self._new_tool_action_v150('Miniaturas de página', lambda value:self.pages.setVisible(value))
         self.thumbnail_action.setCheckable(True)
         self.thumbnail_action.setChecked(True)
-        self.tools_action = self._new_tool_action_v150('EDITAR', lambda value:self.tools_scroll.setVisible(value))
+        # The reading/editing transition owns visibility, including deferred
+        # preparation. A second triggered callback could override that state.
+        self.tools_action = QAction('EDITAR', self)
         self.tools_action.setToolTip('Activar el modo edición. Vuelve a pulsar para regresar a Lectura.')
         self.tools_action.setCheckable(True)
         self.tools_action.setChecked(True)

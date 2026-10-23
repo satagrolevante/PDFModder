@@ -126,7 +126,7 @@ jobs:
   publish:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.11-publicacion')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.12-publicacion')
     needs: build
     runs-on: windows-2025
     permissions:
@@ -155,17 +155,17 @@ jobs:
           python scripts/publish_github_releases.py --version ${{ needs.build.outputs.version }}
           --notes-file docs/NOTAS_${{ needs.build.outputs.version }}.md
       - name: Retirar publicaciones anteriores tras verificar la actualización pública
-        if: needs.build.outputs.version == '3.0.11'
+        if: needs.build.outputs.version == '3.0.12'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
-          python scripts/cleanup_previous_releases.py --keep v3.0.11 --apply
-          --report output/github-cleanup-v3.0.11.json
+          python scripts/cleanup_previous_releases.py --keep v3.0.12 --apply
+          --report output/github-cleanup-v3.0.12.json
       - name: Conservar informe de limpieza de publicaciones
-        if: always() && needs.build.outputs.version == '3.0.11'
+        if: always() && needs.build.outputs.version == '3.0.12'
         uses: actions/upload-artifact@v4
         with:
-          name: PDFModder-v3.0.11-limpieza-${{ github.sha }}
-          path: output/github-cleanup-v3.0.11.json
+          name: PDFModder-v3.0.12-limpieza-${{ github.sha }}
+          path: output/github-cleanup-v3.0.12.json
           if-no-files-found: ignore
           retention-days: 14

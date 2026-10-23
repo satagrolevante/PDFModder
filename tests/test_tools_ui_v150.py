@@ -102,6 +102,49 @@ def test_page_buttons_dispatch_real_entrypoints_and_respect_busy(tools_window, m
     assert not window.split_document_action.isEnabled()
 
 
+@pytest.mark.parametrize('restore_left', [False, True])
+def test_edit_reopens_right_tools_after_toggling_left_panel_in_reading(tools_window, qtbot, restore_left):
+    window = tools_window
+    qtbot.mouseClick(window.tools_toggle_button, Qt.LeftButton)
+    assert window.application_mode == 'reading'
+    qtbot.mouseClick(window.sidebar_collapse_button_v311, Qt.LeftButton)
+    if restore_left:
+        qtbot.mouseClick(window.sidebar_restore_button_v311, Qt.LeftButton)
+    qtbot.mouseClick(window.tools_toggle_button, Qt.LeftButton)
+    assert window.application_mode == 'editing'
+    index = window.document_splitter.indexOf(window.tools_scroll)
+    assert window.document_splitter.sizes()[index] >= window.tools_scroll.minimumWidth()
+    assert not window.document_splitter.isCollapsible(index)
+    for section in (window.content_tools_section, window.format_tools_section,
+                    window.page_tools_section, window.advanced_tools_section):
+        assert section.header.isVisible()
+    window.content_tools_section.header.click()
+    assert window.findChild(QToolButton, 'toolAddText').isVisible()
+
+
+def test_edit_restores_previous_tools_width_and_leaves_left_panel_collapsed(tools_window, qtbot):
+    window = tools_window
+    splitter = window.document_splitter
+    index = splitter.indexOf(window.tools_scroll)
+    sizes = splitter.sizes()
+    sizes[1] -= 360-sizes[index]
+    sizes[index] = 360
+    splitter.setSizes(sizes)
+    previous = splitter.sizes()[index]
+    qtbot.mouseClick(window.tools_toggle_button, Qt.LeftButton)
+    qtbot.mouseClick(window.sidebar_collapse_button_v311, Qt.LeftButton)
+    # Simulate a previously collapsed pane as well as the normal hidden state.
+    splitter.setCollapsible(index, True)
+    sizes = splitter.sizes()
+    sizes[index] = 0
+    splitter.setSizes(sizes)
+    zoom = window.zoom
+    qtbot.mouseClick(window.tools_toggle_button, Qt.LeftButton)
+    assert abs(splitter.sizes()[index]-previous) <= 1
+    assert window.sidebar_host_v311.width() == 26
+    assert window.zoom == zoom
+
+
 def _canvas_document(window):
     from pdfmodder.model import Glyph, PageModel
     glyph = Glyph(0, 'A', (20., 25.), (20., 15., 30., 27.), (20., 15., 30., 27.),
