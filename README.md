@@ -1,8 +1,14 @@
-# PDF Modder 3.0.12
+# PDF Modder 3.0.13
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Selección por línea 3.0.13
+
+Al entrar en **EDITAR**, **Seleccionar** comienza en **Línea**, tanto en
+el selector como en el lienzo. Puedes elegir otro alcance manualmente.
+[Detalles](docs/NOTAS_3.0.13.md).
 
 ## Panel de herramientas 3.0.12
 
@@ -78,7 +84,7 @@ Las barras de desplazamiento muestran el cursor de flecha. Al actualizar, el
 instalador retira las instalaciones anteriores verificadas y los instaladores
 antiguos reconocidos de su caché, conservando los archivos personales.
 
-Descarga la [versión 3.0.12](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.12)
+Descarga la [versión 3.0.13](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.13)
 o utiliza **Buscar actualizaciones** desde la app.
 
 ## Rendimiento de edición 3.0.5
@@ -212,15 +218,15 @@ Las comprobaciones son dirigidas a los cambios; no se repite todo el corpus hist
 Descargas y versiones públicas: [GitHub Releases](https://github.com/satagrolevante/PDFModder/releases).
 El botón **Buscar actualizaciones** consulta este mismo repositorio, sin iniciar sesión.
 
-Instalador: `releases/v3.0.12/PDFModder-v3.0.12-Instalar.exe`,
+Instalador: `releases/v3.0.13/PDFModder-v3.0.13-Instalar.exe`,
 generado después de sus comprobaciones. Incluye las dependencias
 y registra su desinstalador en Aplicaciones instaladas. La alternativa portable
 requiere toda la carpeta `PDFModder`, con `_internal` junto a `PDFModder.exe`.
-Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 3.0.12** desde
+Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 3.0.13** desde
 el acceso creado. **Actualizar ahora** descarga, verifica e instala la actualización,
 cierra la aplicación tras resolver los cambios pendientes y retira la instalación
 anterior identificada cuando la nueva instalación termina correctamente. Conserva
-documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 3.0.12** o
+documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 3.0.13** o
 la entrada correspondiente de Aplicaciones instaladas de Windows.
 
 Desde el código, con Python 3.12 x64:

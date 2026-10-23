@@ -256,7 +256,8 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         self.mode_box.setObjectName("selectionMode")
         for label,value in (("Carácter","character"),("Palabra","word"),("Línea","line"),("Bloque inferido","block")):
             self.mode_box.addItem(label,value)
-        self.mode_box.setCurrentIndex(1)
+        self.mode_box.setCurrentIndex(self.mode_box.findData('line'))
+        self.canvas.mode = self.mode_box.currentData()
         self.mode_box.currentIndexChanged.connect(lambda _:setattr(self.canvas,"mode",self.mode_box.currentData()))
         mode_layout.addRow("Seleccionar", self.mode_box)
         panel_layout.addLayout(mode_layout)
