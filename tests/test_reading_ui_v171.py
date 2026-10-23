@@ -49,7 +49,8 @@ def load_fixture(reader, qtbot):
 def test_startup_reading_and_explicit_tools_without_document(reader):
     assert reader.application_mode == 'reading' and reader.canvas.reading_mode
     assert not reader.tools_scroll.isVisible() and not reader.tools_action.isChecked()
-    assert all(not action.isVisible() for action in reader.mode_actions_v170.values())
+    assert reader.mode_actions_v170['select'].isVisible()
+    assert all(not reader.mode_actions_v170[key].isVisible() for key in ('write', 'move'))
     reader.tools_action.setChecked(True)
     assert reader.application_mode == 'editing' and reader.tools_scroll.isVisible()
     reader.reading_action.trigger()

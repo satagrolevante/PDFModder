@@ -25,7 +25,7 @@ class ReadingUiV171Mixin:
         self.canvas.wheel_page_requested.connect(self._wheel_page_v171)
         self._create_continuous_ui_v180()
         self._set_mode_v171('reading')
-        self._notice('Modo Lectura: selecciona y copia texto. Pulsa «Herramientas» para editar.')
+        self._notice('Modo Lectura: selecciona y copia texto. Pulsa «EDITAR» para modificar el documento.')
 
     def _set_mode_v171(self, mode):
         self.application_mode = mode
@@ -33,6 +33,8 @@ class ReadingUiV171Mixin:
         blocked = self.tools_action.blockSignals(True)
         self.tools_action.setChecked(editing)
         self.tools_action.blockSignals(blocked)
+        self.tools_action.setToolTip('Salir del modo edición y volver a Lectura.' if editing else
+                                    'Activar el modo edición de texto, imágenes y páginas.')
         self.tools_scroll.setVisible(editing)
         self.canvas.reading_mode = not editing
         self._show_document_mode_v180(mode)
@@ -77,7 +79,7 @@ class ReadingUiV171Mixin:
             return True
         if command in ('open', 'close', 'page', 'reading_info', 'reading_copy_range', 'prepare_editing', 'search', 'document_properties', 'clipboard_copy', 'convert_office', 'combine'):
             return True
-        self._notice('Pulsa «Herramientas» para activar el modo Edición.')
+        self._notice('Pulsa «EDITAR» para activar el modo Edición.')
         return False
 
     def _refresh_reading_actions_v171(self):

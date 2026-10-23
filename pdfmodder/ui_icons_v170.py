@@ -1,11 +1,15 @@
 """Original scalable pictograms for the local editor; no external icon assets."""
 from PySide6.QtCore import QByteArray, QRectF, QSize, Qt
-from PySide6.QtGui import QIcon, QIconEngine, QPainter, QPixmap
+from PySide6.QtGui import QIcon, QIconEngine, QPainter, QPixmap, QPalette
+from PySide6.QtWidgets import QApplication
 from PySide6.QtSvg import QSvgRenderer
 
 
 # Drawings use a common 24-unit canvas and deliberately different silhouettes.
 ICON_DRAWINGS_V170 = {
+    'previous_page': '<path d="M15 4l-8 8 8 8"/>',
+    'next_page': '<path d="M9 4l8 8-8 8"/>',
+    'hand': '<path d="M7 12V5a2 2 0 0 1 4 0v6-8a2 2 0 0 1 4 0v8-6a2 2 0 0 1 4 0v8-4a2 2 0 0 1 3 0v7c0 5-3 7-7 7h-2c-3 0-4-2-6-4l-4-5a2 2 0 0 1 3-2l3 3"/>',
     'document': '<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6"/>',
     'print': '<path d="M6 8V3h12v5M6 17H3V9h18v8h-3M6 14h12v8H6zM9 17h6M9 19h6"/><circle cx="18" cy="11" r=".6"/>',
     'open': '<path d="M3 19V6h7l2 3h9l-3 10zM3 19l4-8h14"/>',
@@ -86,6 +90,9 @@ class _SvgIconEngine(QIconEngine):
 
     def paint(self, painter, rect, mode, state):
         color = '#88949e' if mode == QIcon.Disabled else '#345d7b'
+        app = QApplication.instance()
+        if app is not None and app.palette().color(QPalette.Window).lightness() < 128:
+            color = '#808b99' if mode == QIcon.Disabled else '#b3d8f6'
         data = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
                 f'<g fill="none" stroke="{color}" stroke-width="1.65" '
                 f'stroke-linecap="round" stroke-linejoin="round">{self.drawing}</g></svg>')

@@ -2,12 +2,13 @@
 from time import monotonic
 import math
 
-from PySide6.QtCore import Qt, Signal, QPointF, QRectF
+from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QTimer
 from PySide6.QtGui import QColor, QPen, QBrush, QPixmap, QKeyEvent, QPolygonF
 from PySide6.QtWidgets import QApplication, QGraphicsView, QGraphicsScene
 
 from .model import transform, transform_rect, union
 from .selection_v300 import selection_index
+from .selection_display_v311 import selection_rectangles_v311
 from .rich_editor import PageEditor
 
 
@@ -82,6 +83,10 @@ class PdfCanvas(QGraphicsView):
         self.model = None
         self.zoom = 1.
         self.ids = []
+        self._selection_timer_v311 = QTimer(self)
+        self._selection_timer_v311.setSingleShot(True)
+        self._selection_timer_v311.setInterval(16)
+        self._selection_timer_v311.timeout.connect(self._flush_selection_v311)
         self.mode = "word"
         self._reading_mode = False
         self.page_navigation_enabled = False
@@ -149,6 +154,8 @@ class PdfCanvas(QGraphicsView):
         self.verticalScrollBar().valueChanged.connect(self._place_editor)
 
     def set_page(self, png, model, zoom, changes=None):
+        self._selection_timer_v311.stop()
+        self._selection_display_key_v311 = self._selection_notified_v311 = None
         self.end_signature_rectangle()
         self._press = self._press_scene = self._drag = None
         self._reading_anchor = self._reading_press_pos = None
@@ -410,8 +417,20 @@ class PdfCanvas(QGraphicsView):
         return abs(last.x()-first.x())>=3. and abs(last.y()-first.y())>=3.
 
     def set_selection(self, ids, notify=True):
-        allowed = {g.id for g in self.model.glyphs} if self.model else set()
-        self.ids = sorted(set(ids) & allowed)
+        model_key = (id(self.model), self.model.revision, id(self.model.glyphs), len(self.model.glyphs)) if self.model else None
+        if getattr(self, '_allowed_selection_key_v311', None) != model_key:
+            self._allowed_selection_key_v311 = model_key
+            self._allowed_selection_ids_v311 = {g.id for g in self.model.glyphs} if self.model else set()
+        allowed = getattr(self, '_allowed_selection_ids_v311', set())
+        chosen = sorted(set(ids) & allowed)
+        key = (model_key, self.mode, self.reading_mode, tuple(chosen))
+        changed = key != getattr(self, '_selection_display_key_v311', None) or chosen != self.ids
+        self.ids = chosen
+        if not changed:
+            if notify and key != getattr(self, '_selection_notified_v311', None):
+                self._flush_selection_v311()
+            return
+        self._selection_display_key_v311 = key
         self.selection_rect_v300 = None
         if self.ids and self.model:
             first = next(g for g in self.model.glyphs if g.id in self.ids)
@@ -420,11 +439,24 @@ class PdfCanvas(QGraphicsView):
                 if set(scope.ids) == set(self.ids):
                     self.selection_rect_v300 = scope.rect
         if self.ids:
+            had_image = self.image_id is not None
             self.image_id=None
-            self.image_selected.emit(None)
+            if had_image:
+                self.image_selected.emit(None)
         self._draw_overlays()
         if notify:
-            self.selection_changed.emit(self.ids)
+            if self._reading_dragging or (self._press is not None and self.interaction_mode == 'select' and not self._border_move):
+                if not self._selection_timer_v311.isActive():
+                    self._selection_timer_v311.start()
+            else:
+                self._flush_selection_v311()
+
+    def _flush_selection_v311(self):
+        self._selection_timer_v311.stop()
+        key = getattr(self, '_selection_display_key_v311', None)
+        if key != getattr(self, '_selection_notified_v311', None):
+            self._selection_notified_v311 = key
+            self.selection_changed.emit(self.ids[:])
 
     def set_images(self,items,restore_rect=None):
         self.images=items
@@ -551,8 +583,8 @@ class PdfCanvas(QGraphicsView):
         for rect in self.search_rects:
             self._rect_item(rect, "#a88500", "#55ffdb00")
         selected = self.model.selected(self.ids)
-        for glyph in selected:
-            self._rect_item(glyph.bbox, "#007cc2", "#440099dd")
+        for rect in selection_rectangles_v311(selected):
+            self._rect_item(rect, "#007cc2", "#440099dd")
         if selected and not self.reading_mode:
             bounds = self._text_resize_rect or self.selection_rect_v300 or union(g.bbox for g in selected)
             self._rect_item(bounds, "#007cc2", None, True)
@@ -826,6 +858,7 @@ class PdfCanvas(QGraphicsView):
                 self._reading_dragging=False
                 self._press=self._press_scene=self._drag=None
                 self._border_move=False
+                self._flush_selection_v311()
             event.accept()
             return
         was_border_move=self._border_move
@@ -863,6 +896,15 @@ class PdfCanvas(QGraphicsView):
             event.accept()
             return
         delta = self._drag
+        if (self._press and not was_border_move and self.interaction_mode == 'select'
+                and (event.position().toPoint()-self._press_scene).manhattanLength() > 4):
+            hit = self.model.hit(self.pdf_point(event.position().toPoint())) if self.model else None
+            anchor = next((g for g in self.model.glyphs if g.id == self._selection_drag_anchor), None) if self.model else None
+            if hit and anchor:
+                selected = selection_index(self.model).range(anchor, hit, self.mode)
+                if selected:
+                    self.set_selection(selected)
+        self._flush_selection_v311()
         self._press = self._drag = None
         if delta and not self.read_only:
             self._draw_overlays()
@@ -870,6 +912,7 @@ class PdfCanvas(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self,event):
+        self._flush_selection_v311()
         if self.signature_rectangle_mode:
             event.accept()
             return
@@ -893,6 +936,7 @@ class PdfCanvas(QGraphicsView):
         super().contextMenuEvent(event)
 
     def mouseDoubleClickEvent(self, event):
+        self._flush_selection_v311()
         if self.signature_rectangle_mode:
             event.accept()
             return
@@ -1062,6 +1106,7 @@ class PdfCanvas(QGraphicsView):
         super().wheelEvent(event)
 
     def keyPressEvent(self, event):
+        self._flush_selection_v311()
         if self.signature_rectangle_mode:
             if event.key()==Qt.Key_Escape:
                 self.end_signature_rectangle()

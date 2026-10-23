@@ -7,7 +7,7 @@ This is an inferred order, not a claim that an untagged PDF has semantics.
 from .model import union
 
 
-def ordered_lines(model):
+def _build_ordered_lines_v311(model):
     visible = [g for g in model.glyphs if g.mode != 3 and g.opacity > 0]
     # A purely OCR page is readable too. Avoid copying a second OCR rendition
     # of visible text; an OCR-only block remains available beside real text.
@@ -17,13 +17,13 @@ def ordered_lines(model):
     groups = {}
     for glyph in glyphs:
         groups.setdefault((glyph.block, glyph.line, glyph.mode), []).append(glyph)
+    from .typography_v300 import logical_order
+    ranks = logical_order(model)
     lines = []
     for group in groups.values():
         # The baseline's direction also handles vertical and right-to-left
         # writing without sorting by arbitrary glyph identifiers.
         direction = group[0].direction
-        from .typography_v300 import logical_order
-        ranks = logical_order(model)
         logical_group = group and all(g.id in ranks for g in group) and len({ranks[g.id][0] for g in group}) == 1
         if logical_group:
             group.sort(key=lambda g: ranks[g.id][1])
@@ -75,8 +75,25 @@ def ordered_lines(model):
     return order(lines)
 
 
+def reading_data_v311(model):
+    """Reuse geometric order only for the same immutable page snapshot."""
+    key = (model.revision, id(model.glyphs), len(model.glyphs),
+           id(model.logical_text_runs), len(model.logical_text_runs))
+    cached = getattr(model, '_reading_data_v311', None)
+    if cached is None or cached[0] != key:
+        lines = _build_ordered_lines_v311(model)
+        glyphs = [glyph for line in lines for glyph in line]
+        cached = (key, lines, glyphs, {g.id: i for i, g in enumerate(glyphs)})
+        model._reading_data_v311 = cached
+    return cached
+
+
+def ordered_lines(model):
+    return reading_data_v311(model)[1]
+
+
 def ordered_glyphs(model):
-    return [glyph for line in ordered_lines(model) for glyph in line]
+    return reading_data_v311(model)[2]
 
 
 def selection_text(model, start_id=None, end_id=None):

@@ -1,12 +1,15 @@
 """One print dialog, a bounded inline preview and direct, explicit printing."""
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal, QSignalBlocker
+from PySide6.QtGui import QAction, QImage, QPainter
 from PySide6.QtPrintSupport import QPrinter, QPrintPreviewWidget
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QMessageBox,
+)
+from .printer_preferences_v311 import (
+    DEFAULT_PRINT_SETTINGS_V311, PrinterPreferencesV311, print_profile_v311,
 )
 
 from .printing_v201 import (
@@ -21,8 +24,11 @@ class PrintDialogV309(PrintOptionsV200):
     preview_invalidated = Signal()
     print_requested = Signal()
 
-    def __init__(self, count, current, parent=None):
+    def __init__(self, count, current, parent=None, *, preferences=None):
         super().__init__(count, current, parent)
+        self._printer_preferences_v311 = preferences
+        self._printer_drafts_v311 = {}
+        self._profile_printer_v311 = None
         self.setWindowTitle('Imprimir')
         self.setObjectName('printDialogV309')
         self.resize(1120, 760)
@@ -110,13 +116,45 @@ class PrintDialogV309(PrintOptionsV200):
         self.preview_timer.setSingleShot(True)
         self.preview_timer.setInterval(180)
         self.preview_timer.timeout.connect(self.preview_requested)
-        for control in (self.printer, self.color, self.duplex, self.scope,
+        # Restore the new profile before applying its driver's capabilities;
+        # otherwise that driver would clamp the outgoing printer's draft.
+        self.printer.currentIndexChanged.disconnect(self.update_capabilities)
+        self.printer.currentIndexChanged.connect(self._printer_changed_v311)
+        for control in (self.color, self.duplex, self.scope,
                         self.scale, self.orientation, self.paper):
             control.currentIndexChanged.connect(self._changed)
         for control in (self.copies, self.dpi, self.page):
             control.valueChanged.connect(self._changed)
         self.collate.toggled.connect(self._changed)
         self.pages.textChanged.connect(self._changed)
+        self._printer_changed_v311()
+
+    def _printer_changed_v311(self, *_):
+        if self._profile_printer_v311:
+            self._printer_drafts_v311[self._profile_printer_v311] = print_profile_v311(self.settings())
+        name = self.printer.currentData()
+        self._profile_printer_v311 = name
+        profile = dict(DEFAULT_PRINT_SETTINGS_V311)
+        if name in self._printer_drafts_v311:
+            profile.update(self._printer_drafts_v311[name])
+        elif self._printer_preferences_v311 is not None:
+            profile.update(self._printer_preferences_v311.settings_for(name))
+        controls = (self.color, self.duplex, self.collate, self.scale,
+                    self.orientation, self.paper, self.dpi)
+        blockers = [QSignalBlocker(control) for control in controls]
+        try:
+            self.color.setCurrentIndex(self.color.findData(QPrinter.ColorMode(profile['color'])))
+            self.duplex.setCurrentIndex(self.duplex.findData(QPrinter.DuplexMode(profile['duplex'])))
+            self.collate.setChecked(profile['collate'])
+            self.scale.setCurrentIndex(0 if profile['fit'] else 1)
+            self.orientation.setCurrentIndex(profile['orientation'])
+            self.paper.setCurrentIndex(profile['paper'])
+            self.dpi.setValue(profile['dpi'])
+            # A driver may have changed or lost color/duplex support since saving.
+            self.update_capabilities()
+        finally:
+            for blocker in blockers:
+                blocker.unblock()
         self._changed()
 
     def selected_pages(self):
@@ -237,6 +275,30 @@ class PrintDialogV309(PrintOptionsV200):
 
 
 class PrintingV309Mixin:
+    def _create_ui(self):
+        super()._create_ui()
+        self._printer_preferences_v311 = PrinterPreferencesV311(
+            self._local_data_v170 / 'printer_preferences.json')
+        self.print_configuration_menu_v311 = self.configuration_menu_v307.addMenu('Impresión')
+        self.print_configuration_menu_v311.setObjectName('printConfigurationMenuV311')
+        self.remember_printers_action_v311 = QAction('Recordar preferencias por impresora', self)
+        self.remember_printers_action_v311.setObjectName('rememberPrintersActionV311')
+        self.remember_printers_action_v311.setCheckable(True)
+        self.remember_printers_action_v311.setChecked(self._printer_preferences_v311.read()['enabled'])
+        self.remember_printers_action_v311.setToolTip(
+            'Conservar papel, orientación, escala, color, doble cara y resolución tras imprimir. '
+            'Los intervalos y las copias se eligen para cada trabajo.')
+        self.remember_printers_action_v311.toggled.connect(self._set_remember_printers_v311)
+        self.print_configuration_menu_v311.addAction(self.remember_printers_action_v311)
+
+    def _set_remember_printers_v311(self, enabled):
+        try:
+            self._printer_preferences_v311.set_enabled(enabled)
+        except OSError as exc:
+            with QSignalBlocker(self.remember_printers_action_v311):
+                self.remember_printers_action_v311.setChecked(self._printer_preferences_v311.read()['enabled'])
+            QMessageBox.warning(self, 'Configuración', 'No se pudieron guardar las preferencias de impresión: '+str(exc))
+
     def _init_printing_v200(self):
         super()._init_printing_v200()
         self.print_action_v200.setText('Imprimir…')
@@ -250,7 +312,8 @@ class PrintingV309Mixin:
             return
         if getattr(self, '_print_context_v309', None) is not None:
             return
-        dialog = PrintDialogV309(self.state['page_count'], self.page_number, self)
+        dialog = PrintDialogV309(self.state['page_count'], self.page_number, self,
+                                preferences=self._printer_preferences_v311)
         context = {'dialog': dialog, 'session': self._active_session_v200,
                    'revision': self.state['document_revision'], 'closed': False,
                    'serial': 0, 'pending': None, 'inflight': None, 'job': None}
@@ -383,6 +446,12 @@ class PrintingV309Mixin:
                     self._notice(f'Resolución efectiva limitada a {actual:.1f} ppp por memoria o permisos del documento.')
                 if self._paint_print_v200(printer, pages, dict(settings, preview=False)):
                     self.statusBar().showMessage('Trabajo enviado a la impresora.')
+                    preferences = getattr(self, '_printer_preferences_v311', None)
+                    if preferences is not None:
+                        try:
+                            preferences.remember(settings['printer'], settings)
+                        except OSError as exc:
+                            self._notice('Trabajo enviado. No se pudieron recordar las preferencias: '+str(exc))
                     dialog.accept()
                 else:
                     dialog.error.setText(self.last_error or 'No se pudo finalizar la impresión.')

@@ -52,6 +52,9 @@ from .printing_v309 import PrintingV309Mixin
 from .action_state_v310 import ActionStateV310Mixin, set_ui_enabled_v310, ui_enabled_v310
 from .responsive_ui_v310 import ResponsiveUiV310Mixin
 from .navigation_ui_v310 import NavigationUiV310Mixin
+from .sidebar_ui_v311 import SidebarUiV311Mixin
+from .appearance_ui_v311 import AppearanceUiV311Mixin
+from .toolbar_ui_v311 import ToolbarUiV311Mixin
 from . import __version__
 
 
@@ -596,14 +599,14 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
             if self.state.get('issues'):
                 self._error('\n'.join(self.state['issues']))
             elif self.application_mode == 'reading':
-                self._notice('Modo Lectura: selecciona y copia texto. Pulsa «Herramientas» para editar.')
+                self._notice('Modo Lectura: selecciona y copia texto. Pulsa «EDITAR» para modificar el documento.')
             elif self.state.get('tagged'):
                 pages=self.state.get('page_capabilities',{})
                 page_notice=('Puedes eliminar o extraer páginas conservando sus etiquetas.' if pages.get('delete') and pages.get('extract')
                              else 'Páginas: '+(pages.get('reason') or 'la estructura requiere una comprobación específica.'))
                 self._notice('PDF etiquetado: selecciona texto y haz doble clic para editarlo. '+page_notice+' El PDF original se conserva.')
             else:
-                self._notice('Modo Lectura: selecciona y copia texto. Pulsa «Herramientas» para editar.')
+                self._notice('Modo Lectura: selecciona y copia texto. Pulsa «EDITAR» para modificar el documento.')
             self.load_page()
         self._open_retry = (str(path),password)
         return self._submit("open",payload,opened)
@@ -731,6 +734,9 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
     def toggle_highlights(self,checked):
         self.canvas.highlight_changes = checked
         self.canvas._draw_overlays()
+        if hasattr(self, 'reader'):
+            self.reader.highlight_changes_v311 = checked
+            self.reader._draw_changes_v311()
 
     def toggle_guides(self,checked):
         self.canvas.show_guides = checked
@@ -786,6 +792,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         self._refresh_actions()
 
     def start_edit(self):
+        self.canvas._flush_selection_v311()
         from .clipping import CLIP_ISSUE
         from .ocr import overlapping_hidden_ids
         tagged_clipped = bool(self.state.get('tagged') and self.model and CLIP_ISSUE in self.model.issues)
@@ -799,6 +806,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         return self.start_rich_edit()
 
     def start_legacy_edit(self):
+        self.canvas._flush_selection_v311()
         if (self.busy and not self._thumbnail_busy) or (self.canvas.read_only and not self.canvas.allow_background_edit) or not self.canvas.ids:
             return
         self.canvas.start_editor(self.content.toPlainText())
@@ -1150,7 +1158,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         event.accept()
 
 
-class MainWindow(ActionStateV310Mixin,ResponsiveUiV310Mixin,NavigationUiV310Mixin,PrintingV309Mixin,MenusUiV308Mixin,SharingUiV308Mixin,ViewZoomUiV308Mixin,DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
+class MainWindow(ActionStateV310Mixin,ResponsiveUiV310Mixin,ToolbarUiV311Mixin,AppearanceUiV311Mixin,NavigationUiV310Mixin,SidebarUiV311Mixin,PrintingV309Mixin,MenusUiV308Mixin,SharingUiV308Mixin,ViewZoomUiV308Mixin,DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
     """New workspace interceptors precede the existing window implementation."""
 
 

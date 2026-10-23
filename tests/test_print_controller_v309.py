@@ -221,3 +221,8 @@ def test_direct_print_opens_one_dialog_and_produces_exact_pdf_pages(qtbot, savin
         assert len(printed) == 2
         assert [(page.rect.width, page.rect.height) for page in printed] == [(500., 300.), (300., 400.)]
     assert source.read_bytes() == original
+    from pdfmodder.printer_preferences_v311 import PrinterPreferencesV311
+    remembered = PrinterPreferencesV311(window._printer_preferences_v311.path).settings_for('Impresora de prueba')
+    assert remembered['paper'] == 0 and remembered['dpi'] == 72
+    assert remembered['color'] == QPrinter.GrayScale.value
+    assert 'copies' not in remembered and 'pages' not in remembered

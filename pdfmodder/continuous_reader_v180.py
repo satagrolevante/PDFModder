@@ -7,7 +7,7 @@ from PySide6.QtGui import QColor, QKeySequence, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 
 from .model import transform, transform_rect, union
-from .reading_order_v180 import ordered_glyphs, ordered_lines, selection_text
+from .reading_order_v180 import ordered_glyphs, ordered_lines, selection_text, reading_data_v311
 from .page_layout_v300 import PageLayoutV300, PageTopsV300
 
 
@@ -48,6 +48,9 @@ class ContinuousReader(QGraphicsView):
         self._loaded_zooms = {}
         self._overlays = []
         self._search_overlays = []
+        self._change_overlays_v311 = []
+        self._changes_v311 = {}
+        self.highlight_changes_v311 = False
         self._search_matches = []
         self._search_by_page = {}
         self._active_search_index = -1
@@ -86,6 +89,8 @@ class ContinuousReader(QGraphicsView):
         self._loaded_zooms.clear()
         self._overlays.clear()
         self._search_overlays.clear()
+        self._change_overlays_v311.clear()
+        self._changes_v311.clear()
         self._search_matches = []
         self._search_by_page = {}
         self._active_search_index = -1
@@ -172,7 +177,7 @@ class ContinuousReader(QGraphicsView):
         # Rendering and display zoom may differ while a new render is pending.
         item.setScale(rect.width() / pixmap.width())
 
-    def set_page(self, number, png, model, zoom):
+    def set_page(self, number, png, model, zoom, changes=None):
         if number < 0 or number >= len(self._geometries):
             return
         if model is not None:self.update_page_geometry_v300(number,model.width,model.height)
@@ -193,6 +198,7 @@ class ContinuousReader(QGraphicsView):
         item.setZValue(0)
         self._images[number] = (pixmap, item, cost)
         self._loaded_zooms[number] = self.zoom
+        self._changes_v311[number] = list(changes or [])
         if model is not None:
             self._models.pop(number, None)
             self._models[number] = model
@@ -322,7 +328,11 @@ class ContinuousReader(QGraphicsView):
             candidates = [number for number in self._models if number not in protected]
             if not candidates:
                 break
-            del self._models[min(candidates, key=priority)]
+            number = min(candidates, key=priority)
+            del self._models[number]
+            self._changes_v311.pop(number, None)
+        for number in self._changes_v311.keys() - self._models.keys():
+            del self._changes_v311[number]
 
     def _page_at(self, point, nearest=False):
         if not self._rects:return None
@@ -364,7 +374,7 @@ class ContinuousReader(QGraphicsView):
 
     def _endpoint_key(self, endpoint):
         model = self._models.get(endpoint["page"])
-        order = {g.id: index for index, g in enumerate(ordered_glyphs(model))} if model else {}
+        order = reading_data_v311(model)[3] if model else {}
         return endpoint["page"], order.get(endpoint["id"], 0)
 
     def selection_endpoints(self):
@@ -400,7 +410,7 @@ class ContinuousReader(QGraphicsView):
             not endpoints['start']['page']<=number<=endpoints['end']['page']):
             return []
         glyphs = ordered_glyphs(model)
-        positions = {g.id: i for i, g in enumerate(glyphs)}
+        positions = reading_data_v311(model)[3]
         first = positions.get(endpoints["start"]["id"], 0) if number == endpoints["start"]["page"] else 0
         last = positions.get(endpoints["end"]["id"], len(glyphs) - 1) if number == endpoints["end"]["page"] else len(glyphs) - 1
         return [g.id for g in glyphs[first:last + 1]]
@@ -442,6 +452,7 @@ class ContinuousReader(QGraphicsView):
         self._schedule_update()
 
     def _draw_search(self):
+        self._draw_changes_v311()
         for item in self._search_overlays:
             self.scene().removeItem(item)
         self._search_overlays = []
@@ -466,6 +477,28 @@ class ContinuousReader(QGraphicsView):
                     item.setAcceptedMouseButtons(Qt.NoButton)
                     self._search_overlays.append(item)
 
+    def _draw_changes_v311(self):
+        for item in self._change_overlays_v311:
+            self.scene().removeItem(item)
+        self._change_overlays_v311 = []
+        if not self.highlight_changes_v311:
+            return
+        pen = QPen(QColor('#e08b00'), 1.)
+        pen.setCosmetic(True)
+        for number in self.visible_page_numbers():
+            model = self._models.get(number)
+            if model is None:
+                continue
+            page = self._rects[number]
+            for rect in self._changes_v311.get(number, ()):
+                x0, y0, x1, y1 = transform_rect(rect, model.rotation_matrix)
+                item = self.scene().addRect(QRectF(page.left()+x0*self.zoom, page.top()+y0*self.zoom,
+                                                   (x1-x0)*self.zoom, (y1-y0)*self.zoom),
+                                            pen, QColor(255, 186, 48, 34))
+                item.setZValue(1)
+                item.setAcceptedMouseButtons(Qt.NoButton)
+                self._change_overlays_v311.append(item)
+
     def _word(self, endpoint):
         model = self._models[endpoint["page"]]
         line = next((line for line in ordered_lines(model)
@@ -487,6 +520,8 @@ class ContinuousReader(QGraphicsView):
     def _extend_selection(self, point):
         endpoint = self._endpoint_at(point, nearest=True)
         if endpoint is not None and self._gesture_anchor is not None:
+            if self._anchor == self._gesture_anchor and self._focus == endpoint:
+                return
             self._anchor = dict(self._gesture_anchor)
             self._focus = endpoint
             self._selection_updated()

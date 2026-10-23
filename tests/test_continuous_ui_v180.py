@@ -11,6 +11,7 @@ from test_tools_ui_v150 import NoPdfPool
 def reader_window(qtbot,monkeypatch):
     import pdfmodder.app as application
     monkeypatch.setattr(application,'ProcessPoolExecutor',NoPdfPool)
+    monkeypatch.setattr(application.MainWindow, '_offer_recovery_v200', lambda _: None)
     window=application.MainWindow()
     qtbot.addWidget(window)
     for timer in (window.poller,window.thumbnail_timer,window.reader_timer_v180):timer.stop()

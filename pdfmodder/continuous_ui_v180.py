@@ -94,7 +94,8 @@ class ContinuousUiV180Mixin:
             def loaded(result):
                 if generation != self._reader_generation_v180 or self.application_mode != 'reading' or zoom != self.zoom:
                     return
-                self.reader.set_page(result['number'], result['png'], result['model'], result['zoom'])
+                self.reader.set_page(result['number'], result['png'], result['model'], result['zoom'],
+                                     changes=result.get('changes'))
                 if result['number'] == self.page_number:
                     self.model = result['model']
                     self.fonts = []

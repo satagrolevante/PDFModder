@@ -47,11 +47,18 @@ def tools_window(qtbot, monkeypatch):
 
 def test_tools_toggle_keeps_existing_actions_and_single_header(tools_window, qtbot):
     window = tools_window
+    assert window.tools_action.text() == 'EDITAR'
+    assert window.tools_toggle_button.defaultAction() is window.tools_action
+    assert window.tools_toggle_button.text() == 'EDITAR'
+    assert 'Salir del modo edición' in window.tools_action.toolTip()
     assert window.tools_scroll.isVisible()
     qtbot.mouseClick(window.tools_toggle_button, Qt.LeftButton)
     assert not window.tools_scroll.isVisible()
+    assert window.application_mode == 'reading'
+    assert 'Activar el modo edición' in window.tools_action.toolTip()
     qtbot.mouseClick(window.tools_toggle_button, Qt.LeftButton)
     assert window.tools_scroll.isVisible()
+    assert window.application_mode == 'editing'
     assert [bar for bar in window.findChildren(QToolBar) if bar.isVisible()] == [window.toolbar]
     for name, action in [('toolAddText', window.add_text_action),
                          ('toolAddImage', window.add_image_action),
