@@ -5,6 +5,7 @@ import sys
 from PySide6.QtCore import Qt
 
 from .model import pt
+from .auto_layout_v316 import automatic_area_enabled_v316
 
 
 class InsertionUiV150Mixin:
@@ -81,6 +82,7 @@ class InsertionUiV150Mixin:
                        'paragraphs': [{'index': 0}], 'revision': self.model.revision,
                        'auto_width': True, 'auto_height': True,
                        'allow_overlap': self.allow_overlap_box.isChecked(), 'carets': [],
+                       'auto_adapt': automatic_area_enabled_v316(self),
                        'font_previews': entries, 'catalog': available}
             self.canvas.set_selection([])
             self._open_rich_payload(payload)

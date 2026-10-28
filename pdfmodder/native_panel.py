@@ -85,9 +85,10 @@ def edit_native_panel(data, request, model, resolver=None):
                      line_spacing=request.line_spacing or 0.,space_after=request.paragraph_spacing)]
     rich=RichTextRequest(request.page,request.ids,runs,rect=bounds,width=request.width,height=request.height,
                          paragraphs=paragraphs,revision=request.revision,allow_overlap=request.allow_overlap,
-                         auto_width=request.auto_width and not request.reflow,auto_height=request.auto_height)
+                         auto_width=request.auto_width and not request.reflow,auto_height=request.auto_height,
+                         auto_adapt=request.auto_adapt)
     result,report=edit_rich_pdf(data,rich,resolver)
-    if not request.reflow and report['line_count']>text.count('\n')+text.count('\u2028')+1:
+    if not request.reflow and not request.auto_adapt and report['line_count']>text.count('\n')+text.count('\u2028')+1:
         raise EditError('El texto supera la anchura disponible. Amplía el área o activa Redistribuir líneas.')
     shift=0.
     if rich.auto_width and request.anchor in ('right','center'):

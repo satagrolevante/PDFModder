@@ -10,17 +10,24 @@ import warnings
 import pymupdf as fitz
 from PIL import Image,ImageOps
 from pypdf import PdfReader
-from pypdf.generic import ContentStream,DecodedStreamObject,FloatObject,NameObject
+from pypdf.generic import ContentStream,FloatObject,NameObject
 from .model import EditError
 from .validation import (document_issues,related,_canonical,
                          trace_chars,assert_characters,assert_pixels)
-from .engine import full_write
+from .draft_control_v305 import DraftCancelled,checkpoint
+
+
+def _write_image_transaction(doc):
+    """Keep existing streams unchanged and collect only obsolete PDF objects."""
+    from .richtext import _write_rich_transaction
+    return _write_rich_transaction(doc)
 
 
 def _ops(data):
-    stream=DecodedStreamObject()
-    stream.set_data(data)
-    return ContentStream(stream,None)
+    from .analysis_reuse_v315 import stream_operations_v316
+    stream=ContentStream(None,None)
+    stream.operations=stream_operations_v316(data)
+    return stream
 
 
 def _rect(page,rect):
@@ -48,7 +55,11 @@ def _safe(data,page,revision,*,adding=False,transform_tagged=False):
         # Image placement does not reconstruct existing text. A clipping path
         # elsewhere is therefore not a document-wide incompatibility. Check
         # balanced graphics/text/marked scopes, then analyse the chosen instance.
-        _graphics_scan(doc,page,[])
+        # A modification identifies its instance with a complete graphics scan
+        # immediately afterwards. Only additions need a separate preflight
+        # before protecting the existing content in q/Q.
+        if adding:
+            _graphics_scan(doc,page,[])
 
 
 def _image_infos(page):
@@ -190,14 +201,18 @@ def _graphics_scan(doc,page_number,infos):
     for position,xref in enumerate(page.get_contents()):
         ops=_ops(doc.xref_stream(xref)).operations
         for offset,(operands,operator) in enumerate(ops):
-            simple=[op for _,op in ops[offset:offset+4]]==[b'q',b'cm',b'Do',b'Q']
-            # v0.9 placements have an outer frame and an optional source crop.
-            # Both are graphics clips: the underlying image pixels stay intact.
-            framed=[op for _,op in ops[offset:offset+10]]==[b'q',b're',b'W',b'n',b'cm',b're',b'W',b'n',b'Do',b'Q']
-            # A rectangular frame in page coordinates becomes a quadrilateral
-            # in the coordinates of a rotated/sheared parent. Keep that path
-            # rather than replacing it with its enclosing (larger) rectangle.
-            framed_quad=[op for _,op in ops[offset:offset+14]]==[b'q',b'm',b'l',b'l',b'l',b'h',b'W',b'n',b'cm',b're',b'W',b'n',b'Do',b'Q']
+            # Every supported image placement starts with q. Dense vector
+            # artwork has thousands of path operands; avoid constructing three
+            # overlapping lookahead lists for every unrelated path operation.
+            simple=framed=framed_quad=False
+            if operator==b'q':
+                simple=[op for _,op in ops[offset:offset+4]]==[b'q',b'cm',b'Do',b'Q']
+                # v0.9 placements have an outer frame and optional source crop.
+                # Both clips retain the underlying image pixels unchanged.
+                framed=[op for _,op in ops[offset:offset+10]]==[b'q',b're',b'W',b'n',b'cm',b're',b'W',b'n',b'Do',b'Q']
+                # A frame in a rotated/sheared parent needs its quadrilateral,
+                # rather than its enclosing (larger) rectangle.
+                framed_quad=[op for _,op in ops[offset:offset+14]]==[b'q',b'm',b'l',b'l',b'l',b'h',b'W',b'n',b'cm',b're',b'W',b'n',b'Do',b'Q']
             isolated=simple or framed or framed_quad
             if isolated:
                 matrix_index=offset+(8 if framed_quad else 4 if framed else 1)
@@ -347,6 +362,8 @@ def _graphics_scan(doc,page_number,infos):
 def image_items(doc,page_number):
     try:
         infos=_image_infos(doc[page_number])
+    except DraftCancelled:
+        raise
     except Exception:
         return []
     try:
@@ -364,6 +381,8 @@ def image_items(doc,page_number):
                 except EditError as exc:
                     item.update(editable=False,reason=str(exc))
         return items
+    except DraftCancelled:
+        raise
     except Exception as exc:
         reason=str(exc) if isinstance(exc,EditError) else 'No se pudo interpretar de forma inequívoca el ámbito de esta imagen.'
         return [{'id':str(i),'rect':tuple(info['bbox']),'xref':info.get('xref',0),
@@ -412,14 +431,24 @@ def _normalized_image(data):
 
 def _validate(before_data,after_data,page_number,old_index=None,new_rect=None,expected_asset=None,
               *,expected_bbox=None,old_rect=None):
+    from .page_fingerprint import PageProof
+    unchanged_pages=PageProof(before_data,after_data)
     reports=[]
     with fitz.open(stream=before_data,filetype='pdf') as before,fitz.open(stream=after_data,filetype='pdf') as after:
         if before.page_count!=after.page_count or before.metadata!=after.metadata or before.get_xml_metadata()!=after.get_xml_metadata() or _canonical(before.get_toc(False))!=_canonical(after.get_toc(False)):
             raise EditError('La operación de imagen alteró la estructura del documento.')
         for n in range(before.page_count):
+            checkpoint()
             a,b=before[n],after[n]
             if (tuple(a.mediabox),tuple(a.cropbox),a.rotation)!=(tuple(b.mediabox),tuple(b.cropbox),b.rotation):
                 raise EditError('La operación de imagen alteró las dimensiones de una página.')
+            if n!=page_number and unchanged_pages.unchanged(n):
+                # The complete renderer-input graph includes every image
+                # asset, mask and shared resource. Identical inputs prove both
+                # appearance and asset identity without decoding/rasterizing
+                # an unrelated page again.
+                reports.append(unchanged_pages.report(n))
+                continue
             ra,rb=related(a),related(b)
             ia,ib=_image_infos(a),_image_infos(b)
             if n!=page_number:
@@ -489,7 +518,7 @@ def add_image_pdf(data,page,image_bytes,rect,revision=None,*,accessibility_order
             tagged_expected=tagged.apply(doc,old_contents)
         finally:
             target.set_rotation(rotation)
-        output=full_write(doc)
+        output=_write_image_transaction(doc)
     report=_validate(data,output,page,new_rect=rect)
     from .tagged import assert_structure
     assert_structure(data,output,tagged_expected)
@@ -552,7 +581,7 @@ def _change(data,page,image_id,rect,revision,remove=False):
         doc.update_stream(clone,stream.get_data())
         contents[item['stream_position']]=clone
         doc.xref_set_key(target.xref,'Contents','['+' '.join(f'{xref} 0 R' for xref in contents)+']')
-        output=full_write(doc)
+        output=_write_image_transaction(doc)
     return output,_validate(data,output,page,int(image_id),None if remove else rect,
                             expected_bbox=expected_bbox,old_rect=item['rect'])
 
@@ -762,7 +791,7 @@ def edit_image_pdf(data,page,image_id,*,replacement_bytes=None,crop=None,rotatio
         # Discard the temporary insertion placement; keep only the selected
         # original q/cm/Do/Q, including inherited alpha, clips and paint order.
         doc.xref_set_key(target.xref,'Contents','['+' '.join(f'{xref} 0 R' for xref in contents)+']')
-        output=full_write(doc)
+        output=_write_image_transaction(doc)
     report=_validate(data,output,page,int(image_id),item['rect'],expected_asset=expected_asset)
     report.update(image_operation='edit_asset',rotation_clockwise=rotation,crop_pixels=pixel_crop,
                   replacement=replacement_bytes is not None,image_size_px=pixel_size,
@@ -880,7 +909,7 @@ def _edit_image_frame(data,page,image_id,*,replacement_bytes,crop,rotation,revis
         contents[item['stream_position']]=clone
         doc.xref_set_key(target.xref,'Contents','['+' '.join(f'{xref} 0 R' for xref in contents)+']')
         expected_bbox=tuple(fitz.Rect(0,0,1,1)*total*page_matrix)
-        output=full_write(doc)
+        output=_write_image_transaction(doc)
     report=_validate(data,output,page,int(image_id),frame,expected_asset=expected_asset,
                      expected_bbox=expected_bbox,old_rect=item['rect'])
     accessibility=semantic_guard.validate(output)

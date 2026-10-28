@@ -435,6 +435,13 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
                 report['ocr_cleanup']=ocr_report
                 report['warning']=ocr_report['warning']
                 return output,report
+        if request.auto_adapt:
+            from .textlayout import _check_visibility
+            _check_visibility(selected)
+            if (request.text is not None or request.size is not None or request.font_name
+                    or request.font_file or request.color is not None):
+                from .native_panel import edit_native_panel
+                return edit_native_panel(data,request,model,resolver)
         # CID subsets need their exact resource identity, not a family-name
         # lookup through the regional-redaction font resolver. Both UI paths
         # share the native compositor and its per-character validation.

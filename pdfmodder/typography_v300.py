@@ -1247,6 +1247,8 @@ def move_shaped_pdf(data, request):
         owned = {g.id for _, actual in verified for g in actual}
         if not selected or not {g.id for g in selected} <= owned:
             return None
+        from .textlayout import _check_visibility
+        _check_visibility(selected)
         chosen = {g.id for g in selected}
         for record, actual in verified:
             index_ids = {saved['physical_index']: g.id for saved, g in zip(record['glyphs'], actual)}
@@ -1271,7 +1273,8 @@ def move_shaped_pdf(data, request):
         bounds = fitz.Rect(0, 0, doc[request.page].cropbox.width, doc[request.page].cropbox.height)
         doc[request.page].set_rotation(rotation)
     others = [g for g in model.glyphs if g.id not in chosen]
-    if not request.allow_overlap and any(intersects(g.bbox, n.bbox, .12) for g in planned for n in others):
+    overlaps={n.id for g in planned for n in others if intersects(g.bbox,n.bbox,.12)}
+    if not request.allow_overlap and overlaps:
         raise EditError('El texto movido se solapa con un vecino. Elige otra posición o permite el solapamiento.')
     reader, operations, shows, mapping = operator_glyph_map(data, request.page, model)
     resources = reader.pages[request.page]['/Resources'].get_object()
@@ -1324,4 +1327,7 @@ def move_shaped_pdf(data, request):
                   source_regions=[g.bbox for g in selected], destination_regions=[g.bbox for g in planned],
                   original=model.text(request.ids), replacement=model.text(request.ids),
                   removed_groups=removed, glyphs=[asdict(g) for g in planned])
+    if overlaps:
+        report['overlap_count']=len(overlaps)
+        report['warning']='Solapamiento permitido: el texto vecino conserva su contenido y posición.'
     return output, report

@@ -89,6 +89,10 @@ jobs:
           tests/test_shell_registration_v305.py tests/test_pdf_associations_v202.py
           tests/test_draft_cancellation_v305.py tests/test_analysis_reuse_v305.py
           tests/test_draft_serialization_v305.py tests/test_draft_session_v305.py
+          tests/test_added_text_transactions_v315.py tests/test_analysis_reuse_v315.py
+          tests/test_auto_overlap_v315.py tests/test_canvas_border_v150.py
+          tests/test_owned_text_v316.py tests/test_auto_adapt_v316.py
+          tests/test_preserved_graphics_v316.py tests/test_image_transactions_v316.py
           tests/test_page_fingerprint.py tests/test_tagged_validation_cache.py
           tests/test_tagged_page_proof.py tests/test_unchanged_page_validation.py
           tests/test_text_structure_reuse.py tests/test_atomic_save_exact.py
@@ -128,7 +132,7 @@ jobs:
   publish:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.14-publicacion')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.16-publicacion')
     needs: build
     runs-on: windows-2025
     permissions:
@@ -157,17 +161,17 @@ jobs:
           python scripts/publish_github_releases.py --version ${{ needs.build.outputs.version }}
           --notes-file docs/NOTAS_${{ needs.build.outputs.version }}.md
       - name: Retirar publicaciones anteriores tras verificar la actualización pública
-        if: needs.build.outputs.version == '3.0.14'
+        if: needs.build.outputs.version == '3.0.16'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
-          python scripts/cleanup_previous_releases.py --keep v3.0.14 --apply
-          --report output/github-cleanup-v3.0.14.json
+          python scripts/cleanup_previous_releases.py --keep v3.0.16 --apply
+          --report output/github-cleanup-v3.0.16.json
       - name: Conservar informe de limpieza de publicaciones
-        if: always() && needs.build.outputs.version == '3.0.14'
+        if: always() && needs.build.outputs.version == '3.0.16'
         uses: actions/upload-artifact@v4
         with:
-          name: PDFModder-v3.0.14-limpieza-${{ github.sha }}
-          path: output/github-cleanup-v3.0.14.json
+          name: PDFModder-v3.0.16-limpieza-${{ github.sha }}
+          path: output/github-cleanup-v3.0.16.json
           if-no-files-found: ignore
           retention-days: 14

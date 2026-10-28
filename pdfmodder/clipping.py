@@ -109,9 +109,30 @@ def operator_glyph_map(data,number,model):
     checkpoint()
     reader = PdfReader(BytesIO(data),strict=True)
     page = reader.pages[number]
-    operations = ContentStream(page.get_contents(),reader).operations
+    from .analysis_reuse_v315 import (operator_key_v315, operator_evidence_v315,
+                                      remember_operator_evidence_v315,
+                                      page_operations_v315)
+    operations = page_operations_v315(data, number, reader)
     fonts = page.get('/Resources',{}).get('/Font',{})
     fonts = fonts.get_object() if hasattr(fonts,'get_object') else fonts
+    proof_key = operator_key_v315(data, number, model)
+    evidence = operator_evidence_v315(proof_key)
+    if evidence is not None:
+        # Rebuild private objects for the exact bytes above. A caller may have
+        # changed its reader, operand arrays or returned font dictionaries;
+        # none of those objects is trusted or retained by the proof cache.
+        by_id = {g.id: g for g in model.glyphs}
+        shows, mapping = [], {}
+        for operation, resource, xref, mode, ids in evidence:
+            show = {'operation': operation, 'resource': resource, 'xref': xref,
+                    'render_mode': mode, 'font': fonts[resource].get_object(),
+                    'glyphs': [by_id[identifier] for identifier in ids]}
+            shows.append(show)
+            for identifier in ids:
+                mapping[identifier] = {'operation': operation, 'font_xref': xref,
+                                       'font_resource': resource, 'render_mode': mode}
+        checkpoint()
+        return reader, operations, shows, mapping
     stack,resource,shows = [],None,{}
     # Unselected Forms retain their original Do and shared resources. Their
     # text must not be mistaken for the last page-level SHOW in this probe.
@@ -216,7 +237,9 @@ def operator_glyph_map(data,number,model):
                              'font_resource':show['resource'],'render_mode':show['render_mode']}
         show['glyphs'].append(glyph)
     checkpoint()
-    return reader,operations,list(shows.values()),mapping
+    shows = list(shows.values())
+    remember_operator_evidence_v315(proof_key, shows)
+    return reader,operations,shows,mapping
 
 
 def annotate_font_resources(data,number,model):
@@ -224,6 +247,9 @@ def annotate_font_resources(data,number,model):
     if not model.glyphs or not {'font_xref','font_resource'} <= {f.name for f in fields(model.glyphs[0])}:
         return model
     try:
+        from .owned_text_v316 import annotate_owned_resources_v316
+        owned=annotate_owned_resources_v316(data,number,model)
+        if owned is not None:return owned
         _,_,_,mapping = operator_glyph_map(data,number,model)
     except DraftCancelled:
         raise

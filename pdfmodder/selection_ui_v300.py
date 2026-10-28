@@ -119,10 +119,11 @@ class SelectionUiV300Mixin:
         self.draft_area_status_v300 = QLabel(); self.draft_area_status_v300.setWordWrap(True)
         self.draft_area_status_v300.setObjectName('draftAreaStatusV300')
         draft_layout.addWidget(self.draft_area_status_v300)
-        self.draft_overlap_box_v303=QCheckBox('Permitir solapamiento con texto vecino')
+        self.draft_overlap_box_v303=QCheckBox('Permitir solapamiento automáticamente')
         self.draft_overlap_box_v303.setObjectName('draftTextOverlapV303')
-        self.draft_overlap_box_v303.setToolTip('Autoriza superponer el texto de este borrador. '
-            'El contenido y la posición de los vecinos se conservan; revisa la legibilidad en la vista PDF.')
+        self.draft_overlap_box_v303.setToolTip('Si este borrador alcanza texto vecino, permite la superposición sin borrar ni mover los vecinos. '
+            'Revisa la legibilidad en la vista PDF o usa «Redistribuir texto vecino». '
+            'Desmarca esta opción si prefieres impedir nuevas superposiciones.')
         self.draft_overlap_box_v303.toggled.connect(self._set_draft_overlap_v303)
         draft_layout.addWidget(self.draft_overlap_box_v303)
         self.draft_neighbors_button_v303=QPushButton('Redistribuir texto vecino…')
@@ -281,7 +282,8 @@ class SelectionUiV300Mixin:
         # merely highlights likely overflow before the PDF worker replies.
         size_error = any(word in self._draft_area_error_v300.lower() for word in ('altura','anchura','cuadro','espacio disponible','área','borde'))
         overlap_error=any(word in self._draft_area_error_v300.lower() for word in ('solap','superpon','overlap'))
-        active_overflow = size_error or (overflow[0] and not payload.get('auto_width')) or (overflow[1] and not payload.get('auto_height'))
+        active_overflow = size_error or (not payload.get('auto_adapt') and
+            ((overflow[0] and not payload.get('auto_width')) or (overflow[1] and not payload.get('auto_height'))))
         if active_overflow:
             self.canvas.draft_overflow_rect_v300 = (rect[0],rect[1],max(rect[2],rect[0]+required_width),max(rect[3],rect[1]+required_height))
             message = ('El borrador supera el área disponible. ' if not self._draft_area_error_v300 else self._draft_area_error_v300+' ')

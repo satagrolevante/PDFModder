@@ -238,7 +238,8 @@ class ClipboardUiV170Mixin:
         if not self.model or not self._clipboard_placement_v170:return
         bundle=deepcopy(self._clipboard_placement_v170)
         payload={'operation':'paste','page':self.page_number,'revision':self.model.revision,
-                 'bundle':bundle,'point':(x,y),'allow_overlap':self.allow_overlap_box.isChecked()}
+                 'bundle':bundle,'point':(x,y),'allow_overlap':self.allow_overlap_box.isChecked(),
+                 'auto_adapt':self.auto_adapt_box.isChecked()}
         self._cancel_placement();self._clipboard_placement_v170=None
         self.canvas.setFocus()
         self._submit('clipboard_apply',payload,self._edited)

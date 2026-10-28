@@ -139,6 +139,7 @@ class EditRequest:
     line_spacing: float | None = None  # Distancia entre líneas en puntos PDF.
     paragraph_spacing: float = 0.  # Espacio extra tras saltos de párrafo explícitos.
     ocr_mode: str = "visible"  # 'searchable' cambia sólo la capa OCR invisible.
+    auto_adapt: bool = False  # Ajusta el área sin cambiar fuente, tamaño ni vecinos.
 
 
 class EditError(ValueError):

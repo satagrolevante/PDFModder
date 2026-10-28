@@ -251,6 +251,10 @@ def edit_clipped_layout(data,request,model):
 
 
 def move_clipped_text(data,request,model):
+    return _move_clipped_text(data,request,model)
+
+
+def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
     """Traslada sólo SHOW seleccionados sin alterar códigos, TJ ni cursor.
 
     q/Q restauran el estado gráfico, pero no las matrices de posición textual.
@@ -380,7 +384,9 @@ def move_clipped_text(data,request,model):
     with fitz.open(stream=data,filetype='pdf') as doc:
         stream=doc.get_new_xref();doc.update_object(stream,'<<>>')
         doc.update_stream(stream,serialized);doc[request.page].set_contents(stream)
-        output=full_write(doc)
+        if update_metadata is not None:
+            update_metadata(doc)
+        output=(writer or full_write)(doc)
     after=PdfReader(BytesIO(output),strict=True)
     actual_ops=ContentStream(after.pages[request.page].get_contents(),after).operations
     if len(actual_ops)!=len(expected_ops) or any(o!=p or _signature(a)!=_signature(b) for (a,o),(b,p) in zip(expected_ops,actual_ops)):

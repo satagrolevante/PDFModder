@@ -97,7 +97,7 @@ def test_existing_dialog_preserves_source_font_colour_size_and_position(qtbot,ca
     assert not dialog.x_box.isEnabled() and not dialog.y_box.isEnabled()
     assert values['x']==pytest.approx(30,abs=.003) and values['y']==pytest.approx(40,abs=.003)
     assert values['width']==pytest.approx(200,abs=.003) and values['height']==pytest.approx(60,abs=.003)
-    assert not values['reflow'] and not values['allow_overlap']
+    assert not values['reflow'] and values['allow_overlap']
     dialog.change_font.click()
     assert dialog.values()['font_name']=='Helvetica-Bold'
     dialog.size_box.setValue(14.125)
@@ -113,7 +113,7 @@ def test_mm_fields_return_pdf_points_and_insertion_has_safe_defaults(qtbot,catal
     dialog.height_box.setValue(25.4)
     values=dialog.values()
     assert (values['x'],values['y'],values['width'],values['height'])==pytest.approx((72,144,216,72))
-    assert values['color']==(0,0,0) and values['reflow'] and not values['allow_overlap']
+    assert values['color']==(0,0,0) and values['reflow'] and values['allow_overlap']
     assert values['font_name']=='Helvetica'
     assert dialog.preview_button.text()=='Previsualizar'
     dialog.preview_button.click()
@@ -192,17 +192,18 @@ def test_format_dialog_keeps_existing_anchor_and_does_not_rewrite_colour(qtbot,m
         def __init__(self,*args,**kwargs):
             self.align_box=QComboBox()
             self.allow_overlap_box=QCheckBox()
+            self.auto_adapt_box=QCheckBox()
             for value in ('left','center','right'):
                 self.align_box.addItem(value,value)
         def values(self):
-            return dict(text='Original',width=100,height=30,size=12.375,font_name=None,font_file=None,color=None,reflow=False,align=self.align_box.currentData(),allow_overlap=self.allow_overlap_box.isChecked())
+            return dict(text='Original',width=100,height=30,size=12.375,font_name=None,font_file=None,color=None,reflow=False,align=self.align_box.currentData(),allow_overlap=self.allow_overlap_box.isChecked(),auto_adapt=self.auto_adapt_box.isChecked())
     monkeypatch.setattr(dialogs,'TextDialog',Dialog)
     glyph=SimpleNamespace(font='Helvetica',size=12.375,color=(.1,.2,.3,.4),opacity=1,direction=(1,0),mode=0,bbox=(30,40,130,60))
     model=SimpleNamespace(revision='unchanged',selected=lambda ids:[glyph],text=lambda ids:'Original')
     anchor=QComboBox()
     anchor.addItem('Derecha','right')
     harness=SimpleNamespace(page_number=0,model=model,canvas=SimpleNamespace(ids=[0]),anchor_box=anchor,
-        allow_overlap_box=QCheckBox(),auto_height_box=QCheckBox(),
+        allow_overlap_box=QCheckBox(),auto_height_box=QCheckBox(),auto_adapt_box=QCheckBox(),
         _catalog=lambda callback:callback(catalog),_exec_edit_dialog=lambda dialog:QDialog.Accepted,
         _request=lambda **kwargs:SimpleNamespace(**kwargs),_error=lambda msg:pytest.fail(msg),
         _submit=lambda cmd,payload,callback:captured.append(payload['request']),_previewed=lambda *_:None)

@@ -8,8 +8,8 @@ import math
 import pymupdf as fitz
 from pypdf.generic import FloatObject
 
-from .engine import full_write
-from .media import _safe, _rect, _ops, _validate, _image_selection
+from .media import (_safe, _rect, _ops, _validate, _image_selection,
+                    _write_image_transaction)
 from .model import EditError
 
 
@@ -72,7 +72,7 @@ def transform_image_instance_pdf(data, page, image_id, rect=None, revision=None,
         contents[item['stream_position']] = clone
         doc.xref_set_key(target.xref, 'Contents', '['+' '.join(f'{xref} 0 R' for xref in contents)+']')
         expected_bbox = tuple(fitz.Rect(0, 0, 1, 1) * (fitz.Matrix(item['matrix_pdf']) * mapping * page_matrix))
-        output = full_write(doc)
+        output = _write_image_transaction(doc)
     report = _validate(data, output, page, int(image_id), destination,
                        expected_bbox=expected_bbox, old_rect=original_rect)
     accessibility = semantic_guard.validate(output)

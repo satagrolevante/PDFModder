@@ -33,6 +33,7 @@ class AddTextRequest:
     font_axes: dict | None = None
     font_features: dict | None = None
     direction: str = 'auto'
+    auto_adapt: bool = False
 
 
 def _lines(text, face, size, width, reflow):
@@ -72,6 +73,18 @@ def insert_text_pdf(data: bytes, request: AddTextRequest, resolver=None):
     run = dict(text=request.text, font_name=request.font_name, font_file=request.font_file,
                size=request.size, color=request.color, font_axes=request.font_axes,
                font_features=request.font_features, direction=request.direction)
+    if request.auto_adapt and request.accessibility_order is None:
+        with fitz.open(stream=data,filetype='pdf') as source:
+            untagged=source.xref_get_key(source.pdf_catalog(),'StructTreeRoot')[0]=='null'
+        if untagged:
+            from .richtext import edit_rich_pdf
+            output,report=edit_rich_pdf(data,RichTextRequest(request.page,[],[run],
+                rect=(request.x,request.y,request.x+request.width,request.y+request.height),
+                paragraphs=[dict(alignment=request.align,direction=request.direction)],
+                revision=request.revision,allow_overlap=request.allow_overlap,
+                auto_width=not request.reflow,auto_height=True,auto_adapt=True),resolver)
+            report.update(operation='add_text',allowed_overlap=request.allow_overlap)
+            return output,report
     if requires_shaping([run]):
         if request.accessibility_order:
             raise EditError('La composición avanzada requiere un área sin estructura accesible; conserva el orden de lectura existente.')

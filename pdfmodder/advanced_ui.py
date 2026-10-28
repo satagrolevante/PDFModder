@@ -17,10 +17,19 @@ class AdvancedEditing:
         form.insertRow(8,self.auto_width_box)
         self.auto_height_box=QCheckBox('Ajustar altura al texto');self.auto_height_box.setObjectName('autoAreaHeight')
         self.auto_height_box.setChecked(True)
-        self.auto_height_box.setToolTip('Adapta la altura al insertar líneas o cambiar el formato, sin reducir letras. Se comprueban el borde de página, los recortes y los vecinos.')
+        self.auto_height_box.setToolTip('Adapta la altura al insertar líneas o cambiar el formato, sin reducir letras. '
+            'Para mantener una altura fija, desmarca también «Adaptar el área automáticamente». Se comprueban el borde de página, los recortes y los vecinos.')
         form.addRow(self.auto_height_box)
-        self.allow_overlap_box=QCheckBox('Permitir superponer texto');self.allow_overlap_box.setObjectName('allowTextOverlap')
-        self.allow_overlap_box.setToolTip('Permite colocar texto encima de otro. Ambos siguen siendo texto real; revisa la legibilidad en la vista previa.')
+        self.auto_adapt_box=QCheckBox('Adaptar el área automáticamente');self.auto_adapt_box.setObjectName('autoAdaptArea')
+        self.auto_adapt_box.setChecked(True)
+        self.auto_adapt_box.setToolTip('Amplía el cuadro o reparte el texto en líneas cuando sea necesario, dentro de la página y del recorte. '
+            'Conserva la fuente, el tamaño y el contenido vecino. Desmarca para mantener un área fija.')
+        form.addRow(self.auto_adapt_box)
+        self.allow_overlap_box=QCheckBox('Permitir solapamiento automáticamente');self.allow_overlap_box.setObjectName('allowTextOverlap')
+        self.allow_overlap_box.setChecked(True)
+        self.allow_overlap_box.setToolTip('Si la modificación alcanza texto vecino, permite la superposición conservando ambos contenidos y sus posiciones. '
+            'Se mantienen las comprobaciones de integridad. Revisa la legibilidad o usa «Redistribuir texto vecino». '
+            'Desmarca esta opción si prefieres impedir nuevas superposiciones.')
         form.addRow(self.allow_overlap_box)
         self.line_spacing_box=self._spin('lineSpacing',0,300,3);self.line_spacing_box.setSuffix(' pt');self.line_spacing_box.setSpecialValueText('Original / automático')
         self.paragraph_spacing_box=self._spin('paragraphSpacing',0,300,3);self.paragraph_spacing_box.setSuffix(' pt')
@@ -85,6 +94,7 @@ class AdvancedEditing:
 
     def _extend_request(self,request):
         request.allow_overlap=self.allow_overlap_box.isChecked()
+        request.auto_adapt=self.auto_adapt_box.isChecked()
         if request.text is not None:
             if '\n' in request.text or '\r' in request.text:
                 request.text=request.text.replace('\r\n','\n').replace('\r','\n')
@@ -97,6 +107,7 @@ class AdvancedEditing:
             if self.model and any(g.mode==3 for g in self.model.selected(request.ids)):
                 if not self.ocr_mode_box.isChecked():raise ValueError('Activa «Corregir sólo la capa OCR buscable». La imagen escaneada permanecerá igual.')
                 request.ocr_mode='searchable'
+                request.auto_adapt=False
                 request.line_reflow=request.reflow=False
                 request.line_spacing=None;request.paragraph_spacing=0.;request.height=None;request.size=None;request.anchor='left'
         return request

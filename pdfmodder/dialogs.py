@@ -217,9 +217,17 @@ class TextDialog(QDialog):
         self.reflow_box = QCheckBox('Redistribuir palabras entre líneas dentro del área')
         self.reflow_box.setObjectName('text_reflow')
         self.reflow_box.setChecked(not existing)
-        self.allow_overlap_box = QCheckBox('Permitir superponer texto' if existing else 'Permitir solapamiento sobre texto, imágenes o líneas')
+        self.allow_overlap_box = QCheckBox('Permitir solapamiento automáticamente')
         self.allow_overlap_box.setObjectName('text_overlap')
-        self.allow_overlap_box.setChecked(False)
+        self.allow_overlap_box.setChecked(True)
+        self.allow_overlap_box.setToolTip('Permite que el texto alcance contenido vecino sin borrarlo. '
+            'Se conserva la validación del PDF; revisa la legibilidad en la vista previa. '
+            'Desmarca esta opción si prefieres impedir nuevas superposiciones.')
+        self.auto_adapt_box = QCheckBox('Adaptar el área automáticamente')
+        self.auto_adapt_box.setObjectName('text_auto_adapt')
+        self.auto_adapt_box.setChecked(True)
+        self.auto_adapt_box.setToolTip('Ajusta el cuadro y los saltos entre líneas si hace falta, dentro de la página y del recorte, '
+            'sin reducir letras ni cambiar la fuente o el contenido vecino.')
         self.error_label = QLabel()
         self.error_label.setTextFormat(Qt.PlainText)
         self.error_label.setWordWrap(True)
@@ -251,6 +259,7 @@ class TextDialog(QDialog):
         layout.addLayout(properties)
         layout.addWidget(self.reflow_box)
         layout.addWidget(self.allow_overlap_box)
+        layout.addWidget(self.auto_adapt_box)
         note = QLabel('La previsualización se genera desde el PDF modificado. El tamaño no se reduce automáticamente.')
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -293,6 +302,7 @@ class TextDialog(QDialog):
                     align=self.align_box.currentData(),
                     reflow=self.reflow_box.isChecked(),
                     allow_overlap=self.allow_overlap_box.isChecked(),
+                    auto_adapt=self.auto_adapt_box.isChecked(),
                     **choice)
 
     def accept(self):

@@ -170,7 +170,7 @@ def _paste_rect(bundle, point=None, rect=None):
     return tuple(rect)
 
 
-def _paste_text(data,page,bundle,rect,resolver,allow_overlap):
+def _paste_text(data,page,bundle,rect,resolver,allow_overlap,auto_adapt=False):
     runs=deepcopy(bundle.get('runs',[]));fonts=bundle.get('fonts',{})
     if not runs or not any(r.get('text','').strip() for r in runs):
         raise EditError('El portapapeles no contiene texto para pegar.')
@@ -192,13 +192,13 @@ def _paste_text(data,page,bundle,rect,resolver,allow_overlap):
             raise EditError('No está disponible la fuente exacta «'+str(entry.get('name',run.get('font_name','')))+'». '
                             'Importa y asocia esa fuente y copia de nuevo. '+str(entry.get('error','')))
     request=RichTextRequest(page,[],runs,rect=rect,paragraphs=deepcopy(bundle.get('paragraphs',[])),
-                           allow_overlap=allow_overlap,auto_width=False,auto_height=True)
+                           allow_overlap=allow_overlap,auto_width=False,auto_height=True,auto_adapt=auto_adapt)
     return edit_rich_pdf(data,request,_BundleResolver(resolver,fonts))
 
 
 def apply_clipboard_v170(session, operation, page, revision=None, bundle=None, point=None, rect=None,
                          ids=None, image_id=None, allow_overlap=False, accessibility_order=None,
-                         alt_text=None, decorative=False):
+                         alt_text=None, decorative=False,auto_adapt=False):
     """Validate first; install one history state only after every step succeeds."""
     session._writable();data=session.history.current;_revision(data,revision)
     if operation=='delete':
@@ -232,7 +232,7 @@ def apply_clipboard_v170(session, operation, page, revision=None, bundle=None, p
                 report.update(destination_regions=[area],image_operation=second.get('image_operation'))
             report.update(operation='image_clipboard_paste',destination_regions=[area])
         elif bundle.get('kind')=='text':
-            candidate,report=_paste_text(data,page,bundle,area,session.resolver,allow_overlap)
+            candidate,report=_paste_text(data,page,bundle,area,session.resolver,allow_overlap,auto_adapt)
             report['operation']='clipboard_paste_text'
         elif bundle.get('kind')=='plain_text':
             from .composition import AddTextRequest, insert_text_pdf

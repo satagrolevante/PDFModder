@@ -117,7 +117,7 @@ def test_click_place_text_real_typography_dialog_preview_commit_save_and_reopen(
     assert accepted_values and placed_points
     values=accepted_values[0]
     assert values['font_name']=='Courier-Bold' and values['font_file'] is None
-    assert values['size']==13.375 and not values['allow_overlap']
+    assert values['size']==13.375 and values['allow_overlap']
     assert (values['x'],values['y'])==pytest.approx(placed_points[0],abs=.003)
 
     settled(qtbot,window)
@@ -161,6 +161,7 @@ def test_click_place_text_real_typography_dialog_preview_commit_save_and_reopen(
     joined=''.join(g.text for g in window.model.glyphs)
     offset=joined.index(expected_text)
     glyph=window.model.glyphs[offset]
+    window.mode_box.setCurrentIndex(window.mode_box.findData('word'))
     center=((glyph.bbox[0]+glyph.bbox[2])/2,(glyph.bbox[1]+glyph.bbox[3])/2)
     window.canvas.ensureVisible(window.canvas.scene_rect(glyph.bbox),20,20)
     qtbot.mouseClick(window.canvas.viewport(),Qt.LeftButton,pos=window.canvas.viewport_point(center))

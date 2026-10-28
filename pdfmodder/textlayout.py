@@ -21,6 +21,20 @@ def edit_with_layout(data,request,resolver=None):
         raise EditError('El interlineado debe ser positivo.')
     if not math.isfinite(request.paragraph_spacing) or request.paragraph_spacing<0:
         raise EditError('La separación entre párrafos no puede ser negativa.')
+    if (request.auto_adapt and request.ocr_mode=='visible' and
+            (request.text is not None or request.size is not None or request.font_name
+             or request.font_file or request.color is not None)):
+        # The engine retains original-document preflights and OCR pairing,
+        # then selects the bounded native compositor. Do not reject a natural
+        # line width here before that compositor has the chance to wrap it.
+        return edit_pdf(data,request,resolver)
+    if (request.text is None and request.size is None and not request.font_name
+            and not request.font_file and request.color is None and not request.reflow):
+        from .richtext import has_rich_metadata,move_rich_pdf
+        if has_rich_metadata(data,request.page):
+            # The native mover checks selection, visibility and source revision
+            # itself. Do not fully extract the same dense page beforehand.
+            return move_rich_pdf(data,request,resolver)
     if request.text == '' and request.ids and request.ocr_mode == 'visible':
         # Supr uses the side-panel route even when on-page writing uses rich
         # native operators. Pure deletion needs the same tagged semantics and

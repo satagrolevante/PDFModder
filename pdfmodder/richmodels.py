@@ -15,4 +15,5 @@ class RichTextRequest:
     allow_overlap: bool = False
     auto_width: bool = False
     auto_height: bool = False
+    auto_adapt: bool = False
 

@@ -218,9 +218,19 @@ def page_issues(data, number):
     """Analiza operadores con parser PDF, nunca expresiones sobre el binario."""
     issues = []
     try:
-        reader = PdfReader(io.BytesIO(data))
-        page = reader.pages[number]
-        ops = ContentStream(page.get_contents(), reader).operations
+        from .analysis_reuse_v315 import page_operations_v315
+        # Valid documents share the same strict syntax evidence as final
+        # validation and font binding. Preserve the tolerant fallback for
+        # sources which pypdf can repair while they are being inspected.
+        for strict in (True,False):
+            try:
+                reader=PdfReader(io.BytesIO(data),strict=strict)
+                page=reader.pages[number]
+                ops=page_operations_v315(data,number,reader)
+                break
+            except DraftCancelled:raise
+            except Exception:
+                if not strict:raise
         if any(op in (b'W',b'W*') for _,op in ops):
             issues.append("Página con recortes gráficos explícitos: no se puede reconstruir el texto con seguridad.")
         if not reader.trailer['/Root'].get('/StructTreeRoot'):
@@ -253,6 +263,71 @@ _verified_text_scope_graphs = OrderedDict()
 
 def clear_text_scope_cache():
     _verified_text_scope_graphs.clear()
+
+
+def assert_graphics_scopes_v316(data,page_number):
+    """Prove closed graphic/text/marked scopes before wrapping old content.
+
+    Uses independent complete-stream summaries. Split operands fall back to
+    the original concatenated parser, keeping stream-array semantics intact.
+    """
+    try:return _assert_graphics_scopes_v316(data,page_number)
+    except (EditError,DraftCancelled):raise
+    except Exception as error:
+        raise EditError('No se pudieron verificar los ámbitos gráficos del contenido original.') from error
+
+
+def _assert_graphics_scopes_v316(data,page_number):
+    from .analysis_reuse_v315 import stream_scope_events_v316,page_operations_v315
+    reader=PdfReader(io.BytesIO(data),strict=True)
+    page=reader.pages[page_number]
+    def resolved(value):return value.get_object() if hasattr(value,'get_object') else value
+    contents=resolved(page.get('/Contents'))
+    contents=list(contents) if isinstance(contents,(tuple,list)) else [contents] if contents is not None else []
+    events=[]
+    for source in contents:
+        source=resolved(source)
+        part=stream_scope_events_v316(source.get_data(),reader,prime_syntax=True) if isinstance(source,StreamObject) else None
+        if part is None:
+            events=None;break
+        events.extend(part)
+    if events is None:
+        events=[]
+        for operands,operator in page_operations_v315(data,page_number,reader):
+            if operator==b'cm':value=tuple(float(item) for item in operands)
+            elif operator==b'gs':value=str(operands[0]) if operands else None
+            else:value=None
+            events.append((operator,value))
+    resources=resolved(page.get('/Resources',{}))
+    graphics=marked=0;inside=False;pending_clip=False
+    for index,(operator,value) in enumerate(events):
+        if index%256==0:checkpoint()
+        if operator==b'q':graphics+=1
+        elif operator==b'Q':
+            graphics-=1
+            if graphics<0:raise EditError('La página tiene un cierre Q sin apertura; no se puede aislar su contenido.')
+        elif operator==b'BT':
+            if inside:raise EditError('La página contiene objetos de texto anidados no válidos.')
+            inside=True
+        elif operator==b'ET':
+            if not inside:raise EditError('La página contiene un cierre de texto sin apertura.')
+            inside=False
+        elif operator in (b'BDC',b'BMC'):marked+=1
+        elif operator==b'EMC':
+            marked-=1
+            if marked<0:raise EditError('El contenido marcado tiene un cierre sin apertura.')
+        elif operator==b'cm':
+            if value is None or len(value)!=6 or not all(math.isfinite(item) for item in value):
+                raise EditError('La página contiene una matriz gráfica no válida.')
+        elif operator==b'gs':
+            ext=resolved(resources.get('/ExtGState',{}))
+            if value is None or value not in ext or not isinstance(resolved(ext[value]),dict):
+                raise EditError('No se puede resolver un estado gráfico de la página para aislar su contenido.')
+        elif operator in (b'W',b'W*'):pending_clip=True
+        elif operator in (b'n',b'S',b's',b'f',b'F',b'f*',b'B',b'B*',b'b',b'b*'):pending_clip=False
+    if graphics or marked or inside or pending_clip:
+        raise EditError('La página deja un estado gráfico, de texto o marcado abierto; no se puede aislar su contenido.')
+    checkpoint()
 
 
 def assert_text_object_structure(data, *, reader=None, tagged_structure=None,
@@ -324,8 +399,26 @@ def assert_text_object_structure(data, *, reader=None, tagged_structure=None,
             active.add(identity)
             inside = False
             invoked = []
-            operations = ContentStream(stream, reader).operations if operations is None else operations
-            for op_index, (operands, operator) in enumerate(operations):
+            events=None
+            if operations is None:
+                from .analysis_reuse_v315 import stream_scope_events_v316
+                sources=resolved(stream)
+                sources=list(sources) if isinstance(sources,(list,tuple)) else [sources] if sources is not None else []
+                parts=[]
+                for source in sources:
+                    source=resolved(source)
+                    if not isinstance(source,StreamObject):
+                        parts=None;break
+                    part=stream_scope_events_v316(source.get_data(),reader)
+                    if part is None:
+                        parts=None;break
+                    parts.extend(part)
+                if parts is not None:events=parts
+            if events is None:
+                operations=ContentStream(stream,reader).operations if operations is None else operations
+                events=[(operator,str(operands[0]) if operator==b'Do' and operands else None)
+                        for operands,operator in operations if operator in (b'BT',b'ET',b'Do')]
+            for op_index, (operator, name) in enumerate(events):
                 if op_index % 256 == 0:checkpoint()
                 if operator == b'BT':
                     if inside:
@@ -335,8 +428,8 @@ def assert_text_object_structure(data, *, reader=None, tagged_structure=None,
                     if not inside:
                         raise EditError(f'Validación: {label} contiene ET sin apertura BT.')
                     inside = False
-                elif operator == b'Do' and operands:
-                    invoked.append(operands[0])
+                elif operator == b'Do' and name is not None:
+                    invoked.append(name)
             if inside:
                 raise EditError(f'Validación: {label} contiene un bloque BT sin cierre ET.')
             objects = resources.get('/XObject', {})
@@ -364,7 +457,7 @@ def assert_text_object_structure(data, *, reader=None, tagged_structure=None,
                 continue
             resources = resolved(page.get('/Resources', {}))
             operations = page_operations[number] if page_operations is not None else None
-            stream = page.get_contents() if operations is None else None
+            stream = page.raw_get('/Contents') if operations is None and '/Contents' in page else None
             verify(stream, resources, f'la página {number+1}', ('page', number), operations=operations)
             if fingerprint is not None:
                 verified_graphs.append(fingerprint)
@@ -416,17 +509,50 @@ def _canonical(value):
     return value
 
 
+def _validation_drawings_v316(page):
+    """Keep MuPDF's native coordinate tuples instead of allocating Points.
+
+    Supply the same defaults and normalized rectangles as get_drawings so the
+    established canonical comparison and owned-underline checks remain exact.
+    """
+    drawings=page.get_cdrawings()
+    defaults=('closePath','fill','color','width','lineCap','lineJoin','dashes',
+              'stroke_opacity','fill_opacity','even_odd')
+    for drawing in drawings:
+        if drawing.get('type') in ('f','s'):
+            for key in defaults:drawing.setdefault(key,None)
+        items=[]
+        for item in drawing.get('items',[]):
+            if item[0]=='re':
+                x0,y0,x1,y1=item[1]
+                item=('re',(min(x0,x1),min(y0,y1),max(x0,x1),max(y0,y1)),*item[2:])
+            elif item[0]=='qu':item=('qu',fitz.Quad(item[1]))
+            items.append(item)
+        if 'items' in drawing:drawing['items']=items
+    return drawings
+
+
 def related(page):
     return _canonical({
         'links':page.get_links(),
         'annots':[(a.type, tuple(a.rect),a.info,a.colors,a.opacity,
                    a.vertices,a.flags,a.border,a.line_ends,a.blendmode) for a in page.annots() or []],
         'widgets':[(w.field_name,w.field_value,w.field_type,tuple(w.rect)) for w in page.widgets() or []],
-        'drawings':page.get_drawings(),
+        'drawings':_validation_drawings_v316(page),
         # Compressed stream length can change under a lossless full write.
         # Compare decoded pixel digest, dimensions, mask, placement and colour
         # properties instead; the independent page render checks appearance.
         'images':[{k:v for k,v in info.items() if k!='size'} for info in page.get_image_info(hashes=True)],
+    })
+
+
+def related_without_graphics_v316(page):
+    """Interactive-object check for an independently proved artwork graph."""
+    return _canonical({
+        'links':page.get_links(),
+        'annots':[(a.type,tuple(a.rect),a.info,a.colors,a.opacity,a.vertices,
+                   a.flags,a.border,a.line_ends,a.blendmode) for a in page.annots() or []],
+        'widgets':[(w.field_name,w.field_value,w.field_type,tuple(w.rect)) for w in page.widgets() or []],
     })
 
 
@@ -629,7 +755,8 @@ def validate_transition(before_data, after_data, page_number, expected, excluded
     independent = PdfReader(io.BytesIO(after_data), strict=True)
     if len(independent.pages) != len(report):
         raise EditError("El lector independiente no confirma el número de páginas.")
-    assert_text_object_structure(after_data, reader=independent)
+    assert_text_object_structure(after_data, reader=independent,
+                                 before_data=before_data,unchanged_pages=unchanged_pages)
     from .tagged import assert_structure
     assert_structure(before_data,after_data,tagged_expected)
     return {'pages':report, 'independent_parser':'pypdf', 'verified':True}

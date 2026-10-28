@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt,QTimer,QRect
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QComboBox,QLabel,QGroupBox,QVBoxLayout
 from .model import union,transform_rect,pt
+from .auto_layout_v316 import automatic_area_enabled_v316
 
 
 class RichEditing:
@@ -76,10 +77,13 @@ class RichEditing:
             payload['auto_width']=bool(self.auto_width_box.isChecked() and not join_items)
             payload['auto_height']=bool(self.auto_height_box.isChecked())
             payload['allow_overlap']=bool(self.allow_overlap_box.isChecked())
+            payload['auto_adapt']=automatic_area_enabled_v316(self)
             self._open_rich_payload(payload)
         self._submit('rich_selection',{'page':self.page_number,'ids':self.canvas.ids[:]},ready)
 
     def _open_rich_payload(self,payload):
+        payload=dict(payload)
+        payload.setdefault('auto_adapt',automatic_area_enabled_v316(self))
         self._rich_active=True;self._rich_pending=None;self._rich_accept_pending=False;self._rich_serial=0
         self._rich_initial_png=getattr(self,'_page_png',None)
         self._editing_context=(self.page_number,self.model.revision,tuple(self.canvas.ids))
@@ -176,7 +180,9 @@ class RichEditing:
         self._rich_generation+=1;generation=self._rich_generation
         def loaded(payload):
             if generation!=self._rich_generation:return
-            payload.update(rect=list(rect),width=rect[2]-rect[0],height=rect[3]-rect[1],auto_width=False,auto_height=False)
+            payload.update(rect=list(rect),width=rect[2]-rect[0],height=rect[3]-rect[1],auto_width=False,auto_height=False,
+                           allow_overlap=bool(self.allow_overlap_box.isChecked()),
+                           auto_adapt=automatic_area_enabled_v316(self))
             payload['_explicit_area_v300']=True
             self._open_rich_payload(payload)
             self._rich_changed(self.canvas.editor.payload())
@@ -214,6 +220,8 @@ class RichEditing:
         payload=deepcopy(self._format_copy['payload']);width=min(pt(75),self.model.cropbox[2]-self.model.cropbox[0]-x)
         height=min(pt(25),self.model.cropbox[3]-self.model.cropbox[1]-y)
         payload.update(ids=[],rect=[x,y,x+width,y+height],width=width,height=height,runs=[dict(self._format_copy['style'],text='')],
-                       paragraphs=[{'index':0}],carets=[],auto_width=False,auto_height=False)
+                       paragraphs=[{'index':0}],carets=[],auto_width=False,auto_height=False,
+                       allow_overlap=bool(self.allow_overlap_box.isChecked()),
+                       auto_adapt=automatic_area_enabled_v316(self))
         self.canvas.set_selection([])
         self._rich_generation+=1;self._open_rich_payload(payload)

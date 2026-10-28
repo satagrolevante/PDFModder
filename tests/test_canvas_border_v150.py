@@ -1,7 +1,8 @@
-"""Viewport border gestures: move frames, select inside, preserve resize handles."""
+"""Viewport text gestures: drag a selection, refine ranges, preserve resize handles."""
 import pymupdf as fitz
 import pytest
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtWidgets import QApplication
 
 from pdfmodder.canvas import PdfCanvas
 from pdfmodder.engine import extract_page, full_write
@@ -24,6 +25,7 @@ def make_canvas(qtbot, zoom=1., rotation=0):
     canvas.set_page(png,model,zoom)
     canvas.show()
     canvas.set_selection([g.id for g in model.glyphs])
+    QApplication.processEvents()
     return canvas,png
 
 
@@ -73,19 +75,97 @@ def test_border_tolerance_is_viewport_pixels_and_handles_keep_priority(qtbot,zoo
     assert resized[0][2:]==pytest.approx((rect[2]+20,rect[3]+10),abs=1.4)
 
 
-def test_drag_inside_selected_text_still_selects_characters(qtbot):
+def test_shift_drag_inside_selected_text_still_selects_characters(qtbot):
     canvas,_=make_canvas(qtbot,1.5)
     canvas.mode='character'
     moved=[]
     canvas.move_requested.connect(lambda *value:moved.append(value))
     first,last=[canvas.model.glyphs[n] for n in (1,4)]
     center=lambda glyph:canvas.viewport_point(((glyph.bbox[0]+glyph.bbox[2])/2,(glyph.bbox[1]+glyph.bbox[3])/2))
-    qtbot.mousePress(canvas.viewport(),Qt.LeftButton,pos=center(first))
+    qtbot.mousePress(canvas.viewport(),Qt.LeftButton,Qt.ShiftModifier,pos=center(first))
     assert not canvas._border_move
     qtbot.mouseMove(canvas.viewport(),pos=center(last))
-    qtbot.mouseRelease(canvas.viewport(),Qt.LeftButton,pos=center(last))
+    qtbot.mouseRelease(canvas.viewport(),Qt.LeftButton,Qt.ShiftModifier,pos=center(last))
+    qtbot.keyRelease(canvas,Qt.Key_Shift)
     assert not moved
     assert canvas.ids==[g.id for g in canvas.model.glyphs[1:5]]
+
+
+@pytest.mark.parametrize('zoom',[.75,1.5])
+@pytest.mark.parametrize('rotation',[0,90,180,270])
+def test_selected_text_interior_moves_without_reselecting_or_editing(qtbot,zoom,rotation):
+    canvas,_=make_canvas(qtbot,zoom,rotation)
+    selected=canvas.ids[:]
+    glyph=canvas.model.glyphs[2]
+    x,y=(glyph.bbox[0]+glyph.bbox[2])/2,(glyph.bbox[1]+glyph.bbox[3])/2
+    first,last=canvas.viewport_point((x,y)),canvas.viewport_point((x+24,y+16))
+    moved=[];edited=[];resized=[]
+    canvas.move_requested.connect(lambda *value:moved.append(value))
+    canvas.edit_requested.connect(lambda:edited.append(True))
+    canvas.text_resize_requested.connect(resized.append)
+    qtbot.mouseMove(canvas.viewport(),pos=first)
+    assert canvas.cursor().shape()==Qt.SizeAllCursor
+    qtbot.mousePress(canvas.viewport(),Qt.LeftButton,pos=first)
+    assert canvas._border_move and not canvas._text_resize
+    qtbot.mouseMove(canvas.viewport(),pos=last)
+    qtbot.mouseRelease(canvas.viewport(),Qt.LeftButton,pos=last)
+    assert len(moved)==1 and moved[0]==pytest.approx((24,16),abs=1.4)
+    assert canvas.ids==selected and not edited and not resized
+
+
+def test_drag_on_unselected_text_still_selects_characters(qtbot):
+    canvas,_=make_canvas(qtbot,1.5)
+    canvas.mode='character'
+    canvas.set_selection([])
+    moved=[]
+    canvas.move_requested.connect(lambda *value:moved.append(value))
+    first,last=[canvas.model.glyphs[n] for n in (1,4)]
+    center=lambda glyph:canvas.viewport_point(((glyph.bbox[0]+glyph.bbox[2])/2,(glyph.bbox[1]+glyph.bbox[3])/2))
+    qtbot.mousePress(canvas.viewport(),Qt.LeftButton,pos=center(first))
+    qtbot.mouseMove(canvas.viewport(),pos=center(last))
+    qtbot.mouseRelease(canvas.viewport(),Qt.LeftButton,pos=center(last))
+    assert not moved and canvas.ids==[g.id for g in canvas.model.glyphs[1:5]]
+
+
+def test_unselected_text_inside_discontinuous_selection_frame_is_not_a_move_target(qtbot):
+    canvas,_=make_canvas(qtbot,1.5)
+    canvas.mode='character'
+    canvas.set_selection([g.id for g in canvas.model.glyphs[:3]+canvas.model.glyphs[10:13]])
+    glyph=canvas.model.glyphs[6]
+    point=canvas.viewport_point(((glyph.bbox[0]+glyph.bbox[2])/2,(glyph.bbox[1]+glyph.bbox[3])/2))
+    qtbot.mousePress(canvas.viewport(),Qt.LeftButton,pos=point)
+    assert not canvas._border_move
+    qtbot.mouseRelease(canvas.viewport(),Qt.LeftButton,pos=point)
+    assert canvas.ids==[glyph.id]
+
+
+def test_click_and_double_click_inside_existing_selection_do_not_move(qtbot):
+    canvas,_=make_canvas(qtbot,1.5)
+    selected=canvas.ids[:]
+    glyph=canvas.model.glyphs[2]
+    point=canvas.viewport_point(((glyph.bbox[0]+glyph.bbox[2])/2,(glyph.bbox[1]+glyph.bbox[3])/2))
+    moved=[];edited=[]
+    canvas.move_requested.connect(lambda *value:moved.append(value))
+    canvas.edit_requested.connect(lambda:edited.append(True))
+    qtbot.mouseClick(canvas.viewport(),Qt.LeftButton,pos=point)
+    assert canvas.ids==selected and not moved and not edited
+    qtbot.mouseDClick(canvas.viewport(),Qt.LeftButton,pos=point)
+    assert canvas.ids==selected and not moved and edited==[True]
+
+
+@pytest.mark.parametrize('read_only',[False,True])
+def test_interior_click_jitter_does_not_move_and_read_only_never_moves(qtbot,read_only):
+    canvas,_=make_canvas(qtbot,1.5)
+    canvas.read_only=read_only
+    glyph=canvas.model.glyphs[2]
+    first=canvas.viewport_point(((glyph.bbox[0]+glyph.bbox[2])/2,(glyph.bbox[1]+glyph.bbox[3])/2))
+    last=first+QPoint(30,20) if read_only else first+QPoint(1,2)
+    moved=[]
+    canvas.move_requested.connect(lambda *value:moved.append(value))
+    qtbot.mousePress(canvas.viewport(),Qt.LeftButton,pos=first)
+    qtbot.mouseMove(canvas.viewport(),pos=last)
+    qtbot.mouseRelease(canvas.viewport(),Qt.LeftButton,pos=last)
+    assert not moved and not canvas._border_move
 
 
 @pytest.mark.parametrize('cancel',['escape','page','application_cancel'])

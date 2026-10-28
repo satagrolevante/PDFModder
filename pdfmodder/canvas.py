@@ -217,7 +217,7 @@ class PdfCanvas(QGraphicsView):
         self.interaction_mode=mode
         self._border_move=False
         self.setCursor(Qt.IBeamCursor if self.reading_mode or mode=='write' else Qt.SizeAllCursor if mode=='move' else Qt.ArrowCursor)
-        self.setToolTip({'select':'Seleccionar · arrastra letras dentro del texto · arrastra el borde para mover · doble clic para escribir',
+        self.setToolTip({'select':'Seleccionar · arrastra el texto seleccionado para mover · Mayús+arrastrar: seleccionar letras · doble clic para escribir',
                          'write':'Escribir · pulsa el texto para situar el cursor',
                          'move':'Mover · arrastra la selección o usa las flechas'}[mode])
 
@@ -506,7 +506,7 @@ class PdfCanvas(QGraphicsView):
 
         Handles take precedence at the caller. Measuring segment distance also
         works for transformed page coordinates without growing the PDF region
-        as the user zooms out. The frame interior remains text selection space.
+        as the user zooms out.
         """
         x0,y0,x1,y1=rect
         corners=[self.viewport_point(point) for point in ((x0,y0),(x1,y0),(x1,y1),(x0,y1))]
@@ -519,6 +519,18 @@ class PdfCanvas(QGraphicsView):
             if dx*dx+dy*dy<=tolerance*tolerance:
                 return True
         return False
+
+    def _selection_interior_at_v315(self, selected, point):
+        """Hit the highlighted text, including word gaps, without a thin edge.
+
+        Use the actual selection runs rather than the whole multiline frame:
+        a gap containing unselected text must still start a new selection.
+        """
+        rects = ((self.selection_rect_v300,) if self.selection_rect_v300
+                 else selection_rectangles_v311(selected))
+        x, y = point
+        return any(rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]
+                   for rect in rects)
 
     def _rotation_handle_position(self, rect):
         """Keep the circular rotation grip 24 screen pixels above the frame."""
@@ -693,7 +705,8 @@ class PdfCanvas(QGraphicsView):
             event.accept()
             return
         if self.ids and not self.read_only:
-            bounds=self.selection_rect_v300 or union(g.bbox for g in self.model.selected(self.ids))
+            selected=self.model.selected(self.ids)
+            bounds=self.selection_rect_v300 or union(g.bbox for g in selected)
             handle=self._handle_at(bounds,event.position().toPoint())
             if handle:
                 self._text_resize=handle
@@ -702,7 +715,10 @@ class PdfCanvas(QGraphicsView):
                 self._text_resize_rect=None
                 event.accept()
                 return
-            if self.interaction_mode=='select' and self._border_at(bounds,event.position().toPoint()):
+            if (self.interaction_mode=='select'
+                    and not event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)
+                    and (self._border_at(bounds,event.position().toPoint())
+                         or self._selection_interior_at_v315(selected,point))):
                 self._border_move=True
                 self._press=point
                 self._press_scene=event.position().toPoint()
@@ -822,10 +838,13 @@ class PdfCanvas(QGraphicsView):
             return
         if self.interaction_mode=='select' and not self._press:
             selected=self.model.selected(self.ids) if self.model else []
-            bounds=union(g.bbox for g in selected) if selected else None
-            on_border=bool(bounds and not self.read_only and not self._handle_at(bounds,event.position().toPoint())
-                           and self._border_at(bounds,event.position().toPoint()))
-            self.setCursor(Qt.SizeAllCursor if on_border else Qt.ArrowCursor)
+            bounds=(self.selection_rect_v300 or union(g.bbox for g in selected)) if selected else None
+            on_selection=bool(bounds and not self.read_only
+                              and not event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)
+                              and not self._handle_at(bounds,event.position().toPoint())
+                              and (self._border_at(bounds,event.position().toPoint())
+                                   or self._selection_interior_at_v315(selected,self.pdf_point(event.position().toPoint()))))
+            self.setCursor(Qt.SizeAllCursor if on_selection else Qt.ArrowCursor)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):

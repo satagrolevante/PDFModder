@@ -141,6 +141,7 @@ def test_resource_probe_propagates_cancellation_instead_of_hiding_it(monkeypatch
 
 def test_repeated_scope_validation_reuses_only_proven_unchanged_pages(monkeypatch):
     from pdfmodder import validation
+    from pdfmodder import analysis_reuse_v315
     from pdfmodder.page_fingerprint import PageProof
     validation.clear_text_scope_cache()
     source = document()
@@ -150,14 +151,15 @@ def test_repeated_scope_validation_reuses_only_proven_unchanged_pages(monkeypatc
         doc[0].insert_text((35, 210), 'Added text')
         output = _write_rich_transaction(doc)
     parsed = []
-    original = validation.ContentStream
+    original = analysis_reuse_v315.ContentStream
     def count(*args):
         parsed.append(True)
         return original(*args)
-    monkeypatch.setattr(validation, 'ContentStream', count)
+    monkeypatch.setattr(analysis_reuse_v315, 'ContentStream', count)
     validation.assert_text_object_structure(output, before_data=source,
                                              unchanged_pages=PageProof(source, output))
-    assert len(parsed) == 1
+    with fitz.open(stream=output,filetype='pdf') as doc:
+        assert len(parsed) == len(doc[0].get_contents())
 
 
 @pytest.mark.parametrize('kind', ['stale', 'fake', 'budget'])

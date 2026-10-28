@@ -196,6 +196,13 @@ def _catalog(shows, operations, resource):
 
 
 def selection_payload(data, page, ids, resolver=None, *, page_model=None):
+    from .owned_text_v316 import try_selection_payload_v316
+    owned=try_selection_payload_v316(data,page,ids,resolver,page_model=page_model)
+    if owned is not None:return owned
+    return _selection_payload(data,page,ids,resolver,page_model=page_model)
+
+
+def _selection_payload(data, page, ids, resolver=None, *, page_model=None):
     """Fuente real, estilos y cursores del PDF abierto; no modifica el documento."""
     resolver = resolver or FontResolver()
     from .typography_v300 import selection_payload as shaped_selection
@@ -511,6 +518,13 @@ def _write_rich_transaction(doc):
 
 
 def edit_rich_pdf(data, request, resolver=None):
+    """Compose, validate and return the exact final PDF candidate."""
+    from .analysis_reuse_v315 import analysis_scope_v315
+    with analysis_scope_v315():
+        return _edit_rich_pdf(data, request, resolver)
+
+
+def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compose_only=False):
     """Compose, validate and return a new PDF; callers own preview/history."""
     checkpoint()
     from .native_codes import verified_catalog
@@ -538,6 +552,10 @@ def edit_rich_pdf(data, request, resolver=None):
         return edit_shaped_pdf(data, request, resolver)
     if not request.ids:
         return _add_rich_pdf(data,request,resolver)
+    if not compose_only:
+        from .owned_text_v316 import try_edit_owned_text_v316
+        owned=try_edit_owned_text_v316(data,request,resolver)
+        if owned is not None:return owned
     from .form_instances_v200 import isolate_selected_forms
     isolated = isolate_selected_forms(data,request)
     if isolated is not None:
@@ -573,7 +591,8 @@ def edit_rich_pdf(data, request, resolver=None):
     others=[g for g in model.glyphs if g.id not in chosen]
     pure_delete=not any(str(run.get('text','')) for run in request.runs)
     retained_complex_clip=False
-    unchanged = _unchanged_rich_request(data, request, resolver, model)
+    unchanged = (_unchanged_rich_request(data, request, resolver, model)
+                 if insertion_source is None and not compose_only else None)
     if unchanged is not None:
         # No reinsertion, cursor compensation or clipping changes are needed.
         # The normal independent validator still verifies the current snapshot.
@@ -753,6 +772,8 @@ def edit_rich_pdf(data, request, resolver=None):
             else:w+=t['width']+t['spacing'];last_spacing=t['spacing']
         natural.append(natural_width())
         rect=(rect[0],rect[1],rect[0]+max(.1,*natural),rect[3])
+    from .auto_layout_v316 import adapt_rich_layout_v316
+    request,rect,adaptation=adapt_rich_layout_v316(request,tokens,rect,tuple(page_bounds & clip))
     laid,lines,rect=_layout(request,tokens,rect)
     planned=[replace(first,id=-1,text=t['char'],origin=t['origin'],bbox=t['bbox'],trace_bbox=t['bbox'],
                      font=t['choice']['font_name'],size=t['size'],color=t['color'],line=t['line']) for t in laid]
@@ -936,8 +957,21 @@ def edit_rich_pdf(data, request, resolver=None):
     checkpoint()
     old_validation_shapes=old_underlines+(source_decoration.old_shapes if source_decoration else [])
     new_validation_shapes=new_underlines+(source_decoration.new_shapes if source_decoration else [])
-    report=_validate(data,output,request.page,others+planned,selected+planned,old_validation_shapes,new_validation_shapes,
-                     tagged.expected if tagged else None,expected_links=linked_text.expected_links if linked_text else None)
+    if compose_only:
+        # Private composition of a disposable, blank text layer. Its content
+        # has no authority until the final grafted bytes pass _validate against
+        # the actual original document; this option never crosses the UI API.
+        report={}
+    elif insertion_source is None:
+        report=_validate(data,output,request.page,others+planned,selected+planned,old_validation_shapes,new_validation_shapes,
+                         tagged.expected if tagged else None,expected_links=linked_text.expected_links if linked_text else None)
+    else:
+        # The temporary positioning anchor is an implementation detail. Check
+        # the exact final bytes directly against the user's original once;
+        # validating the intermediate anchored document proves nothing extra.
+        original_data, original_model = insertion_source
+        report=_validate(original_data,output,request.page,original_model.glyphs+planned,
+                         planned,[],new_validation_shapes,None)
     checkpoint()
     if linked_text:
         linked_text.validate(output)
@@ -958,6 +992,7 @@ def edit_rich_pdf(data, request, resolver=None):
                   glyphs=[asdict(g) for g in planned],carets=carets,line_count=len(lines),fonts=evidence,
                   original=model.text(request.ids),replacement=logical_text,
                   elapsed_seconds=round(time.perf_counter()-started,3),rich_text=True)
+    report.update(adaptation)
     if overlap_neighbors:
         warning='Solapamiento permitido con texto vecino. Revisa la vista previa o redistribuye el texto vecino para separarlo.'
         report.setdefault('warnings',[]).append(warning)
@@ -987,37 +1022,55 @@ def _add_rich_pdf(data,request,resolver):
     from .tagged import require_untagged
     from .validation import document_issues
     require_untagged(data,'Añadir un párrafo nuevo')
+    from .owned_text_v316 import try_add_owned_text_v316
+    owned=try_add_owned_text_v316(data,request,resolver)
+    if owned is not None:return owned
     if not request.rect or len(request.rect)!=4:
         raise EditError('Define el cuadro donde quieres añadir el texto.')
     rect=tuple(_finite(v,'Posición') for v in request.rect)
     with fitz.open(stream=data,filetype='pdf') as doc:
         issues=document_issues(data,doc,operation="content")
         if issues:raise EditError('\n'.join(issues))
-        original_model=extract_page(doc,request.page,data)
+        # Only original glyph identities are needed to identify the temporary
+        # anchor. The final transaction validates all original resources and
+        # graphics, so avoid an unused full editable-source analysis here.
+        original_model=extract_page(doc,request.page)
         # A unique font resource name is unnecessary: the standard PDF face is
         # only an internal positioning anchor and never a fallback font.
         doc[request.page].insert_text((rect[0],rect[1]+10),'|',fontsize=8,fontname='helv')
         anchored=doc.tobytes(garbage=0,deflate=True)
     with fitz.open(stream=anchored,filetype='pdf') as doc:
-        anchor_model=extract_page(doc,request.page,anchored)
+        anchor_model=extract_page(doc,request.page)
         from .typography_v300 import insertion_anchor_ids
         ids=insertion_anchor_ids(original_model,anchor_model)
-    output,report=edit_rich_pdf(anchored,replace(request,ids=ids,revision=None),resolver)
-    expected=original_model.glyphs+[Glyph(**g) for g in report['glyphs']]
-    with fitz.open(stream=output,filetype='pdf') as doc:
-        records=_read_metadata(doc,request.page)
-    underlines=records[-1].get('underlines',[]) if records else []
-    checked=_validate(data,output,request.page,expected,[Glyph(**g) for g in report['glyphs']],[],underlines,None)
-    report.update(checked);report.update(source_regions=[],original='',added_text=True)
+    output,report=_edit_rich_pdf(anchored,replace(request,ids=ids,revision=None),resolver,
+                               insertion_source=(data,original_model))
+    report.update(source_regions=[],original='',added_text=True)
     return output,report
 
 
 def move_rich_pdf(data, request, resolver=None):
+    """Move native text while retaining its owned metadata and decorations."""
+    from .analysis_reuse_v315 import analysis_scope_v315
+    with analysis_scope_v315():
+        return _move_rich_pdf(data, request, resolver)
+
+
+def _move_rich_pdf(data, request, resolver=None):
     """Move native glyphs and their owned decorations without recomposition."""
     from .clipped_layout import move_clipped_text
     from .objects import GROUP_KEY, _groups
     if request.revision and request.revision != hashlib.sha256(data).hexdigest():
         raise EditError('La selección está desactualizada. Selecciona el texto de nuevo.')
+    from .validation import document_issues
+    with fitz.open(stream=data,filetype='pdf') as source:
+        # Isolation may create an unencrypted preparation copy. Enforce the
+        # original document's permissions/signatures before any such rewrite.
+        issues=document_issues(data,source,operation='content')
+        if issues:raise EditError('\n'.join(issues))
+    from .owned_text_v316 import try_move_owned_text_v316
+    owned=try_move_owned_text_v316(data,request)
+    if owned is not None:return owned
     from .typography_v300 import move_shaped_pdf
     shaped = move_shaped_pdf(data, request)
     if shaped is not None:
@@ -1034,9 +1087,29 @@ def move_rich_pdf(data, request, resolver=None):
         selected = model.selected(request.ids)
         if not selected or len(selected) != len(set(request.ids)):
             raise EditError('Selecciona los caracteres que quieres mover.')
+        from .textlayout import _check_visibility
+        _check_visibility(selected)
         metadata = _read_metadata(doc, request.page)
         if not metadata:
             return move_clipped_text(data, request, model)
+        if not any(record.get('underlines') for record in metadata):
+            # Plain added text has no decoration to strip/rebuild. Update its
+            # logical positions in the native movement transaction itself,
+            # then verify those exact bytes once before committing them.
+            from .clipped_layout import _move_clipped_text
+            metadata_applied=False
+            def update_metadata(target):
+                nonlocal metadata_applied
+                _move_rich_metadata(target,request,model,metadata)
+                metadata_applied=True
+            output,report=_move_clipped_text(data,request,model,writer=_write_rich_transaction,
+                                            update_metadata=update_metadata)
+            if metadata_applied:
+                report.update(rich_text_move=True,underlines_moved=0)
+                return output,report
+            # A clipped destination can require the separate clip-owning
+            # compositor. It does not own logical metadata: retain the full
+            # decoration transaction below for that less common case.
         _, operations, _, _ = operator_glyph_map(data, request.page, model)
         _locate_underlines(operations, metadata)
         old_underlines = [copy.deepcopy(item) for record in metadata for item in record.get('underlines', [])]
@@ -1109,6 +1182,34 @@ def move_rich_pdf(data, request, resolver=None):
     return output, report
 
 
+def _move_rich_metadata(doc,request,model,metadata):
+    """Update owned logical/group positions, never page operators/resources."""
+    from .objects import GROUP_KEY, _groups
+    selected=model.selected(request.ids)
+    dx,dy=request.dx,request.dy
+    def shifted(rect):
+        return tuple(v+(dx if i%2==0 else dy) for i,v in enumerate(rect))
+    for record in metadata:
+        flags=[any(_match(g,item) for g in selected) for item in record.get('glyphs',[])]
+        for item,chosen in zip(record.get('glyphs',[]),flags):
+            if chosen:
+                item['origin']=shifted(item['origin'])
+                item['bbox']=shifted(item['bbox'])
+        if flags and all(flags):record['rect']=shifted(record['rect'])
+        elif any(flags):record['rect']=union(item['bbox'] for item in record['glyphs'])
+    doc.xref_set_key(doc[request.page].xref,_META_KEY,fitz.get_pdf_str(json.dumps(metadata,ensure_ascii=True)))
+    groups=_groups(doc,request.page)
+    for group in groups:
+        for member in group.get('members',[]):
+            if member.get('kind')!='text':continue
+            for signature in member.get('glyphs',[]):
+                text,origin,font,size=signature
+                if any(g.text==text and g.font==font and abs(g.size-size)<.002
+                       and all(abs(a-b)<.035 for a,b in zip(g.origin,origin)) for g in selected):
+                    signature[1]=list(shifted(origin))
+    if groups:doc.xref_set_key(doc[request.page].xref,GROUP_KEY,fitz.get_pdf_str(json.dumps(groups,ensure_ascii=True)))
+
+
 def _validate(before_data,after_data,page_number,expected,changed,old_underlines,new_underlines,tagged_expected,pixel_underlines=None,*,expected_links=None):
     """Normal strict validator with an exact allowance for owned underlines."""
     from .validation import _canonical,related,assert_characters,trace_chars,assert_pixels,_ink_exclusions
@@ -1118,7 +1219,13 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
     checkpoint()
     assert_form_preservation(before_data, after_data)
     unchanged_pages = PageProof(before_data, after_data)
+    from .preserved_graphics_v316 import preserved_text_graphics_v316
+    graphics_preserved=(not old_underlines and not new_underlines and
+                       preserved_text_graphics_v316(before_data,after_data,page_number))
     def without_underlines(page,items):
+        if graphics_preserved and page.number==page_number:
+            from .validation import related_without_graphics_v316
+            return related_without_graphics_v316(page)
         result=related(page)
         drawings=list(result['drawings'])
         for item in items:
@@ -1167,4 +1274,5 @@ def _validate(before_data,after_data,page_number,expected,changed,old_underlines
     assert_text_object_structure(after_data, reader=independent, tagged_structure=structure,
                                  before_data=before_data, unchanged_pages=unchanged_pages)
     checkpoint()
-    return dict(verified=True,pages=reports,independent_parser='pypdf')
+    return dict(verified=True,pages=reports,independent_parser='pypdf',
+                preserved_graphics_v316=graphics_preserved)

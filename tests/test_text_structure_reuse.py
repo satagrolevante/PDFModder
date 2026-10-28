@@ -85,14 +85,18 @@ def test_stale_structure_and_reader_cannot_validate_new_revision(supplied_reader
 
 
 def test_incomplete_page_binding_falls_back_to_parser(monkeypatch):
+    from pdfmodder import analysis_reuse_v315
     data = make_tagged_pdf()
     structure = analyze(data)
     structure.operations.pop()
-    original = validation.ContentStream
+    original = analysis_reuse_v315.ContentStream
     parsed = []
     def parse(*args):
         parsed.append(True)
         return original(*args)
-    monkeypatch.setattr(validation, 'ContentStream', parse)
+    monkeypatch.setattr(analysis_reuse_v315, 'ContentStream', parse)
     validation.assert_text_object_structure(data, reader=structure.reader, tagged_structure=structure)
-    assert len(parsed) == len(structure.reader.pages)
+    def stream_count(page):
+        value=page.raw_get('/Contents').get_object()
+        return len(value) if isinstance(value,ArrayObject) else 1
+    assert len(parsed) == sum(stream_count(page) for page in structure.reader.pages)

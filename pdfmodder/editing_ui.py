@@ -307,6 +307,9 @@ class ExtendedEditing:
             dialog.reflow_box.setChecked(draft['reflow'])
         if 'allow_overlap' in draft:
             dialog.allow_overlap_box.setChecked(draft['allow_overlap'])
+        else:
+            dialog.allow_overlap_box.setChecked(self.allow_overlap_box.isChecked())
+        dialog.auto_adapt_box.setChecked(draft.get('auto_adapt',self.auto_adapt_box.isChecked()))
         if self._exec_edit_dialog(dialog)==QDialog.Accepted:
             values=dialog.values()
             self._text_draft=values.copy()
@@ -348,6 +351,7 @@ class ExtendedEditing:
             rect=union(g.bbox for g in selected)
             dialog=TextDialog(catalog,self,text=self.model.text(self.canvas.ids),rect=rect,size=first.size,font_name=first.font,color=first.color,existing=True)
             dialog.allow_overlap_box.setChecked(self.allow_overlap_box.isChecked())
+            dialog.auto_adapt_box.setChecked(self.auto_adapt_box.isChecked())
             anchor=self.anchor_box.currentData()
             if anchor=='decimal':
                 dialog.align_box.addItem(f'Decimal ({self.decimal_box.currentText()})','decimal')
@@ -359,7 +363,7 @@ class ExtendedEditing:
                 # A deliberate typography dialog never redistributes the
                 # unselected remainder of a line as a side effect.
                 request=self._request(text=values['text'],formatting=True,adjust_line=False)
-                for field in ('width','height','size','font_name','font_file','color','reflow','allow_overlap'):
+                for field in ('width','height','size','font_name','font_file','color','reflow','allow_overlap','auto_adapt'):
                     setattr(request,field,values[field])
                 request.reflow=request.reflow or '\n' in request.text
                 request.auto_height=self.auto_height_box.isChecked() and (request.reflow or request.size is not None or bool(request.font_name or request.font_file))

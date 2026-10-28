@@ -15,6 +15,20 @@ from .model import EditError, EditRequest
 from .validation import document_issues
 
 
+def _reuse_analysis_v315(function):
+    """Share bounded immutable parser evidence within this active session."""
+    from functools import wraps
+    @wraps(function)
+    def run(self,*args,**kwargs):
+        from .analysis_reuse_v315 import AnalysisCacheV315,analysis_scope_v315
+        cache=getattr(self,'_analysis_cache_v315',None)
+        if cache is None:
+            cache=self._analysis_cache_v315=AnalysisCacheV315()
+        with analysis_scope_v315(cache):
+            return function(self,*args,**kwargs)
+    return run
+
+
 class Session:
     def __init__(self,path,password='',config_path=None,history_dir=None,reading=False,
                  recovery_root=None,session_id=None):
@@ -115,7 +129,7 @@ class Session:
                     clean['request']=asdict(request)
             elif kind=='rich':
                 source=draft.get('payload',{})
-                payload={key:source[key] for key in ('page','ids','rect','revision','width','height','allow_overlap','auto_width','auto_height') if key in source}
+                payload={key:source[key] for key in ('page','ids','rect','revision','width','height','allow_overlap','auto_width','auto_height','auto_adapt') if key in source}
                 styles=('text','font_name','font_file','font_xref','font_resource','size','color','opacity','char_spacing','underline','bold','italic','_complementary_source','font_axes','font_features','direction')
                 settings=('index','alignment','left_indent','right_indent','first_indent','line_spacing','space_before','space_after','tab_stops','tab_interval','direction')
                 payload['runs']=[{key:run[key] for key in styles if key in run} for run in source.get('runs',[])]
@@ -157,6 +171,8 @@ class Session:
         self._cleanup_print()
         self._release_rich_analysis_v305()
         self._clear_cache();self._close_documents()
+        cache=getattr(self,'_analysis_cache_v315',None)
+        if cache is not None:cache.clear()
         self._reading_info_cache.clear();self._page_caps_cache.clear()
         self.history.suspend()
         if self.pending is not None:
@@ -465,6 +481,7 @@ class Session:
         reports=[r for r in self.history.base_reports+self.history.reports[:self.history.index+1] if r]
         return bool(reports) and all(r.get('operation')=='document_metadata' for r in reports)
 
+    @_reuse_analysis_v315
     def page(self,number,zoom=1.,original=False,thumbnail=False,reading=False):
         reading=bool(reading or not self._editing_prepared)
         data=self._view_source(original) if reading else (self.original if original else (self.pending or self.history.current))
@@ -533,6 +550,7 @@ class Session:
             self.cache_bytes-=len(removed['png'])
         return {**result,'state':self.state()}
 
+    @_reuse_analysis_v315
     def preview(self,request):
         self._require_editing()
         if self.issues:
@@ -546,6 +564,7 @@ class Session:
         self._mark_page_edit(report,request.page)
         return self._put_preview(candidate,report)
 
+    @_reuse_analysis_v315
     def rich_selection(self,page,ids):
         self._require_editing()
         from .richtext import selection_payload
@@ -565,6 +584,7 @@ class Session:
         payload.update(page=page,ids=ids)
         return payload
 
+    @_reuse_analysis_v315
     def rich_redistribute(self,request,scope='paragraph'):
         """Prepare a larger draft; the ordinary acceptance owns the transaction."""
         self._writable()
@@ -581,6 +601,7 @@ class Session:
         self._validated_rich=None
         return payload
 
+    @_reuse_analysis_v315
     def rich_preview(self,request,zoom=1.25,apply=False,prepare=False):
         """Live previews use final export bytes, without replacing session state."""
         from .richtext import edit_rich_pdf
@@ -666,6 +687,7 @@ class Session:
         self._mark_page_edit(report,request.page)
         return self._put_preview(candidate,report)
 
+    @_reuse_analysis_v315
     def image_operation(self,operation,page,rect=None,image_bytes=None,image_id=None,revision=None,
                         replacement_bytes=None,crop=None,rotation=0,fit_mode=None,
                         flip_horizontal=False,flip_vertical=False,
@@ -1088,6 +1110,8 @@ class Session:
         if self._pending_digest:clear_readonly_cache(self._pending_digest)
 
     def close(self):
+        cache=getattr(self,'_analysis_cache_v315',None)
+        if cache is not None:cache.clear()
         self._cleanup_print()
         self._close_documents()
         self._release_rich_analysis_v305()
