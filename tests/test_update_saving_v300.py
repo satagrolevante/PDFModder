@@ -137,7 +137,9 @@ def test_update_save_failure_or_destination_cancel_never_starts_installer(
                         lambda _: None if failure == 'destination_cancel' else {sid: destination})
     if failure == 'invalid_draft':
         payload = window.canvas.editor.payload()
-        payload.update(width=1., height=1., auto_width=False, auto_height=False, rect=[35., 80., 36., 81.])
+        # Keep this draft invalid even with the automatic area repair introduced in 3.0.16.
+        payload.update(width=1., height=1., auto_width=False, auto_height=False,
+                       auto_adapt=False, rect=[35., 80., 36., 81.])
         monkeypatch.setattr(window.canvas.editor, 'payload', lambda: payload)
     updater = PendingInstaller()
     dialog = update_dialog(qtbot, monkeypatch, window, updater)

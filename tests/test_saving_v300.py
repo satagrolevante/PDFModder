@@ -268,7 +268,8 @@ def test_failed_draft_validation_does_not_close_or_create_file(qtbot, saving_win
     sid = open_editing(qtbot, window, source)
     start_draft(qtbot, window, 'Fecha 11/09/2026')
     payload = window.canvas.editor.payload()
-    payload.update(width=1., height=1., auto_width=False, auto_height=False)
+    # Exercise a rejected fixed area, without automatic area repair.
+    payload.update(width=1., height=1., auto_width=False, auto_height=False, auto_adapt=False)
     payload['rect'] = [35., 80., 36., 81.]
     monkeypatch.setattr(window.canvas.editor, 'payload', lambda: payload)
     destination = tmp_path / 'no-creado.pdf'
