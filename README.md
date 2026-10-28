@@ -1,8 +1,18 @@
-# PDF Modder 3.0.13
+# PDF Modder 3.0.14
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Impresión 3.0.14
+
+Se corrige el fallo de papel al comenzar la segunda página en Windows.
+Preparación progresiva con cancelación, vista preliminar coherente y
+propiedades opcionales del controlador dentro del flujo de impresión.
+Se respetan las banderas de impresión de anotaciones y formularios.
+[Cambios y comprobaciones](docs/NOTAS_3.0.14.md) · [Uso](docs/GUIA_V314.md).
+
+Entrega Windows x64 disponible desde **Buscar actualizaciones** y GitHub Releases.
 
 ## Selección por línea 3.0.13
 
@@ -84,7 +94,7 @@ Las barras de desplazamiento muestran el cursor de flecha. Al actualizar, el
 instalador retira las instalaciones anteriores verificadas y los instaladores
 antiguos reconocidos de su caché, conservando los archivos personales.
 
-Descarga la [versión 3.0.13](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.13)
+Descarga la [versión 3.0.14](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.14)
 o utiliza **Buscar actualizaciones** desde la app.
 
 ## Rendimiento de edición 3.0.5
@@ -218,15 +228,15 @@ Las comprobaciones son dirigidas a los cambios; no se repite todo el corpus hist
 Descargas y versiones públicas: [GitHub Releases](https://github.com/satagrolevante/PDFModder/releases).
 El botón **Buscar actualizaciones** consulta este mismo repositorio, sin iniciar sesión.
 
-Instalador: `releases/v3.0.13/PDFModder-v3.0.13-Instalar.exe`,
+Instalador: `releases/v3.0.14/PDFModder-v3.0.14-Instalar.exe`,
 generado después de sus comprobaciones. Incluye las dependencias
 y registra su desinstalador en Aplicaciones instaladas. La alternativa portable
 requiere toda la carpeta `PDFModder`, con `_internal` junto a `PDFModder.exe`.
-Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 3.0.13** desde
+Ejecute el instalador y pulse **Instalar**; después abra **PDF Modder 3.0.14** desde
 el acceso creado. **Actualizar ahora** descarga, verifica e instala la actualización,
 cierra la aplicación tras resolver los cambios pendientes y retira la instalación
 anterior identificada cuando la nueva instalación termina correctamente. Conserva
-documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 3.0.13** o
+documentos personales y preferencias. Para retirarla, use **Desinstalar PDF Modder 3.0.14** o
 la entrada correspondiente de Aplicaciones instaladas de Windows.
 
 Desde el código, con Python 3.12 x64:

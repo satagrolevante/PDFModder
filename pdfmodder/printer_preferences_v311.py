@@ -17,7 +17,7 @@ DEFAULT_PRINT_SETTINGS_V311 = {
 def print_profile_v311(settings):
     """Accept only explicit application options, ignoring corrupt/unknown fields."""
     result = {}
-    for key, values in {'color': (0, 1), 'duplex': (0, 2, 3),
+    for key, values in {'color': (0, 1), 'duplex': (0, 1, 2, 3),
                         'orientation': (0, 1, 2), 'paper': (0, 1, 2, 3)}.items():
         value = settings.get(key)
         value = getattr(value, 'value', value)

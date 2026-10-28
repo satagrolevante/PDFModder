@@ -192,6 +192,7 @@ def test_direct_print_opens_one_dialog_and_produces_exact_pdf_pages(qtbot, savin
         configure_printer_v201(device, dict(settings, printer=''))
         return device
     monkeypatch.setattr(window, '_make_print_printer_v309', printer)
+    monkeypatch.setattr(window, '_make_print_printer_v314', printer)
     execute = window._exec_edit_dialog
     def single_dialog(dialog):
         calls.append(dialog)
@@ -215,7 +216,8 @@ def test_direct_print_opens_one_dialog_and_produces_exact_pdf_pages(qtbot, savin
     monkeypatch.setattr(window, '_exec_edit_dialog', single_dialog)
     window.print_action_v200.trigger()
     assert len(calls) == 1 and isinstance(calls[0], PrintDialogV309)
-    assert requested == [{'pages': [1, 0], 'dpi': 72}]
+    assert [item['pages'] for item in requested] == [[1], [0]]
+    assert all(item['dpi'] == 72 and item['revision'] and item['control'] for item in requested)
     assert not window.last_error, window.last_error
     with fitz.open(target) as printed:
         assert len(printed) == 2

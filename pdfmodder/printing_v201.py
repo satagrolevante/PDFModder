@@ -234,26 +234,17 @@ class PrintingV200Mixin:
         finally:preview.print_button.setEnabled(True)
 
     def _paint_print_v200(self,printer,pages,settings):
-        painter=QPainter();ok=False
+        # Retained for smoke checks and callers with already prepared pages.
+        # Native and progressive printing share the same safe page writer.
+        from .printing_device_v314 import PrintSpoolV314
+        spool = PrintSpoolV314(printer, settings, self._error)
         try:
-            selected=list(pages) if settings.get('preview') else print_job_pages_v201(printer,pages)
-            for index,page in enumerate(selected):
-                set_print_layout_v201(printer,page,settings)
-                if index==0:
-                    if not painter.begin(printer):raise RuntimeError('La impresora no permite iniciar el trabajo.')
-                elif not printer.newPage():raise RuntimeError('La impresora no aceptó la siguiente página.')
-                image=print_image_v201(page['path'],printer.colorMode());paint_rect=printer.pageLayout().paintRectPixels(printer.resolution())
-                # Qt's painter origin already starts at the printable area.
-                area=QRectF(0,0,paint_rect.width(),paint_rect.height())
-                target=print_target_v200(page['width'],page['height'],area,printer.resolution(),settings['fit']);painter.drawImage(target,image);del image
-                if printer.outputFormat()==QPrinter.NativeFormat and not settings.get('preview'):
-                    # Keep Windows paint/dispatch alive between spooled pages,
-                    # without allowing a second print action to re-enter.
-                    QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
-            ok=bool(selected)
+            selected = list(pages) if settings.get('preview') else print_job_pages_v201(printer,pages)
+            for page in selected:
+                if not spool.push(page):
+                    return False
+            return spool.finish()
         except Exception as exc:
-            if painter.isActive():printer.abort()
+            spool.cancel()
             self._error('No se pudo imprimir: '+str(exc))
-        finally:
-            if painter.isActive() and not painter.end():ok=False;self._error('La impresora no pudo finalizar el trabajo.')
-        return ok
+            return False

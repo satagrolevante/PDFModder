@@ -49,6 +49,7 @@ from .menus_ui_v308 import MenusUiV308Mixin
 from .sharing_ui_v308 import SharingUiV308Mixin
 from .view_zoom_ui_v308 import ViewZoomUiV308Mixin
 from .printing_v309 import PrintingV309Mixin
+from .printing_ui_v314 import PrintingUiV314Mixin
 from .action_state_v310 import ActionStateV310Mixin, set_ui_enabled_v310, ui_enabled_v310
 from .responsive_ui_v310 import ResponsiveUiV310Mixin
 from .navigation_ui_v310 import NavigationUiV310Mixin
@@ -1159,7 +1160,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         event.accept()
 
 
-class MainWindow(ActionStateV310Mixin,ResponsiveUiV310Mixin,ToolbarUiV311Mixin,AppearanceUiV311Mixin,NavigationUiV310Mixin,SidebarUiV311Mixin,PrintingV309Mixin,MenusUiV308Mixin,SharingUiV308Mixin,ViewZoomUiV308Mixin,DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
+class MainWindow(ActionStateV310Mixin,ResponsiveUiV310Mixin,PrintingUiV314Mixin,ToolbarUiV311Mixin,AppearanceUiV311Mixin,NavigationUiV310Mixin,SidebarUiV311Mixin,PrintingV309Mixin,MenusUiV308Mixin,SharingUiV308Mixin,ViewZoomUiV308Mixin,DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
     """New workspace interceptors precede the existing window implementation."""
 
 

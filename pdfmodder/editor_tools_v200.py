@@ -8,9 +8,12 @@ from pathlib import Path
 import hashlib
 import tempfile
 import math
+from contextlib import nullcontext
 
 import pymupdf as fitz
 from .model import EditError, union
+from .draft_control_v305 import controlled_draft, checkpoint, DraftCancelled
+from .printing_render_v314 import print_annotation_page_v314
 
 
 def install_editor_tools_v200(Session):
@@ -54,43 +57,70 @@ def install_editor_tools_v200(Session):
                 'text':model.text([g.id for g in selected]),'ids':[g.id for g in selected],
                 'state':self.state()}
 
-    def print_pages_v200(self, pages=None, dpi=300):
+    def print_pages_v200(self, pages=None, dpi=300, *, revision=None, control=None, layout_page=None):
         if self.pending is not None:
             raise EditError('Acepta o cancela la vista previa antes de imprimir.')
         dpi=int(dpi)
         if not 72<=dpi<=600:
             raise EditError('La resolución de impresión debe estar entre 72 y 600 ppp.')
         data=self.history.current
-        old=getattr(self,'_print_folder_v200',None)
-        if old:old.cleanup()
-        folder=tempfile.TemporaryDirectory(prefix='pdfmodder-print-')
-        self._print_folder_v200=folder
-        result=[]
-        with self._open(data) as doc:
-            if not (doc.permissions & fitz.PDF_PERM_PRINT):
-                raise EditError('El documento no permite imprimir con las credenciales aportadas.')
-            if not (doc.permissions & fitz.PDF_PERM_PRINT_HQ):
-                dpi=min(dpi,150)
-            numbers=list(range(doc.page_count)) if pages is None else [int(p) for p in pages]
-            if not numbers or len(numbers)>1000 or any(p<0 or p>=doc.page_count for p in numbers):
-                raise EditError('Selecciona entre 1 y 1000 páginas existentes para imprimir.')
-            total=0
-            for index,number in enumerate(numbers):
-                page=doc[number]
-                scale=dpi/72.
-                # The reported actual DPI makes the safety cap visible.
-                scale=min(scale,(24_000_000/(page.rect.width*page.rect.height))**.5)
-                pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False,colorspace=fitz.csRGB)
-                target=Path(folder.name)/f'{index:05}.png'
-                pix.save(target)
-                total+=target.stat().st_size
-                if total>1024*1024*1024:
-                    raise EditError('La preparación de impresión supera 1 GB. Imprime por intervalos.')
-                result.append({'page':number,'path':str(target),'width':page.rect.width,
-                               'height':page.rect.height,'dpi':round(scale*72,1)})
-                del pix
-        return {'pages':result,'requested_dpi':dpi,'revision':hashlib.sha256(data).hexdigest(),
-                'state':self.state()}
+        current_revision=hashlib.sha256(data).hexdigest()
+        if revision is not None and revision != current_revision:
+            raise EditError('El documento cambió. Vuelve a iniciar la impresión.')
+        folder=None
+        try:
+            with controlled_draft(control) if control is not None else nullcontext():
+                checkpoint()
+                old=getattr(self,'_print_folder_v200',None)
+                if old:old.cleanup()
+                folder=tempfile.TemporaryDirectory(prefix='pdfmodder-print-')
+                self._print_folder_v200=folder
+                result=[]
+                with self._open(data) as doc:
+                    if not (doc.permissions & fitz.PDF_PERM_PRINT):
+                        raise EditError('El documento no permite imprimir con las credenciales aportadas.')
+                    if not (doc.permissions & fitz.PDF_PERM_PRINT_HQ):
+                        dpi=min(dpi,150)
+                    numbers=list(range(doc.page_count)) if pages is None else [int(p) for p in pages]
+                    if not numbers or len(numbers)>1000 or any(p<0 or p>=doc.page_count for p in numbers):
+                        raise EditError('Selecciona entre 1 y 1000 páginas existentes para imprimir.')
+                    layout_geometry=None
+                    if layout_page is not None:
+                        if type(layout_page) is not int or not 0<=layout_page<doc.page_count:
+                            raise EditError('La página de referencia para el papel no existe.')
+                        rect=doc[layout_page].rect
+                        layout_geometry={'page':layout_page,'width':rect.width,'height':rect.height}
+                    total=0
+                    for index,number in enumerate(numbers):
+                        checkpoint()
+                        page=print_annotation_page_v314(doc,doc[number])
+                        checkpoint()
+                        scale=dpi/72.
+                        # The existing raster format and quality cap stay unchanged.
+                        scale=min(scale,(24_000_000/(page.rect.width*page.rect.height))**.5)
+                        pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False,colorspace=fitz.csRGB)
+                        checkpoint()
+                        target=Path(folder.name)/f'{index:05}.png'
+                        pix.save(target)
+                        del pix
+                        checkpoint()
+                        total+=target.stat().st_size
+                        if total>1024*1024*1024:
+                            raise EditError('La preparación de impresión supera 1 GB. Imprime por intervalos.')
+                        result.append({'page':number,'path':str(target),'width':page.rect.width,
+                                       'height':page.rect.height,'dpi':round(scale*72,1)})
+                response={'pages':result,'requested_dpi':dpi,'revision':current_revision,
+                          'state':self.state()}
+                if layout_geometry is not None:response['layout_page_v314']=layout_geometry
+                return response
+        except BaseException as exc:
+            if folder is not None:
+                folder.cleanup()
+                if self._print_folder_v200 is folder:self._print_folder_v200=None
+            if isinstance(exc,DraftCancelled):
+                return {'print_cancelled_v314':True,'pages':[],
+                        'revision':current_revision,'state':self.state()}
+            raise
 
     def snapshot_v200(self, original=False):
         return {'data':self.original if original else self.history.current,'state':self.state()}
