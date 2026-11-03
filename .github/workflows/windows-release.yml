@@ -42,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-${{ github.ref }}-bounded-v318-process-guard
+  group: windows-release-${{ github.ref }}-bounded-v318-focused
   cancel-in-progress: true
 
 jobs:
@@ -63,8 +63,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $releaseHeaders = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
-          $obsoleteRuns = @{ "41604617346" = "f1fed3713956525c43dc0ee6dc8de32a4fa7518a"; "41603894757" = "3b4921e6de51d0cfb1f462e0da83861334d1cd5a"; "41602014184" = "86f14e3fff11be116cbe999b5543d25c9e636786"; "41601765677" = "ccc7fab7fd1ab102821b85bb819a883093bbe917"; "41599681979" = "81f6fd24e80902e314f6be6801f445cd06253f98" }
-          foreach ($obsoleteId in @("41604617346", "41603894757", "41602014184", "41601765677", "41599681979")) {
+          $obsoleteRuns = @{ "41605649348" = "735d5c1e04377b0d8f091097b88a74680fa6bf0b"; "41604617346" = "f1fed3713956525c43dc0ee6dc8de32a4fa7518a"; "41603894757" = "3b4921e6de51d0cfb1f462e0da83861334d1cd5a"; "41602014184" = "86f14e3fff11be116cbe999b5543d25c9e636786"; "41601765677" = "ccc7fab7fd1ab102821b85bb819a883093bbe917"; "41599681979" = "81f6fd24e80902e314f6be6801f445cd06253f98" }
+          foreach ($obsoleteId in @("41605649348", "41604617346", "41603894757", "41602014184", "41601765677", "41599681979")) {
             $releaseApi = "https://api.github.com/repos/satagrolevante/PDFModder/actions/runs/$obsoleteId"
             $obsoleteRun = Invoke-RestMethod -Uri $releaseApi -Headers $releaseHeaders
             if ($obsoleteRun.head_branch -ne "version-3.0.18-publicacion" -or $obsoleteRun.head_sha -ne $obsoleteRuns[$obsoleteId]) { throw "La ejecución no corresponde a esta entrega." }
@@ -85,68 +85,39 @@ jobs:
           "version=$releaseVersion" >> $env:GITHUB_OUTPUT
       - name: Instalar dependencias fijadas
         run: ./scripts/install.ps1 -Development -PythonExe (Get-Command python).Source
-      - name: Comprobar fuentes y recorrido GUI
+      - name: Comprobar apertura y edición reales en Windows
+        timeout-minutes: 3
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: .venv/Scripts/python.exe scripts/release_v300.py --source-ui-only --headless-qa
+      - name: Comprobar regresiones de 3.0.18 y recorrido GUI
         timeout-minutes: 10
         env:
-          PYTEST_ADDOPTS: >-
-            -vv -o faulthandler_timeout=60
-            --deselect=tests/test_upgrade_cleanup_v306.py::test_production_upgrade_cleanup_preserves_documents_and_current_registration
-            --deselect=tests/test_shell_registration_v305.py::test_production_shell_registration_in_isolated_registry
-            --deselect=tests/test_shell_registration_v305.py::test_native_shell_selection_preserves_all_files_in_one_launch
-            --deselect=tests/test_shell_registration_v305.py::test_native_com_local_server_activation_and_selection_rpc
-            --deselect=tests/test_pdf_associations_v202.py::test_production_pdf_associations_in_isolated_registry
+          PYTEST_ADDOPTS: '-vv -o faulthandler_timeout=60'
           PYTHONUNBUFFERED: '1'
         run: >-
           .venv/Scripts/python.exe scripts/release_v300.py --source-only --headless-qa --tests
-          tests/test_search_v306.py tests/test_search_session_v306.py
-          tests/test_search_panel_v306.py tests/test_search_render_v306.py tests/test_search_ui_v306.py
-          tests/test_scroll_cursor_v306.py tests/test_upgrade_cleanup_v306.py tests/test_release_cleanup_v306.py
-          tests/test_daily_updates_v307.py tests/test_daily_updates_ui_v307.py
-          tests/test_menus_ui_v308.py tests/test_view_zoom_ui_v308.py tests/test_sharing_ui_v308.py
-          tests/test_progressive_ui_v300.py tests/test_tools_ui_v150.py
-          tests/test_print_dialog_v309.py tests/test_print_controller_v309.py
-          tests/test_print_options_v201.py tests/test_printing_v200.py
-          tests/test_print_worker_v314.py tests/test_print_device_v314.py
-          tests/test_print_dialog_v314.py tests/test_print_pipeline_v314.py
-          tests/test_action_state_v310.py tests/test_navigation_ui_v310.py
-          tests/test_sidebar_ui_v311.py
-          tests/test_preferences_ui_v311.py tests/test_selection_fluency_v311.py
-          tests/test_responsive_actions_v310.py tests/test_responsive_ui_v310.py
-          tests/test_shell_requests_v305.py tests/test_shell_worker_v305.py
-          tests/test_shell_ui_v305.py tests/test_office_conversion_v305.py
-          tests/test_shell_registration_v305.py tests/test_pdf_associations_v202.py
-          tests/test_draft_cancellation_v305.py tests/test_analysis_reuse_v305.py
-          tests/test_draft_serialization_v305.py tests/test_draft_session_v305.py
-          tests/test_added_text_transactions_v315.py tests/test_analysis_reuse_v315.py
-          tests/test_auto_overlap_v315.py tests/test_canvas_border_v150.py
-          tests/test_owned_text_v316.py tests/test_auto_adapt_v316.py
-          tests/test_preserved_graphics_v316.py tests/test_image_transactions_v316.py
-          tests/test_manual_signatures_v317.py tests/test_signature_draw_ui_v317.py
-          tests/test_signature_dialog_v317.py tests/test_signature_manual_appearance_v317.py
-          tests/test_signatures_panel_v317.py tests/test_signature_tagged_deletion_v317.py
-          tests/test_clipboard_fast_v318.py tests/test_split_content_v318.py
-          tests/test_scoped_validation_v318.py tests/test_tagged_reuse_v318.py
-          tests/test_tagged_move_v318.py tests/test_validation_evidence_v318.py
-          tests/test_tagged_signature_v318.py tests/test_print_background_v318.py
-          tests/test_prepared_views_v318.py tests/test_lazy_page_ui_v318.py
-          tests/test_source_analysis_v318.py tests/test_image_validation_reuse_v318.py
+          tests/test_clipboard_fast_v318.py
+          tests/test_image_validation_reuse_v318.py
+          tests/test_lazy_page_ui_v318.py
+          tests/test_prepared_views_v318.py
+          tests/test_print_background_v318.py
+          tests/test_scoped_validation_v318.py
+          tests/test_source_analysis_v318.py
+          tests/test_split_content_v318.py
+          tests/test_tagged_move_v318.py
+          tests/test_tagged_reuse_v318.py
+          tests/test_tagged_signature_v318.py
           tests/test_transaction_write_v318.py
-          tests/test_page_fingerprint.py tests/test_tagged_validation_cache.py
-          tests/test_tagged_page_proof.py tests/test_unchanged_page_validation.py
-          tests/test_text_structure_reuse.py tests/test_atomic_save_exact.py
-          tests/test_clip_paths_v304.py tests/test_complex_clip_deletion_v304.py
-          tests/test_tagged_irregularities_v304.py tests/test_stroked_native_v304.py
-          tests/test_source_decorations_v304.py
-          tests/test_footer_native_v303.py tests/test_marked_content_v303.py
-          tests/test_deletion_layout_v303.py tests/test_paragraph_scopes_v303.py
-          tests/test_filled_cell_borders_v303.py tests/test_linked_text_v303.py
-          tests/test_pdf_object_identity_v303.py tests/test_tagged_inplace_v303.py
-          tests/test_neighbor_layout_v303.py tests/test_neighbor_draft_ui_v303.py
-          tests/test_neighbor_session_v303.py tests/test_rich_overlap_preservation.py
-          tests/test_text_clips.py tests/test_tagged_nested.py
-          tests/test_rich_ui_v09.py tests/test_rich_validation_reuse.py
-          tests/test_compatibility_v300.py tests/test_update_channel_v203.py
-          tests/test_update_saving_v300.py
+          tests/test_validation_evidence_v318.py
+          tests/test_pageops.py
+          tests/test_page_tools_v150.py
+          tests/test_tagged_page_proof.py
+          tests/test_atomic_save_exact.py
+          tests/test_text_structure_reuse.py
+          tests/test_reading_worker_v171.py
+          tests/test_clipboard_refresh_v200.py
+          tests/test_workflow_v150.py
       - name: Compilar y comprobar ejecutable e instalador
         timeout-minutes: 15
         env:

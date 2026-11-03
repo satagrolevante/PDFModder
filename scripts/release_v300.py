@@ -95,7 +95,7 @@ def main() -> None:
     execute = lambda name, command, **kwargs: run(name, command, headless=args.headless_qa, **kwargs)
     source_ui = [python, "run_pdfmodder.py", "--smoke-v300", str(ROOT / "output/source-v300-smoke.json")]
     if args.source_ui_only:
-        execute("source-ui", source_ui)
+        execute("source-ui", source_ui, timeout=90)
         return
     start = PHASES.index(args.start)
     state = read(STATE) if STATE.exists() else {}
