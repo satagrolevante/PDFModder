@@ -43,7 +43,7 @@ permissions:
 
 concurrency:
   group: windows-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -67,9 +67,13 @@ jobs:
           "version=$releaseVersion" >> $env:GITHUB_OUTPUT
       - name: Instalar dependencias fijadas
         run: ./scripts/install.ps1 -Development -PythonExe (Get-Command python).Source
-      - name: Comprobar, compilar y empaquetar
+      - name: Comprobar fuentes y recorrido GUI
+        timeout-minutes: 10
+        env:
+          PYTEST_ADDOPTS: '-vv -o faulthandler_timeout=60'
+          PYTHONUNBUFFERED: '1'
         run: >-
-          .venv/Scripts/python.exe scripts/release_v300.py --headless-qa --tests
+          .venv/Scripts/python.exe scripts/release_v300.py --source-only --headless-qa --tests
           tests/test_search_v306.py tests/test_search_session_v306.py
           tests/test_search_panel_v306.py tests/test_search_render_v306.py tests/test_search_ui_v306.py
           tests/test_scroll_cursor_v306.py tests/test_upgrade_cleanup_v306.py tests/test_release_cleanup_v306.py
@@ -119,6 +123,11 @@ jobs:
           tests/test_rich_ui_v09.py tests/test_rich_validation_reuse.py
           tests/test_compatibility_v300.py tests/test_update_channel_v203.py
           tests/test_update_saving_v300.py
+      - name: Compilar y comprobar ejecutable e instalador
+        timeout-minutes: 15
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: .venv/Scripts/python.exe scripts/release_v300.py --start build --headless-qa
       - name: Conservar entregas y diagnóstico
         if: always()
         uses: actions/upload-artifact@v4
