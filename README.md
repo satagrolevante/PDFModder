@@ -11,7 +11,7 @@ demanda, copiado de texto inmediato e impresión en segundo plano. Se corrigen
 bloqueos de edición en PDF con contenido fragmentado y firmas visibles en PDF
 etiquetados. Incluye las firmas manuscritas de 3.0.17.
 [Cambios y controles de integridad](docs/NOTAS_3.0.18.md).
-El instalador público sigue siendo **3.0.16** hasta publicar una nueva entrega.
+Instalador y portable: [publicación 3.0.18](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.18).
 
 ## Edición ágil y adaptación automática 3.0.16
 

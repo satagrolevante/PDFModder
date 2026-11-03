@@ -1,6 +1,6 @@
 # Rendimiento y compatibilidad de PDFModder 3.0.18
 
-Comparación del código fuente 3.0.17 → 3.0.18. La versión 3.0.18 está pendiente de compilar y publicar el instalador Windows; la versión pública actual sigue siendo 3.0.16.
+Comparación del código fuente 3.0.17 → 3.0.18. Las mediciones preceden a la compilación Windows. La versión 3.0.18 se publicó el 3 de noviembre de 2026, con regresiones específicas, recorrido GUI, instalación/desinstalación e integración nativa comprobados en Windows.
 
 ## Alcance de la medición
 
