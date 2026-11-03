@@ -42,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-${{ github.ref }}-bounded-v318-2022-isolated
+  group: windows-release-${{ github.ref }}-bounded-v318-process-guard
   cancel-in-progress: true
 
 jobs:
@@ -63,8 +63,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $releaseHeaders = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
-          $obsoleteRuns = @{ "41603894757" = "3b4921e6de51d0cfb1f462e0da83861334d1cd5a"; "41602014184" = "86f14e3fff11be116cbe999b5543d25c9e636786"; "41601765677" = "ccc7fab7fd1ab102821b85bb819a883093bbe917"; "41599681979" = "81f6fd24e80902e314f6be6801f445cd06253f98" }
-          foreach ($obsoleteId in @("41603894757", "41602014184", "41601765677", "41599681979")) {
+          $obsoleteRuns = @{ "41604617346" = "f1fed3713956525c43dc0ee6dc8de32a4fa7518a"; "41603894757" = "3b4921e6de51d0cfb1f462e0da83861334d1cd5a"; "41602014184" = "86f14e3fff11be116cbe999b5543d25c9e636786"; "41601765677" = "ccc7fab7fd1ab102821b85bb819a883093bbe917"; "41599681979" = "81f6fd24e80902e314f6be6801f445cd06253f98" }
+          foreach ($obsoleteId in @("41604617346", "41603894757", "41602014184", "41601765677", "41599681979")) {
             $releaseApi = "https://api.github.com/repos/satagrolevante/PDFModder/actions/runs/$obsoleteId"
             $obsoleteRun = Invoke-RestMethod -Uri $releaseApi -Headers $releaseHeaders
             if ($obsoleteRun.head_branch -ne "version-3.0.18-publicacion" -or $obsoleteRun.head_sha -ne $obsoleteRuns[$obsoleteId]) { throw "La ejecución no corresponde a esta entrega." }

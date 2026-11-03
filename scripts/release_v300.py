@@ -33,7 +33,8 @@ def python_executable() -> str:
     return str(venv) if venv.is_file() else sys.executable
 
 
-def run(name: str, args: list[str], *, headless: bool, clean: bool = False) -> str:
+def run(name: str, args: list[str], *, headless: bool, clean: bool = False,
+        timeout: float = 600) -> str:
     print(name + "...", flush=True)
     environment = os.environ.copy()
     if clean:
@@ -46,9 +47,19 @@ def run(name: str, args: list[str], *, headless: bool, clean: bool = False) -> s
     if headless:
         environment["QT_QPA_PLATFORM"] = "offscreen"
     log = ROOT / f"output/release-{SUITE}-{name}.log"
+    timed_out = None
     with log.open("w", encoding="utf-8") as output:
-        result = subprocess.run(args, cwd=ROOT, stdout=output, stderr=subprocess.STDOUT, env=environment)
+        try:
+            result = subprocess.run(
+                args, cwd=ROOT, stdout=output, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, env=environment, timeout=timeout,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        except subprocess.TimeoutExpired as exc:
+            timed_out = exc
     value = log.read_text(encoding="utf-8", errors="replace")
+    if timed_out is not None:
+        print("\n".join(value.splitlines()[-55:]), flush=True)
+        raise RuntimeError(f"{name}: superó {timeout} segundos; diagnóstico en {log}") from timed_out
     if result.returncode:
         print("\n".join(value.splitlines()[-55:]), flush=True)
         raise RuntimeError(f"{name}: código {result.returncode}; {log}")
@@ -94,7 +105,7 @@ def main() -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         execute("source-tests", [python, "-m", "pytest", "-q", "-p", "no:cacheprovider",
                 "--basetemp", "tmp/pytest-v300-" + stamp,
-                "--junitxml", "output/pytest-v300-results.xml", *tests])
+                "--junitxml", "output/pytest-v300-results.xml", *tests], timeout=300)
         if fingerprint != source_fingerprint():
             raise RuntimeError("El código cambió durante las pruebas; vuelva a ejecutarlas sobre la revisión final.")
         write(ROOT / "output/v300-source-tests.json", {
