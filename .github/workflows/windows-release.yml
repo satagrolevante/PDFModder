@@ -42,19 +42,37 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-${{ github.ref }}
+  group: windows-release-${{ github.ref }}-bounded-v318
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: windows-2025
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write
     outputs:
       version: ${{ steps.release.outputs.version }}
     defaults:
       run:
         shell: pwsh
     steps:
+      - name: Retirar ejecuciones obsoletas de esta entrega
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $releaseHeaders = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
+          $obsoleteRuns = @{ "41601765677" = "ccc7fab7fd1ab102821b85bb819a883093bbe917"; "41599681979" = "81f6fd24e80902e314f6be6801f445cd06253f98" }
+          foreach ($obsoleteId in @("41601765677", "41599681979")) {
+            $releaseApi = "https://api.github.com/repos/satagrolevante/PDFModder/actions/runs/$obsoleteId"
+            $obsoleteRun = Invoke-RestMethod -Uri $releaseApi -Headers $releaseHeaders
+            if ($obsoleteRun.head_branch -ne "version-3.0.18-publicacion" -or $obsoleteRun.head_sha -ne $obsoleteRuns[$obsoleteId]) { throw "La ejecución no corresponde a esta entrega." }
+            if ($obsoleteRun.status -ne "completed") {
+              Invoke-RestMethod -Method Post -Uri "$releaseApi/cancel" -Headers $releaseHeaders
+              Write-Host "Cancelada la ejecución obsoleta $obsoleteId."
+            }
+          }
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
