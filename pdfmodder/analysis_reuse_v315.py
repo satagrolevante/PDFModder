@@ -10,11 +10,13 @@ from contextvars import ContextVar
 from dataclasses import replace
 import hashlib
 from typing import NamedTuple
+from types import SimpleNamespace
 
 from pypdf.generic import (ArrayObject, BooleanObject, ByteStringObject,
                            ContentStream, DictionaryObject, FloatObject,
                            NameObject, NullObject, NumberObject, TextStringObject,
-                           DecodedStreamObject, create_string_object)
+                           DecodedStreamObject, create_string_object, read_object)
+from pypdf._utils import read_non_whitespace, read_until_regex
 
 from .draft_control_v305 import checkpoint
 
@@ -38,6 +40,7 @@ class AnalysisCacheV315:
         self._state = {'entries': OrderedDict(), 'bytes': 0,
                        'syntax': OrderedDict(), 'syntax_bytes': 0,
                        'scopes': OrderedDict(), 'scope_bytes': 0}
+        self._state['complete_v318'] = OrderedDict()
 
     def clear(self):
         self._state['entries'].clear()
@@ -46,6 +49,7 @@ class AnalysisCacheV315:
         self._state['syntax_bytes'] = 0
         self._state['scopes'].clear()
         self._state['scope_bytes'] = 0
+        self._state['complete_v318'].clear()
 
 
 class _Name(NamedTuple):
@@ -71,6 +75,38 @@ class _Dictionary(NamedTuple):
 
 class _UnsupportedAst(Exception):
     pass
+
+
+class _BoundaryContentStreamV318(ContentStream):
+    """pypdf's content tokenizer with strict operands for boundary probes.
+
+    ContentStream deliberately passes pdf=None to its operand parser, which
+    permits a truncated dictionary to be recovered. That tolerance is useful
+    for display, but cannot prove a stream boundary. Inline images continue to
+    use pypdf's parser; no independently interpreted syntax escapes the probe.
+    """
+    def _parse_content_stream(self, stream):
+        stream.seek(0)
+        operands=[]
+        strict=SimpleNamespace(strict=True)
+        while True:
+            peek=read_non_whitespace(stream)
+            if peek in (b'',0):
+                break
+            stream.seek(-1,1)
+            if peek.isalpha() or peek in (b"'",b'"'):
+                operator=read_until_regex(stream,NameObject.delimiter_pattern)
+                if operator==b'BI':
+                    if operands:
+                        raise ValueError('Operands before inline image')
+                    self._operations.append((self._read_inline_image(stream),b'INLINE IMAGE'))
+                else:
+                    self._operations.append((operands,operator));operands=[]
+            elif peek==b'%':
+                while peek not in (b'\r',b'\n',b''):
+                    peek=stream.read(1)
+            else:
+                operands.append(read_object(stream,strict,self.forced_encoding))
 
 
 def _freeze(value, budget, depth=0):
@@ -181,6 +217,69 @@ def stream_operations_v316(raw):
     """Return fresh standalone stream operands using the same bounded cache."""
     stream=DecodedStreamObject();stream.set_data(bytes(raw))
     return _syntax_operations_v316(ContentStream(stream,None),None)
+
+
+def grouped_stream_operations_v318(streams, reader=None):
+    """Parse /Contents as a continuous program, retaining complete boundaries.
+
+    A PDF producer may split operands (including dictionaries and strings)
+    between streams. Only a sentinel-confirmed boundary can be interpreted on
+    its own. The returned positions identify the original streams; consumers
+    must not rewrite a multi-stream group as if it belonged to one stream.
+    Newlines match ContentStream's handling of a /Contents array.
+    """
+    pending = []
+    positions = []
+    boundary = b'PDFModderContentsBoundaryV318'
+    marker = NameObject('/PDFModderContentsEndV318')
+    for position, raw in enumerate(streams):
+        checkpoint()
+        raw = bytes(raw)
+        pending.append(raw if raw.endswith(b'\n') else raw + b'\n')
+        positions.append(position)
+        joined = b''.join(pending)
+        policy=bool(reader.strict) if reader is not None else None
+        key=policy,hashlib.sha256(joined).digest(),len(joined)
+        state=_scope.get()
+        complete=state['complete_v318'] if state is not None else None
+        if complete is not None and key in complete:
+            complete.move_to_end(key)
+            source=DecodedStreamObject();source.set_data(joined)
+            group=(tuple(positions),_syntax_operations_v316(ContentStream(source,reader),policy))
+            pending=[];positions=[]
+            yield group
+            continue
+        stream = DecodedStreamObject()
+        stream.set_data(joined + b'/PDFModderContentsEndV318 PDFModderContentsBoundaryV318\n')
+        try:
+            # A speculative partial dictionary must raise rather than emit a
+            # warning about the deliberately appended probe. No probe objects
+            # escape; the confirmed source is parsed with its actual reader.
+            operations = _BoundaryContentStreamV318(stream, None).operations
+        except Exception as error:
+            from .draft_control_v305 import DraftCancelled
+            if isinstance(error, DraftCancelled):
+                raise
+            continue
+        if (not operations or operations[-1][1] != boundary
+                or operations[-1][0] != [marker]):
+            continue
+        # Cache the actual source, without the synthetic sentinel.
+        source = DecodedStreamObject(); source.set_data(joined)
+        operations = _syntax_operations_v316(
+            ContentStream(source, reader), policy)
+        if complete is not None:
+            complete[key]=True
+            while len(complete)>_MAX_SYNTAX_ENTRIES_V316:
+                complete.popitem(last=False)
+        group=(tuple(positions),operations)
+        pending = []; positions = []
+        yield group
+    if pending:
+        # An incomplete final operand must fail rather than be silently lost by
+        # a permissive parser. No source bytes have been changed at this point.
+        from .model import EditError
+        raise EditError('El contenido de la página termina con un operador o un objeto incompleto.')
 
 
 def _syntax_operations_v316(stream,policy,*,cacheable=True):

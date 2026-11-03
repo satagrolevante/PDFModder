@@ -27,6 +27,16 @@ MIN_WIDTH = 210.0
 MIN_HEIGHT = 70.0
 
 
+def _manual_signature_png(value):
+    if value is None:
+        return None
+    from .manual_signatures_v317 import normalise_manual_signature_png_v317
+    try:
+        return normalise_manual_signature_png_v317(value)
+    except (TypeError, ValueError) as exc:
+        raise EditError('El garabato de la firma no es válido: ' + str(exc)) from None
+
+
 def certificate_identity(certificate_der):
     from cryptography import x509
     from cryptography.x509.oid import NameOID
@@ -50,6 +60,7 @@ def signature_geometry(data, specification):
     try:
         if not isinstance(specification, dict):
             raise ValueError()
+        manual_png = _manual_signature_png(specification.get('manual_signature_png'))
         index = specification['page']
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
             raise ValueError()
@@ -61,7 +72,8 @@ def signature_geometry(data, specification):
             raise ValueError()
         reader = PdfReader(BytesIO(data), strict=True)
         if reader.trailer['/Root'].get('/StructTreeRoot'):
-            raise EditError('Este PDF está etiquetado: la firma visible requiere etiquetar su nuevo campo. Puedes firmarlo desactivando «Firma visible» para conservar su estructura.')
+            from .tagged import validate_tagged
+            validate_tagged(data)
         page = reader.pages[index]
         rotation = int(page.rotation) % 360
         if rotation not in (0, 90, 180, 270):
@@ -88,8 +100,11 @@ def signature_geometry(data, specification):
             return cx1 - y, cy1 - x
         a, b = point(x0, y0), point(x1, y1)
         box = (min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
-        return {'page': index, 'rect': [x0, y0, x1, y1], 'box': box,
-                'rotation': rotation, 'width': x1 - x0, 'height': y1 - y0}
+        result = {'page': index, 'rect': [x0, y0, x1, y1], 'box': box,
+                  'rotation': rotation, 'width': x1 - x0, 'height': y1 - y0}
+        if manual_png is not None:
+            result['manual_signature_png'] = manual_png
+        return result
     except EditError:
         raise
     except Exception:
@@ -127,8 +142,9 @@ def _wrap(text, font, size, width):
     return lines
 
 
-def appearance_pdf(certificate_der, width, height, signing_time):
-    """One-page PDF of the exact vector artwork used in the signature widget."""
+def appearance_pdf(certificate_der, width, height, signing_time, *, manual_signature_png=None):
+    """One-page PDF of the exact artwork used in the signature widget."""
+    manual_png = _manual_signature_png(manual_signature_png)
     identity = certificate_identity(certificate_der)
     regular_bytes, bold_bytes, regular, bold = _fonts()
     name, subject = identity['certificate_name'], identity['certificate_subject']
@@ -141,12 +157,14 @@ def appearance_pdf(certificate_der, width, height, signing_time):
     divider = width * .40
     left_width, right_width = divider - 2 * pad, width - divider - 2 * pad
     name_lines, detail_lines = [], []
-    for name_size in (18, 16, 14, 12, 10):
-        name_lines = _wrap(name, bold, name_size, left_width)
-        if len(name_lines) * name_size * 1.18 <= height - 2 * pad - 15:
-            break
-    else:
-        raise EditError('Los datos del titular no caben. Amplía la anchura o la altura del recuadro de firma.')
+    name_size = None
+    if manual_png is None:
+        for name_size in (18, 16, 14, 12, 10):
+            name_lines = _wrap(name, bold, name_size, left_width)
+            if len(name_lines) * name_size * 1.18 <= height - 2 * pad - 15:
+                break
+        else:
+            raise EditError('Los datos del titular no caben. Amplía la anchura o la altura del recuadro de firma.')
     for detail_size in (9, 8.5, 8, 7.5, 7, 6.5, 6):
         detail_lines = []
         for paragraph in detail.splitlines():
@@ -162,10 +180,17 @@ def appearance_pdf(certificate_der, width, height, signing_time):
         page.draw_rect(fitz.Rect(.4, .4, width - .4, height - .4), color=(.72, .79, .85), width=.6)
         page.draw_line((divider, pad), (divider, height - pad), color=(.72, .79, .85), width=.7)
         page.draw_line((pad, height - 7), (divider - pad, height - 7), color=(.80, .87, .93), width=2)
-        baseline = max(pad + name_size, (height - 15 - len(name_lines) * name_size * 1.18) / 2 + name_size)
-        for line in name_lines:
-            page.insert_text((pad, baseline), line, fontname='SignatureBold', fontsize=name_size, color=(.06, .20, .32))
-            baseline += name_size * 1.18
+        if manual_png is None:
+            baseline = max(pad + name_size, (height - 15 - len(name_lines) * name_size * 1.18) / 2 + name_size)
+            for line in name_lines:
+                page.insert_text((pad, baseline), line, fontname='SignatureBold', fontsize=name_size, color=(.06, .20, .32))
+                baseline += name_size * 1.18
+        else:
+            # The holder's full name remains in the detail column. Replacing
+            # its decorative duplicate keeps the drawing clear of all signed
+            # certificate data, including when the stamp is small.
+            page.insert_image(fitz.Rect(pad, pad, divider - pad, height - 28),
+                              stream=manual_png, keep_proportion=True)
         page.insert_text((pad, height - 13), 'FIRMA DIGITAL', fontname='SignatureRegular', fontsize=7, color=(.29, .39, .48))
         baseline = pad + detail_size
         for line in detail_lines:
@@ -174,7 +199,8 @@ def appearance_pdf(certificate_der, width, height, signing_time):
         doc.subset_fonts()
         data = doc.tobytes(garbage=4, deflate=True)
     return data, {**identity, 'signing_time': date, 'name_font_size': name_size,
-                  'detail_font_size': detail_size, 'text': detail}
+                  'detail_font_size': detail_size, 'text': detail,
+                  'manual_signature': manual_png is not None}
 
 
 class _VectorAppearance(AppearanceContent):
@@ -196,6 +222,7 @@ class CertificateStampStyle(TextStampStyle):
     """TextStampStyle receives the exact signing-session timestamp from pyHanko."""
     certificate_der: bytes = b''
     rotation: int = 0
+    manual_signature_png: bytes | None = None
     timestamp_format: str = DATE_FORMAT
     appearance_info: dict = field(default_factory=dict, compare=False)
 
@@ -203,7 +230,8 @@ class CertificateStampStyle(TextStampStyle):
         width, height = box.width, box.height
         if self.rotation in (90, 270):
             width, height = height, width
-        data, details = appearance_pdf(self.certificate_der, width, height, text_params['ts'])
+        data, details = appearance_pdf(self.certificate_der, width, height, text_params['ts'],
+                                       manual_signature_png=self.manual_signature_png)
         self.appearance_info.update(details)
         return _VectorAppearance(writer, box, data, self.rotation)
 
@@ -224,7 +252,8 @@ def preview_appearance(data, certificate_der, specification):
                                                on_page=geometry['page'], box=geometry['box']))
     _, _, field_ref = next(enumerate_sig_fields(writer, with_name=field_name))
     widget = field_ref.get_object()
-    style = CertificateStampStyle(certificate_der=certificate_der, rotation=geometry['rotation'])
+    style = CertificateStampStyle(certificate_der=certificate_der, rotation=geometry['rotation'],
+                                  manual_signature_png=geometry.get('manual_signature_png'))
     box = geometry['box']
     stamp = style.create_stamp(writer, BoxConstraints(width=box[2] - box[0], height=box[3] - box[1]),
                                {'ts': datetime.now().astimezone().strftime(DATE_FORMAT)})

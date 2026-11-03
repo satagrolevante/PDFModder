@@ -24,7 +24,9 @@ def drag(qtbot, editor, start, destination):
 def test_ui_image_body_drag_handle_resize_keyboard_and_saved_geometry(qtbot, editor, tmp_path):
     editor.open_document(ROOT / "examples/digital.pdf")
     settled(qtbot, editor)
-    editor.canvas.image_mode = True
+    editor.image_mode_action.trigger()
+    qtbot.waitUntil(lambda:not editor.busy and
+                   getattr(editor,'_inventory_ready_v318',{}).get('images',False),timeout=30000)
     editor.canvas.lock_image_ratio = False
     image = editor.canvas.images[0]
     assert image["editable"]

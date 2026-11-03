@@ -140,7 +140,7 @@ def test_clipped_movement_fallback_still_keeps_owned_metadata():
         (selected[0].origin[0]+12,selected[0].origin[1]+85),abs=.035)
 
 
-def test_session_releases_analysis_memory_when_suspended_and_closed(tmp_path):
+def test_session_retains_bounded_analysis_on_tab_suspend_and_releases_on_close(tmp_path):
     from pdfmodder.worker import Session
     path=tmp_path/'test.pdf';path.write_bytes(document())
     session=Session(path,history_dir=tmp_path)
@@ -148,8 +148,10 @@ def test_session_releases_analysis_memory_when_suspended_and_closed(tmp_path):
         session.page(0)
         cache=session._analysis_cache_v315
         assert cache._state['syntax']
+        retained=cache._state['syntax_bytes']
         session.suspend()
-        assert cache._state['syntax_bytes']==0 and not cache._state['entries']
+        assert cache._state['syntax_bytes']==retained
+        assert session._preparation_bytes_v318()<=256*1024*1024
         session.resume()
         session.page(0)
         assert cache._state['syntax']

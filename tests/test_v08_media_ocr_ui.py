@@ -67,6 +67,8 @@ def test_hidden_ocr_element_requires_explicit_mode_and_preserves_scan_pixels(qtb
 def test_image_context_exports_then_dialog_crops_rotates_replaces_one_instance(qtbot,line_window,tmp_path,monkeypatch):
     window,_=line_window;source=ROOT/'examples/herramientas-v08.pdf'
     window.open_document(source);settled(qtbot,window)
+    window.image_mode_action.trigger()
+    qtbot.waitUntil(lambda:len(window.canvas.images)>=2 and not window.busy,timeout=30000)
     item=window.canvas.images[0];other=window.canvas.images[1]
     rect=item['rect'];point=window.canvas.viewport_point(((rect[0]+rect[2])/2,(rect[1]+rect[3])/2))
     window.canvas.ensureVisible(window.canvas.scene_rect(rect),30,30)

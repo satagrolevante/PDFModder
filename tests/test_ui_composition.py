@@ -41,6 +41,14 @@ def advanced_tool_button(window,name,action):
 
 def test_click_place_text_real_typography_dialog_preview_commit_save_and_reopen(qtbot,composing_editor,tmp_path):
     window=composing_editor
+    submissions=[]
+    original_submit=window._submit
+    def traced_submit(command,payload=None,callback=None):
+        previous=(window.busy,window._command,getattr(window,'_modal_depth_v200',0))
+        accepted=original_submit(command,payload,callback)
+        submissions.append((command,accepted,previous))
+        return accepted
+    window._submit=traced_submit
     source=ROOT/'examples'/'digital.pdf'
     original=source.read_bytes()
     original_hash=sha256(original).hexdigest()
@@ -121,7 +129,7 @@ def test_click_place_text_real_typography_dialog_preview_commit_save_and_reopen(
     assert (values['x'],values['y'])==pytest.approx(placed_points[0],abs=.003)
 
     settled(qtbot,window)
-    assert window.state['preview'] and window.state['history_index']==0
+    assert window.state['preview'] and window.state['history_index']==0,(window.state,window.last_error,window.last_report,submissions)
     assert not window.canvas.placement_mode and not window.canvas.image_mode
     assert window.last_report['verified'] and window.last_report['operation']=='insert_text'
     preview_text=''.join(g.text for g in window.model.glyphs)

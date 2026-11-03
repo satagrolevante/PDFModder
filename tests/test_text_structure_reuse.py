@@ -100,3 +100,34 @@ def test_incomplete_page_binding_falls_back_to_parser(monkeypatch):
         value=page.raw_get('/Contents').get_object()
         return len(value) if isinstance(value,ArrayObject) else 1
     assert len(parsed) == sum(stream_count(page) for page in structure.reader.pages)
+
+
+def test_proven_lazy_page_checks_scope_events_without_materializing_its_ast(monkeypatch):
+    from pdfmodder import tagged
+    from pdfmodder.tagged_reuse_v318 import LazyPageOperationsV318
+    tagged.clear_readonly_cache()
+    source=make_tagged_pdf()
+    tagged.analyze_readonly(source)
+    data=changed_pdf(b'BT ET')
+    structure=tagged.analyze_readonly(data)
+    assert isinstance(structure.operations[1],LazyPageOperationsV318)
+    assert structure.operations[1]._operations is None
+    def unexpected_parse(self):
+        pytest.fail('An unchanged page must supply events without reparsing its AST')
+    monkeypatch.setattr(LazyPageOperationsV318,'_get',unexpected_parse)
+    validation.assert_text_object_structure(data,tagged_structure=structure)
+    tagged.clear_readonly_cache()
+
+
+def test_lazy_page_events_still_check_candidate_invoked_form_scopes():
+    from pdfmodder import tagged
+    from pdfmodder.tagged_reuse_v318 import LazyPageOperationsV318
+    tagged.clear_readonly_cache()
+    source=changed_pdf(b'',form_kind='invalid')
+    tagged.analyze_readonly(source)
+    data=source+b'\n% Another immutable snapshot\n'
+    structure=tagged.analyze_readonly(data)
+    assert isinstance(structure.operations[0],LazyPageOperationsV318)
+    with pytest.raises(EditError,match='Form /Inner.*ET sin apertura'):
+        validation.assert_text_object_structure(data,tagged_structure=structure)
+    tagged.clear_readonly_cache()

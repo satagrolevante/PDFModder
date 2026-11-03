@@ -57,7 +57,7 @@ def _scope(operations, target):
 
 
 def move_text_with_clip(data, request, model, mapped, tagged_move=None):
-    from .engine import _safe_selection, full_write
+    from .engine import _safe_selection, transaction_write_v318
     started = time.perf_counter()
     reader, operations, shows, mapping = mapped
     if reader.trailer['/Root'].get('/StructTreeRoot') and tagged_move is None:
@@ -180,7 +180,9 @@ def move_text_with_clip(data, request, model, mapped, tagged_move=None):
         doc.update_object(stream, '<<>>')
         doc.update_stream(stream, serialized)
         doc[request.page].set_contents(stream)
-        output = full_write(doc)
+        if tagged_move is not None:
+            tagged_move.apply_updates(doc)
+        output = transaction_write_v318(doc)
     after = PdfReader(BytesIO(output), strict=True)
     actual_ops = ContentStream(after.pages[request.page].get_contents(), after).operations
     if len(actual_ops) != len(expected_ops) or any(op != newop or _signature(args) != _signature(newargs)
@@ -191,7 +193,8 @@ def move_text_with_clip(data, request, model, mapped, tagged_move=None):
     _assert_typography(output, request.page, others+planned)
     report = validate_transition(data, output, request.page,
                                  [(g.text, g.origin, g.font, g.size) for g in others+planned],
-                                 [g.bbox for g in selected+planned])
+                                 [g.bbox for g in selected+planned],
+                                 tagged_expected=tagged_move.expected if tagged_move else None)
     if tagged_move:
         report['accessibility'] = tagged_move.validate(output)
     report.update(page=request.page, operation='move_text_with_clip',

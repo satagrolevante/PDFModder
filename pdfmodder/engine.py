@@ -18,6 +18,7 @@ from .model import Glyph, PageModel, EditRequest, EditError, union, intersects
 from .fonts import FontResolver, FontError
 from .validation import document_issues, page_issues, assert_characters, assert_pixels, validate_transition, trace_chars
 from .draft_control_v305 import checkpoint
+from .validation_evidence_v318 import validated_result_v318
 
 
 def extract_page(doc, number, data=None):
@@ -73,9 +74,12 @@ def extract_page(doc, number, data=None):
     model=PageModel(number,page.rect.width,page.rect.height,page.rotation,tuple(page.rotation_matrix),
                     tuple(page.derotation_matrix),tuple(page.cropbox),glyphs,issues,
                     hashlib.sha256(data).hexdigest() if data else None)
-    if data is not None:
+    # Vector-only pages have no text groups to separate. Enumerating thousands
+    # of drawing paths cannot affect an empty text selection model.
+    if data is not None and glyphs:
         from .selection_v300 import boundaries_from_drawings
-        model.selection_boundaries = boundaries_from_drawings(page.get_drawings())
+        from .validation import _validation_drawings_v316
+        model.selection_boundaries = boundaries_from_drawings(_validation_drawings_v316(page))
     from .lineflow import normalize_rebuilt_lines
     model=normalize_rebuilt_lines(model)
     if data and model.glyphs:
@@ -97,6 +101,20 @@ def extract_page(doc, number, data=None):
 
 def full_write(doc):
     return doc.tobytes(garbage=4, deflate=True, incremental=False, no_new_id=True)
+
+
+def transaction_write_v318(doc):
+    """Fully rewrite an edit without scanning/recompressing existing streams.
+
+    Garbage level 2 removes unreachable objects and compacts the xref table.
+    Existing filters and shared resource identities stay intact; new edited
+    streams are compressed by update_stream. The caller must validate these
+    exact final bytes before publishing or recording them in history.
+    """
+    checkpoint()
+    output = doc.tobytes(garbage=2, deflate=False, incremental=False, no_new_id=True)
+    checkpoint()
+    return output
 
 
 def _native_text_wrappers(page):
@@ -371,6 +389,7 @@ def _plan(selected, request, resolved, target=None):
     return result
 
 
+@validated_result_v318
 def edit_pdf(data:bytes, request:EditRequest, resolver=None):
     if request.revision and request.revision!=hashlib.sha256(data).hexdigest():
         raise EditError("El documento cambió desde la selección. Selecciona el texto de nuevo.")
@@ -528,14 +547,14 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
                     raise EditError("El destino cruza una línea o borde vectorial. Ajusta la posición del texto.")
         # Idoneidad por operación: reproduce the original at its exact glyph origins.
         _redact(page,model,selected)
-        erased=full_write(doc)
-    # garbage=4 may renumber resources: never reuse a Page after serializing.
+        erased=transaction_write_v318(doc)
+    # A complete rewrite can renumber resources: never reuse a serialized Page.
     if tagged_edit:
         reproduced=tagged_edit.insert(erased,resolved,reproduction=True)
     else:
         with fitz.open(stream=erased,filetype='pdf') as doc:
             _insert(doc[request.page],selected,resolved)
-            reproduced=full_write(doc)
+            reproduced=transaction_write_v318(doc)
     with fitz.open(stream=data,filetype='pdf') as before, fitz.open(stream=reproduced,filetype='pdf') as copy:
         assert_pixels(before[request.page],copy[request.page],reproduction=True)
     if tagged_edit:
@@ -543,7 +562,7 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
     else:
         with fitz.open(stream=erased,filetype='pdf') as doc:
             _insert(doc[request.page],planned,output_resolved)
-            output=full_write(doc)
+            output=transaction_write_v318(doc)
     expected=[(g.text,g.origin,g.font,g.size) for g in others+planned]
     exclusions=[g.bbox for g in selected+planned]
     report=validate_transition(data,output,request.page,expected,exclusions,
@@ -565,7 +584,7 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
     return output,report
 
 
-def atomic_save(data, destination, source=None):
+def atomic_save(data, destination, source=None, *, validation_proof=None):
     """Validate and atomically persist the exact current PDF revision.
 
     Editing already validates its PDF transaction. Saving introduces no new
@@ -581,20 +600,26 @@ def atomic_save(data, destination, source=None):
     try:
         data=bytes(data)
         digest=hashlib.sha256(data).digest()
+        from .validation_evidence_v318 import has_validated_snapshot_v318
+        validated=has_validated_snapshot_v318(data,validation_proof)
         with fitz.open(stream=data,filetype='pdf') as doc:
-            issues=document_issues(data,doc,operation="content")
-            if issues:
-                raise EditError('\n'.join(issues))
+            if not validated:
+                issues=document_issues(data,doc,operation="content")
+                if issues:
+                    raise EditError('\n'.join(issues))
             page_count=doc.page_count
             if not page_count:
                 raise EditError("El documento no contiene páginas.")
+            if validated and validation_proof.pages!=page_count:
+                raise EditError("La revisión validada no confirma el número de páginas.")
         from pypdf import PdfReader
         from .validation import assert_text_object_structure
         import io
         independent=PdfReader(io.BytesIO(data),strict=True)
         if len(independent.pages)!=page_count:
             raise EditError("El analizador independiente no confirma el número de páginas.")
-        assert_text_object_structure(data,reader=independent)
+        if not validated:
+            assert_text_object_structure(data,reader=independent)
         fd,temporary=tempfile.mkstemp(prefix='.pdfmodder-',suffix='.pdf',dir=destination.parent)
         with os.fdopen(fd,'wb') as stream:
             if stream.write(data)!=len(data):
@@ -609,6 +634,9 @@ def atomic_save(data, destination, source=None):
                 raise EditError("Falló la verificación del archivo temporal.")
         os.replace(temporary,destination)
         temporary=None
+        if not validated:
+            from .validation_evidence_v318 import remember_validated_snapshot_v318
+            remember_validated_snapshot_v318(data,page_count)
     finally:
         if temporary and Path(temporary).exists():
             Path(temporary).unlink()

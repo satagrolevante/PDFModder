@@ -15,6 +15,7 @@ from .model import EditError
 from .validation import (document_issues,related,_canonical,
                          trace_chars,assert_characters,assert_pixels)
 from .draft_control_v305 import DraftCancelled,checkpoint
+from .validation_evidence_v318 import validated_result_v318
 
 
 def _write_image_transaction(doc):
@@ -125,13 +126,15 @@ def _image_occurrence_indices(doc, page_number, infos):
             owner=int(parent.split()[0])
         return owner
 
-    def walk(xref, owner, position=None, ancestors=()):
+    def walk(xref, owner, position=None, ancestors=(),provided=None):
         nonlocal budget
         if len(ancestors)>=32 or xref in ancestors:
             raise ValueError('Recursive Form invocation')
-        if xref not in operations:
-            operations[xref]=_ops(doc.xref_stream(xref)).operations
-        for offset,(operands,operator) in enumerate(operations[xref]):
+        if provided is None:
+            if xref not in operations:
+                operations[xref]=_ops(doc.xref_stream(xref)).operations
+            provided=operations[xref]
+        for offset,(operands,operator) in enumerate(provided):
             budget-=1
             if budget<0:
                 raise ValueError('Image occurrence traversal limit')
@@ -155,8 +158,10 @@ def _image_occurrence_indices(doc, page_number, infos):
     try:
         page=doc[page_number]
         owner=resource_owner(page.xref)
-        for position,xref in enumerate(page.get_contents()):
-            walk(xref,owner,position)
+        from .analysis_reuse_v315 import grouped_stream_operations_v318
+        xrefs=page.get_contents()
+        for positions,ops in grouped_stream_operations_v318(doc.xref_stream(xref) for xref in xrefs):
+            walk(xrefs[positions[0]],owner,positions[0] if len(positions)==1 else None,provided=ops)
     except (ValueError,TypeError,KeyError,IndexError,RuntimeError):
         return {}
     if len(occurrences)!=len(infos):
@@ -198,8 +203,13 @@ def _graphics_scan(doc,page_number,infos):
     path_kind=None
     path_rect=None
     pending_clip=False
-    for position,xref in enumerate(page.get_contents()):
-        ops=_ops(doc.xref_stream(xref)).operations
+    from .analysis_reuse_v315 import grouped_stream_operations_v318
+    content_xrefs=page.get_contents()
+    groups=grouped_stream_operations_v318(doc.xref_stream(xref) for xref in content_xrefs)
+    page_offset=0
+    for positions,ops in groups:
+        position=positions[0]
+        xref=content_xrefs[position]
         for offset,(operands,operator) in enumerate(ops):
             # Every supported image placement starts with q. Dense vector
             # artwork has thousands of path operands; avoid constructing three
@@ -262,6 +272,8 @@ def _graphics_scan(doc,page_number,infos):
                     if inverse.invert():
                         reason='La imagen hereda una matriz no invertible.'
                     geometry_reason=reason
+                    if len(positions)>1:
+                        reason='La colocación comparte operadores repartidos entre varios bloques; no se reescribe aisladamente.'
                     if marked:
                         reason='La imagen pertenece a contenido marcado o a una capa; no se transforma su semántica.'
                     result[target].update(editable=not reason,reason=reason,stream_position=position,
@@ -270,6 +282,7 @@ def _graphics_scan(doc,page_number,infos):
                                           matrix_pdf=tuple(total),asset_rect=bbox,framed=framed or framed_quad,framed_quad=framed_quad,
                                           parent_matrix=tuple(ctm),clip_rect_pdf=tuple(clip) if clip is not None else None,
                                           marked=bool(marked),geometry_reason=geometry_reason)
+                    result[target]['page_do_index_v318']=page_offset+do_index
                     if frame is not None:
                         result[target]['rect']=tuple(frame*page_matrix)
                         x,y,w,h=map(float,ops[offset+(9 if framed_quad else 5)][0])
@@ -354,12 +367,13 @@ def _graphics_scan(doc,page_number,infos):
                         clip_unknown=True
                 path_kind=path_rect=None
                 pending_clip=False
+        page_offset+=len(ops)
     if stack or marked or text_open or pending_clip:
         raise EditError('La página deja un estado gráfico, de texto o marcado abierto; no se pueden aislar imágenes.')
     return result
 
 
-def image_items(doc,page_number):
+def image_items(doc,page_number,*,source_data=None):
     try:
         infos=_image_infos(doc[page_number])
     except DraftCancelled:
@@ -370,10 +384,13 @@ def image_items(doc,page_number):
         items=_graphics_scan(doc,page_number,infos)
         candidates=[item for item in items if item.get('marked') and not item.get('geometry_reason')]
         if candidates and doc.xref_get_key(doc.pdf_catalog(),'StructTreeRoot')[0]!='null':
-            from .tagged import analyze
+            from .tagged import analyze_readonly
             from .tagged_image_v160 import TaggedImageTransform
-            data=doc.tobytes()
-            structure=analyze(data)
+            # Worker inventories and transaction callers supply the exact
+            # immutable bytes used to open this document. Generic inspectors
+            # use their current snapshot, retaining its original file ID.
+            data=bytes(source_data) if source_data is not None else doc.tobytes(no_new_id=True)
+            structure=analyze_readonly(data)
             for item in candidates:
                 try:
                     TaggedImageTransform(data,page_number,item,structure=structure)
@@ -433,6 +450,12 @@ def _validate(before_data,after_data,page_number,old_index=None,new_rect=None,ex
               *,expected_bbox=None,old_rect=None):
     from .page_fingerprint import PageProof
     unchanged_pages=PageProof(before_data,after_data)
+    from .tagged import analyze_readonly
+    from .validation import assert_text_object_structure
+    structure=analyze_readonly(after_data)
+    independent=structure.reader if structure is not None else PdfReader(BytesIO(after_data),strict=True)
+    assert_text_object_structure(after_data,reader=independent,tagged_structure=structure,
+                                 before_data=before_data,unchanged_pages=unchanged_pages)
     reports=[]
     with fitz.open(stream=before_data,filetype='pdf') as before,fitz.open(stream=after_data,filetype='pdf') as after:
         if before.page_count!=after.page_count or before.metadata!=after.metadata or before.get_xml_metadata()!=after.get_xml_metadata() or _canonical(before.get_toc(False))!=_canonical(after.get_toc(False)):
@@ -492,13 +515,14 @@ def _validate(before_data,after_data,page_number,old_index=None,new_rect=None,ex
                             raise EditError('Se alteraron píxeles o transparencia de otra instancia de imagen.')
             assert_characters(trace_chars(a),b)
             reports.append(assert_pixels(a,b,excluded))
-    if len(PdfReader(BytesIO(after_data),strict=True).pages)!=len(reports):
+    if len(independent.pages)!=len(reports):
         raise EditError('El lector independiente no confirma la estructura exportada.')
     return {'verified':True,'pages':reports,'independent_parser':'pypdf',
             'page':page_number,'source_regions':[tuple(old_rect if old_rect is not None else original['bbox'])] if old_index is not None else [],
             'destination_regions':[tuple(new_rect)] if new_rect is not None else []}
 
 
+@validated_result_v318
 def add_image_pdf(data,page,image_bytes,rect,revision=None,*,accessibility_order=None,alt_text=None,decorative=False):
     _safe(data,page,revision,adding=True)
     from .tagged_insert import TaggedAddition
@@ -519,19 +543,19 @@ def add_image_pdf(data,page,image_bytes,rect,revision=None,*,accessibility_order
         finally:
             target.set_rotation(rotation)
         output=_write_image_transaction(doc)
-    report=_validate(data,output,page,new_rect=rect)
     from .tagged import assert_structure
     assert_structure(data,output,tagged_expected)
+    report=_validate(data,output,page,new_rect=rect)
     if tagged.structure is not None:
         report['accessibility']=tagged.report()
     return output,report
 
 
 def _change(data,page,image_id,rect,revision,remove=False):
-    _safe(data,page,revision)
+    _safe(data,page,revision,transform_tagged=remove)
     with fitz.open(stream=data,filetype='pdf') as doc:
         target=doc[page]
-        items=image_items(doc,page)
+        items=image_items(doc,page,source_data=data)
         item=next((item for item in items if item['id']==str(image_id)),None)
         if not item or not item['editable']:
             raise EditError(item['reason'] if item else 'La imagen seleccionada ya no existe.')
@@ -539,8 +563,14 @@ def _change(data,page,image_id,rect,revision,remove=False):
         stream=_ops(doc.xref_stream(item['stream_xref']))
         offset=item['operator_index']
         expected_bbox=None
+        semantic_guard=None
         if remove:
-            del stream.operations[offset:offset+item['operator_count']]
+            from .tagged_image_delete_v317 import TaggedImageDeletionV317
+            semantic_guard=TaggedImageDeletionV317(data,page,item)
+            removed=set(range(offset,offset+item['operator_count']))
+            removed.update(semantic_guard.mark_operations.get(item['stream_position'],()))
+            stream.operations=[operation for index,operation in enumerate(stream.operations)
+                               if index not in removed]
         else:
             rect=_rect(target,rect)
             rotation=target.rotation
@@ -580,16 +610,24 @@ def _change(data,page,image_id,rect,revision,remove=False):
         doc.update_object(clone,'<<>>')
         doc.update_stream(clone,stream.get_data())
         contents[item['stream_position']]=clone
+        if semantic_guard is not None:
+            contents=semantic_guard.apply(doc,contents,changed_position=item['stream_position'])
         doc.xref_set_key(target.xref,'Contents','['+' '.join(f'{xref} 0 R' for xref in contents)+']')
         output=_write_image_transaction(doc)
-    return output,_validate(data,output,page,int(image_id),None if remove else rect,
-                            expected_bbox=expected_bbox,old_rect=item['rect'])
+    accessibility=semantic_guard.validate(output) if semantic_guard is not None else None
+    report=_validate(data,output,page,int(image_id),None if remove else rect,
+                     expected_bbox=expected_bbox,old_rect=item['rect'])
+    if semantic_guard is not None:
+        if accessibility is not None:report['accessibility']=accessibility
+    return output,report
 
 
+@validated_result_v318
 def transform_image_pdf(data,page,image_id,rect,revision=None):
     return _change(data,page,image_id,rect,revision)
 
 
+@validated_result_v318
 def delete_image_pdf(data,page,image_id,revision=None):
     return _change(data,page,image_id,None,revision,remove=True)
 
@@ -628,10 +666,10 @@ def _private_image_resources(doc,page):
     doc.xref_set_key(page.xref,'Resources',f'{resources} 0 R')
 
 
-def _image_selection(doc,page,image_id):
+def _image_selection(doc,page,image_id,*,source_data=None):
     if not 0<=page<doc.page_count:
         raise EditError('Página inexistente.')
-    item=next((item for item in image_items(doc,page) if item['id']==str(image_id)),None)
+    item=next((item for item in image_items(doc,page,source_data=source_data) if item['id']==str(image_id)),None)
     if item is None:
         raise EditError('La imagen seleccionada ya no existe.')
     if not item.get('xref'):
@@ -696,7 +734,7 @@ def export_image_pdf(data,page,image_id,revision=None):
             raise EditError('El PDF necesita una contraseña válida antes de extraer imágenes.')
         if not doc.permissions & fitz.PDF_PERM_COPY:
             raise EditError('Los permisos del documento no autorizan extraer imágenes.')
-        item=_image_selection(doc,page,image_id)
+        item=_image_selection(doc,page,image_id,source_data=data)
         png,meta=_asset_png(doc,item['xref'])
         alpha=bool(meta.get('smask'))
         native=meta.get('ext') in ('jpeg','jpg') and not alpha
@@ -746,6 +784,7 @@ def _insert_asset(page,rect,png):
     return page.insert_image(rect,stream=png,keep_proportion=False,overlay=True)
 
 
+@validated_result_v318
 def edit_image_pdf(data,page,image_id,*,replacement_bytes=None,crop=None,rotation=0,revision=None,
                    flip_horizontal=False,flip_vertical=False,fit_mode=None):
     """Crop/rotate/replace exactly one isolated Do, keeping its existing box.
@@ -761,7 +800,7 @@ def edit_image_pdf(data,page,image_id,*,replacement_bytes=None,crop=None,rotatio
     _safe(data,page,revision)
     with fitz.open(stream=data,filetype='pdf') as doc:
         target=doc[page]
-        item=_image_selection(doc,page,image_id)
+        item=_image_selection(doc,page,image_id,source_data=data)
         if not item['editable']:
             raise EditError(item['reason'])
         source_png,_=_asset_png(doc,item['xref'])
@@ -843,7 +882,7 @@ def _edit_image_frame(data,page,image_id,*,replacement_bytes,crop,rotation,revis
         raise EditError('El recorte debe ser un rectángulo válido dentro de la imagen (0 a 100 %).')
     with fitz.open(stream=data,filetype='pdf') as doc:
         target=doc[page]
-        item=_image_selection(doc,page,image_id)
+        item=_image_selection(doc,page,image_id,source_data=data)
         from .tagged_image_v160 import TaggedImageTransform
         semantic_guard=TaggedImageTransform(data,page,item)
         if not item['editable']:
@@ -910,9 +949,9 @@ def _edit_image_frame(data,page,image_id,*,replacement_bytes,crop,rotation,revis
         doc.xref_set_key(target.xref,'Contents','['+' '.join(f'{xref} 0 R' for xref in contents)+']')
         expected_bbox=tuple(fitz.Rect(0,0,1,1)*total*page_matrix)
         output=_write_image_transaction(doc)
+    accessibility=semantic_guard.validate(output)
     report=_validate(data,output,page,int(image_id),frame,expected_asset=expected_asset,
                      expected_bbox=expected_bbox,old_rect=item['rect'])
-    accessibility=semantic_guard.validate(output)
     if accessibility is not None:report['accessibility']=accessibility
     report.update(image_operation='frame_transform',rotation_clockwise=rotation%360,
                   flip_horizontal=bool(flip_horizontal),flip_vertical=bool(flip_vertical),fit_mode=fit_mode,

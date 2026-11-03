@@ -10,31 +10,47 @@ import pymupdf as fitz
 from pypdf.generic import ContentStream
 
 from .model import EditError
-from .tagged import analyze, assert_structure, obj
+from .tagged import analyze_readonly, assert_structure, obj
 
 
 class TaggedNativeMove:
-    def __init__(self, data, page, model, selected):
-        self.structure = analyze(data)
+    def __init__(self, data, page, model, selected, planned=None):
+        self.structure = analyze_readonly(data)
         self.page = page
         self.model = model
         self.contexts = self.structure.glyph_contexts(page, model)
         self.affected = {self.contexts[g.id] for g in selected}
-        # Layout attributes can contain bounding boxes and classes can inherit
-        # them. Native movement does not guess how those should be rewritten.
-        for path, node in self.structure.nodes.items():
-            relevant = any(p == page and mcid in self.affected and owner[:len(path)] == path
-                           for (p, mcid), owner in self.structure.owners.items())
-            if relevant and (node.get('/A') or node.get('/C')):
-                raise EditError('PDF etiquetado: la selección tiene atributos de disposición o clases que requieren actualizar su geometría antes de moverla.')
+        # Use the same bounded layout proof as native text editing. Recognized
+        # styles remain intact; only an exclusively textual, tight BBox may
+        # grow. Shared classes are preserved through a direct private override.
+        # Artifacts have no structure owner and retain the separate checks below.
+        tagged_selected = [g for g in selected if self.contexts[g.id] is not None]
+        tagged_planned = [g for g in (selected if planned is None else planned)
+                          if self.contexts[g.id] is not None]
+        self.layout_plan = None
+        if tagged_selected:
+            from .tagged import TaggedEdit
+            self.layout_plan = TaggedEdit(self.structure, page, model, tagged_selected,
+                tagged_planned, tagged_selected, False, native_inplace=True)
+        self.expected = (self.layout_plan.expected if self.layout_plan is not None
+                         else self.structure.semantic())
         for mcid in self.affected - {None}:
             mark = self.structure.marks[page][mcid]
             if '/BBox' in mark.resolved:
                 raise EditError('PDF etiquetado: la marca seleccionada tiene una caja semántica que todavía no se actualiza al moverla.')
 
+    def apply_updates(self, document):
+        if self.layout_plan is not None:
+            self.layout_plan.apply_updates(document)
+
     def validate(self, output):
         from .engine import extract_page
-        current = assert_structure(self.structure.data, output)
+        # The guard already holds its independently checked source and private
+        # expected snapshot. Re-reading it here would evict the checked final
+        # candidate and rebuild both complete trees for a second time.
+        current = analyze_readonly(output)
+        if current is None or current.semantic()!=self.expected:
+            raise EditError('PDF etiquetado: el movimiento alteró etiquetas, relaciones u otras propiedades accesibles.')
         with fitz.open(stream=output, filetype='pdf') as doc:
             model = extract_page(doc, self.page)
         contexts = current.glyph_contexts(self.page, model)
@@ -53,6 +69,8 @@ class TaggedNativeMove:
         return {'verified': True, 'structure_preserved': True, 'logical_text_verified': True,
                 'reading_order_preserved': True, 'mcids': sorted(self.affected - {None}),
                 'artifact_preserved': None in self.affected,
+                'layout_attribute_updates': (len(self.layout_plan.layout_updates)
+                                             if self.layout_plan is not None else 0),
                 'scope': 'MCID, ParentTree, etiquetas y texto lógico conservados; no certificación PDF/UA.'}
 
 

@@ -82,6 +82,7 @@ def test_overlap_checkbox_applies_to_moves(qtbot,line_window,tmp_path):
     source=tmp_path/'overlap.pdf';source.write_bytes(fixture())
     window.open_document(source);settled(qtbot,window)
     window.canvas.set_selection([g.id for g in window.model.glyphs[:3]])
+    window.allow_overlap_box.setChecked(False)
     assert not window._request(dy=80).allow_overlap
     window.allow_overlap_box.setChecked(True)
     window.snap_box.setChecked(False)
@@ -97,6 +98,9 @@ def test_clipped_typography_dialog_newline_bold_size_preview(qtbot,line_window,t
     window,_=line_window
     source=tmp_path/'native-format.pdf';source.write_bytes(fragmented_fixture())
     window.open_document(source);settled(qtbot,window)
+    # Exercise the explicit legacy typography path. Automatic field composition
+    # has separate coverage and reports its verified per-run typography.
+    window.auto_adapt_box.setChecked(False)
     window.canvas.set_selection([g.id for g in window.model.glyphs[:3]])
     errors=[]
     timer=QTimer(window);timer.setInterval(25)

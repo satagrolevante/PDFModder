@@ -1,8 +1,8 @@
 """Certificate picker only; private-key work runs in the existing PDF worker."""
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QKeySequence, QPixmap
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -13,13 +13,25 @@ from .signing import SIGNING_NOTICE
 from .action_state_v310 import set_ui_enabled_v310
 
 
+def _manual_signature_thumbnail_v317(picture, width, height):
+    """White artwork backing keeps black handwriting readable in either theme."""
+    result = QPixmap(width, height)
+    result.fill(Qt.white)
+    artwork = picture.scaled(width - 8, height - 8, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    painter = QPainter(result)
+    painter.drawPixmap((width - artwork.width()) // 2, (height - artwork.height()) // 2, artwork)
+    painter.end()
+    return result
+
+
 class SignatureDialog(QDialog):
     preview_requested = Signal(dict, int)
     POINTS_PER_MM = 72. / 25.4
     DrawRectangleResult = 2
 
     def __init__(self, parent=None, certificates=None, store_error='', *, pages=None, current_page=0,
-                 visible_signature_error=''):
+                 visible_signature_error='', manual_signatures=None, visible=None,
+                 manual_signature_error=''):
         super().__init__(parent)
         self.setWindowTitle('Firmar digitalmente una copia')
         self.setObjectName('digitalSignatureDialog')
@@ -129,6 +141,30 @@ class SignatureDialog(QDialog):
         self.signature_page.setCurrentIndex(selected_page)
         page_form = QFormLayout()
         page_form.addRow('Página del sello', self.signature_page)
+        self.manual_signature = QComboBox()
+        self.manual_signature.setObjectName('signingManualSignature')
+        self.manual_signature.setIconSize(QSize(100, 36))
+        self.manual_signature.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.manual_signature.setMinimumContentsLength(18)
+        self.manual_signature.addItem('Sin firma manuscrita', None)
+        for signature in manual_signatures or []:
+            picture = QPixmap()
+            if not picture.loadFromData(signature.get('png', b''), 'PNG'):
+                continue
+            self.manual_signature.addItem(QIcon(_manual_signature_thumbnail_v317(picture, 100, 36)),
+                                          signature['name'], dict(signature))
+        page_form.addRow('Firma manuscrita (opcional)', self.manual_signature)
+        self.manual_signature_preview = QLabel()
+        self.manual_signature_preview.setObjectName('signingManualSignaturePreview')
+        self.manual_signature_preview.setAlignment(Qt.AlignCenter)
+        self.manual_signature_preview.setFixedHeight(64)
+        self.manual_signature_preview.setStyleSheet('background:#ffffff; border:1px solid #bfc5cc; padding:4px;')
+        page_form.addRow('', self.manual_signature_preview)
+        if manual_signature_error:
+            library_error = QLabel(manual_signature_error)
+            library_error.setObjectName('signingManualSignatureError')
+            library_error.setWordWrap(True)
+            page_form.addRow('', library_error)
         options.addLayout(page_form)
         geometry = QGridLayout()
         self.signature_x = self._millimetres('signingAppearanceX')
@@ -179,6 +215,7 @@ class SignatureDialog(QDialog):
         self.finished.connect(self._mark_finished)
         self.signature_page.currentIndexChanged.connect(self._page_changed)
         self.visible_signature.toggled.connect(self._appearance_changed)
+        self.manual_signature.currentIndexChanged.connect(self._manual_signature_changed)
         self.preview_button.clicked.connect(self._request_preview)
         self.draw_button.clicked.connect(self._request_rectangle)
         for control in (self.source, self.installed):
@@ -188,7 +225,9 @@ class SignatureDialog(QDialog):
         for control in (self.signature_x, self.signature_y, self.signature_width, self.signature_height):
             control.valueChanged.connect(self._invalidate_preview)
         self._page_changed()
-        self._appearance_changed(False)
+        self._manual_signature_changed()
+        self.visible_signature.setChecked(visible is True and not visible_signature_error)
+        self._appearance_changed(self.visible_signature.isChecked())
 
     @staticmethod
     def _millimetres(name):
@@ -217,8 +256,19 @@ class SignatureDialog(QDialog):
 
     def _appearance_changed(self, enabled):
         self.appearance_options.setVisible(enabled)
+        self.setWindowTitle('Firmar con certificado visible' if enabled else 'Firmar con certificado invisible')
         self._invalidate_preview()
         self.adjustSize()
+
+    def _manual_signature_changed(self, *_):
+        signature = self.manual_signature.currentData()
+        self.manual_signature_preview.clear()
+        self.manual_signature_preview.setVisible(signature is not None)
+        if signature is not None:
+            picture = QPixmap()
+            picture.loadFromData(signature['png'], 'PNG')
+            self.manual_signature_preview.setPixmap(_manual_signature_thumbnail_v317(picture, 240, 52))
+        self._invalidate_preview()
 
     def _invalidate_preview(self, *_):
         self._preview_revision += 1
@@ -275,7 +325,11 @@ class SignatureDialog(QDialog):
             raise ValueError('El sello necesita al menos 74,09 mm de anchura y 24,70 mm de altura para que se lea.')
         if x + width > page['width'] + .015 or y + height > page['height'] + .015:
             raise ValueError('El sello supera el borde de la página. Reduce su tamaño o cambia su posición.')
-        return {'page': page['page'], 'rect': [x, y, min(x + width, page['width']), min(y + height, page['height'])]}
+        result = {'page': page['page'], 'rect': [x, y, min(x + width, page['width']), min(y + height, page['height'])]}
+        manual = self.manual_signature.currentData()
+        if manual is not None:
+            result['manual_signature_png'] = manual['png']
+        return result
 
     def signing_options(self):
         return {**self.credentials(), 'reason': self.reason.text(), 'location': self.location.text(),
@@ -339,7 +393,7 @@ class SignatureDialog(QDialog):
 
 
 class SigningUiMixin:
-    def choose_sign_document(self):
+    def choose_sign_document(self, *, visible=None):
         if not self._v150_ready():
             return
         if getattr(self, '_rich_active', False):
@@ -349,12 +403,24 @@ class SigningUiMixin:
             self._error('\n'.join(self.state['issues']))
             return
         self._submit('list_signing_certificates', callback=lambda result: QTimer.singleShot(
-            0, lambda: self._choose_signature_certificate(result)))
+            0, lambda: self._choose_signature_certificate(result, visible=visible)))
 
-    def _choose_signature_certificate(self, listing):
+    def _choose_signature_certificate(self, listing, *, visible=None):
+        restriction = listing.get('visible_signature_error', '')
+        if visible is True and restriction:
+            self._error(restriction)
+            return
+        from .manual_signatures_v317 import SignatureLibraryV317
+        from .workspace_ui_v170 import local_data_directory
+        signatures, library_error = [], ''
+        try:
+            signatures = SignatureLibraryV317(local_data_directory(self.config_path) / 'firmas').entries()
+        except (OSError, ValueError):
+            library_error = 'No se ha podido cargar la biblioteca de firmas manuscritas. Puedes firmar sin garabato.'
         dialog = SignatureDialog(self, listing.get('certificates', []), listing.get('error', ''),
                                  pages=listing.get('pages', []), current_page=self.page_number,
-                                 visible_signature_error=listing.get('visible_signature_error', ''))
+                                 visible_signature_error=restriction, manual_signatures=signatures,
+                                 manual_signature_error=library_error, visible=visible)
         def preview(payload, revision):
             if not self._submit('signature_preview', payload,
                                 lambda result: dialog.receive_preview(result, revision)):

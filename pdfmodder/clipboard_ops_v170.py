@@ -11,10 +11,10 @@ import math
 import pymupdf as fitz
 from pypdf import PdfReader
 
-from .engine import extract_page, full_write, _insert, _redact, edit_pdf
+from .engine import extract_page, full_write, _insert, _redact
 from .fonts import (FontError, ResolvedFont, _font_metadata, _check_embedding,
                     _check_characters, normalized_name)
-from .model import EditError, EditRequest
+from .model import EditError
 from .richmodels import RichTextRequest
 from .richtext import selection_payload, edit_rich_pdf, has_rich_metadata
 
@@ -200,6 +200,24 @@ def apply_clipboard_v170(session, operation, page, revision=None, bundle=None, p
                          ids=None, image_id=None, allow_overlap=False, accessibility_order=None,
                          alt_text=None, decorative=False,auto_adapt=False):
     """Validate first; install one history state only after every step succeeds."""
+    from .analysis_reuse_v315 import analysis_scope_v315
+    from .analysis_reuse_v315 import AnalysisCacheV315
+    from .validation_evidence_v318 import ValidationEvidenceCacheV318, validation_scope_v318
+    from .source_analysis_v318 import session_source_analysis_v318
+    cache=getattr(session,'_analysis_cache_v315',None)
+    if cache is None:
+        cache=session._analysis_cache_v315=AnalysisCacheV315()
+    evidence=getattr(session,'_validation_evidence_v318',None)
+    if evidence is None:
+        evidence=session._validation_evidence_v318=ValidationEvidenceCacheV318()
+    with analysis_scope_v315(cache),validation_scope_v318(evidence),session_source_analysis_v318(session):
+        return _apply_clipboard_v318(session,operation,page,revision,bundle,point,rect,
+            ids,image_id,allow_overlap,accessibility_order,alt_text,decorative,auto_adapt)
+
+
+def _apply_clipboard_v318(session, operation, page, revision=None, bundle=None, point=None, rect=None,
+                         ids=None, image_id=None, allow_overlap=False, accessibility_order=None,
+                         alt_text=None, decorative=False,auto_adapt=False):
     session._writable();data=session.history.current;_revision(data,revision)
     if operation=='delete':
         if image_id is not None:
@@ -212,7 +230,10 @@ def apply_clipboard_v170(session, operation, page, revision=None, bundle=None, p
                 empty=[dict(r,text='') for r in payload['runs']]
                 candidate,report=edit_rich_pdf(data,RichTextRequest(page,list(ids),empty,rect=payload['rect'],revision=revision),session.resolver)
             else:
-                candidate,report=edit_pdf(data,EditRequest(page,list(ids),text='',revision=revision),session.resolver)
+                # Removing existing SHOW operands needs no common style and no
+                # replacement font. The rich transaction verifies all retained
+                # glyphs and graphics, including mixed-style paragraphs.
+                candidate,report=edit_rich_pdf(data,RichTextRequest(page,list(ids),[],revision=revision),session.resolver)
             report['operation']='clipboard_delete_text'
         else:raise EditError('Selecciona texto o una imagen para eliminar.')
     elif operation=='paste':

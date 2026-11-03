@@ -148,6 +148,9 @@ def test_combined_tool_keeps_rotation_handle_and_submits_one_history_operation(t
     window = tools_window
     _canvas_document(window)
     canvas = window.canvas
+    # This synthetic canvas bypasses _loaded_page, which normally publishes
+    # the matching zoom before actions can permit a page-specific mutation.
+    window.zoom = canvas.zoom
     canvas.image_mode = True
     canvas.select_image(canvas.images[0])
     window.state = {'page_count': 1}

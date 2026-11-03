@@ -278,7 +278,7 @@ def test_layout_bbox_preserves_contained_edits_and_blocks_container_overflow():
     assert_structure_preserved(source, output)
 
 
-@pytest.mark.parametrize('operation', ['text', 'image_add', 'image_delete', 'image_transform',
+@pytest.mark.parametrize('operation', ['text', 'image_add', 'image_transform',
                                       'pages_merge'])
 def test_tagged_operations_without_semantic_choices_have_specific_blocks(operation):
     from pdfmodder.composition import AddTextRequest, insert_text_pdf
@@ -304,6 +304,25 @@ def test_tagged_operations_without_semantic_choices_have_specific_blocks(operati
         operations[operation]()
     assert sha256(source).hexdigest() == original_hash
     assert audit_tagged(source)['reading_order'].startswith(DATE_TEXT+MOVE_TEXT)
+
+
+def test_source_leaf_figure_can_be_deleted_without_leaving_its_alt_text():
+    from pdfmodder.media import delete_image_pdf
+    source=make_tagged_pdf(include_objr=True)
+    before=audit_tagged(source)
+    output,report=delete_image_pdf(source,0,'0')
+    after=audit_tagged(output)
+    assert report['verified'] and report['accessibility']['verified']
+    assert report['accessibility']['removed_figure']
+    assert after['reading_order']==before['reading_order'].replace('[Imagen: '+FIGURE_ALT+']','',1)
+    assert [key for key,_ in after['objrs']]==[key for key,_ in before['objrs']]
+    expected=deepcopy(before['structure'])
+    expected[0]['kids']=[node for node in expected[0]['kids'] if node.get('role')!='/Figure']
+    assert after['structure']==expected
+    assert {key:value for key,value in before['content'].items() if key in after['content']}==after['content']
+    assert_control_page_unchanged(source,output)
+    with fitz.open(stream=output,filetype='pdf') as doc:
+        assert not doc[0].get_image_info()
 
 
 def test_text_paragraph_alt_requires_manual_semantics_for_replacement_but_allows_movement():

@@ -206,15 +206,18 @@ def _updated_xmp(packet, changes):
         raise EditError('Los metadatos XMP no se pueden actualizar con seguridad. Se conserva el PDF sin cambios.') from None
 
 
-def _assert_content(before, after):
+def _assert_content(before, after, *, page_proof=None):
     """Metadata and encryption may never change text, page geometry or pixels."""
     if before.page_count != after.page_count:
         raise EditError('La copia no conserva el número de páginas; no se guarda.')
     from .validation import related
     for left, right in zip(before, after):
         if (left.rect != right.rect or left.mediabox != right.mediabox
-                or left.cropbox != right.cropbox or left.rotation != right.rotation
-                or left.get_text() != right.get_text()):
+                or left.cropbox != right.cropbox or left.rotation != right.rotation):
+            raise EditError('La copia no conserva el texto o la geometría de las páginas; no se guarda.')
+        if page_proof is not None and page_proof.unchanged(left.number):
+            continue
+        if left.get_text() != right.get_text():
             raise EditError('La copia no conserva el texto o la geometría de las páginas; no se guarda.')
         if left.get_pixmap().samples != right.get_pixmap().samples:
             raise EditError('La copia no conserva la apariencia de las páginas; no se guarda.')
@@ -248,13 +251,27 @@ def update_document_metadata(data, metadata, password=''):
             document.set_xml_metadata(updated_xmp)
         candidate = document.tobytes(garbage=0, deflate=False, encryption=fitz.PDF_ENCRYPT_KEEP)
     with _open(data, password) as before, _open(candidate, password) as after:
-        _assert_content(before, after)
+        from .page_fingerprint import PageProof
+        proof = PageProof(data, candidate)
+        _assert_content(before, after, page_proof=proof)
         page_count = after.page_count
         actual = after.metadata or {}
         if any((actual.get(key) or '') != value for key, value in changes.items()):
             raise EditError('No se han podido verificar los metadatos escritos.')
         if xmp and after.get_xml_metadata() != updated_xmp:
             raise EditError('No se han podido verificar los metadatos XMP escritos.')
+    from .tagged import assert_structure
+    from .validation import assert_text_object_structure
+    assert_text_object_structure(candidate, before_data=data, unchanged_pages=proof)
+    assert_structure(data, candidate)
+    from .validation_evidence_v318 import remember_validated_snapshot_v318
+    # Metadata-only operations may be permitted on documents whose content
+    # editing is restricted (for example XFA). Such an operation must never
+    # mint the stronger content-save capability used by atomic_save.
+    from .validation import document_issues
+    with _open(candidate, password) as checked:
+        if not document_issues(candidate, checked, operation='content'):
+            remember_validated_snapshot_v318(candidate, page_count)
     return candidate, {
         'operation': 'document_metadata', 'changed_fields': list(changes),
         'pages': page_count,

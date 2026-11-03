@@ -49,7 +49,10 @@ class Harness(PrintingUiV314Mixin, QMainWindow):
 @pytest.fixture
 def pipeline(qtbot, dialog_factory, monkeypatch):
     import pdfmodder.printing_device_v314 as device
-    monkeypatch.setattr(device, 'PrintSpoolV314', Writer)
+    writers = []
+    def factory(*args):
+        writer = Writer(*args); writers.append(writer); return writer
+    monkeypatch.setattr(device, 'PrintSpoolV314', factory)
     create, _ = dialog_factory
     dialog = create()
     win = Harness();qtbot.addWidget(win)
@@ -57,11 +60,14 @@ def pipeline(qtbot, dialog_factory, monkeypatch):
            'cancelled':False,'inflight':None,'job':None,'spool':None,
            'preview_wanted':None,'preview_inflight':None,'preview_control':DraftControl(),
            'print_control':DraftControl(),'ticket':None,'index':0,'geometries':{},
-           'quality_noted':None,'timer':Timer()}
+           'quality_noted':None,'timer':Timer(), '_writers':writers}
     dialog.preview_invalidated.connect(lambda:win._preview_changed_v314(ctx))
     dialog.cancel_requested.connect(lambda:win._cancel_print_v314(ctx))
     yield win,dialog,ctx
     ctx['closed'] = True
+    if ctx['spool'] is not None:
+        ctx['spool'].cancel()
+        qtbot.waitUntil(lambda: not ctx['spool'].alive)
     ctx['preview_control'].close();ctx['print_control'].close()
     dialog.finish_cancel()
 
@@ -93,41 +99,51 @@ def test_same_page_color_change_reuses_inflight_pixels_and_current_presentation(
     assert dialog.preview_stack.currentWidget() is dialog.preview
 
 
-def test_long_job_is_prepared_one_page_at_a_time_then_finishes(pipeline,tmp_path):
+def test_long_job_is_prepared_one_page_at_a_time_then_finishes(pipeline,tmp_path,qtbot):
     win,dialog,ctx = pipeline
     dialog.scope.setCurrentIndex(dialog.scope.findData('range'));dialog.pages.setText('5,2-3')
     win._request_print_v314(ctx)
-    writer=ctx['spool']
+    qtbot.waitUntil(lambda: bool(ctx['_writers']))
+    writer=ctx['_writers'][0]
     for index,expected in enumerate((4,1,2)):
         win._pump_print_v314(ctx)
         assert len(win.requests) == index+1
         assert win.requests[index][1]['pages'] == [expected]
         reply(win,index,tmp_path)
+        qtbot.waitUntil(lambda: (win._drain_print_spool_v318(ctx) or ctx['index'] == index+1))
         assert writer.pages == [4,1,2][:index+1]
     win._pump_print_v314(ctx)
+    qtbot.waitUntil(lambda: (win._drain_print_spool_v318(ctx) or ctx['job'] is None))
     assert ctx['job'] is None and len(win.saved) == 1
     assert writer.pages == [4,1,2]
 
 
-def test_cancel_invalidates_ticket_and_never_sends_late_page(pipeline,tmp_path):
+def test_cancel_invalidates_ticket_and_never_sends_late_page(pipeline,tmp_path,qtbot):
     win,dialog,ctx = pipeline
-    win._request_print_v314(ctx);writer=ctx['spool']
+    win._request_print_v314(ctx)
+    qtbot.waitUntil(lambda: bool(ctx['_writers']))
+    writer=ctx['_writers'][0]
     win._pump_print_v314(ctx)
     ticket=Path(win.requests[0][1]['control']['path'])
     assert ticket.is_file()
     win._cancel_print_v314(ctx)
-    assert not ticket.exists() and writer.cancelled
+    assert not ticket.exists()
     reply(win,0,tmp_path,cancelled=True)
+    qtbot.waitUntil(lambda: (win._drain_print_spool_v318(ctx) or ctx['job'] is None))
+    assert writer.cancelled
     assert not writer.pages and ctx['job'] is None
     assert win.saved == []
 
 
-def test_revision_change_discards_prepared_page_and_cancels_own_job(pipeline,tmp_path):
+def test_revision_change_discards_prepared_page_and_cancels_own_job(pipeline,tmp_path,qtbot):
     win,dialog,ctx = pipeline
-    win._request_print_v314(ctx);writer=ctx['spool']
+    win._request_print_v314(ctx)
+    qtbot.waitUntil(lambda: bool(ctx['_writers']))
+    writer=ctx['_writers'][0]
     win._pump_print_v314(ctx)
     win.state['document_revision']='changed'
     reply(win,0,tmp_path)
+    qtbot.waitUntil(lambda: (win._drain_print_spool_v318(ctx) or ctx['job'] is None))
     assert writer.cancelled and writer.pages == []
     assert win.saved == []
 
@@ -167,11 +183,12 @@ def test_real_long_document_cancel_stops_before_preparing_remaining_pages(qtbot,
         if command=='print_pages_v200': requests.append(payload['pages'])
         return real_submit(command,payload,callback)
     monkeypatch.setattr(window,'_submit',submit)
-    def cancel_after_first(command,result):
-        context=getattr(window,'_print_context_v314',None)
-        if command=='print_pages_v200' and context and context['index']==1:
+    real_drain = window._drain_print_spool_v318
+    def cancel_after_first(context):
+        real_drain(context)
+        if context['job'] is not None and context['index'] == 1:
             context['dialog'].reject()
-    window.operation_finished.connect(cancel_after_first)
+    monkeypatch.setattr(window, '_drain_print_spool_v318', cancel_after_first)
     execute=window._exec_edit_dialog
     def run(dialog):
         def start():

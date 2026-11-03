@@ -262,10 +262,15 @@ class TaggedStructure:
         self.contexts=[]
         self.parents=_number_tree(self.tree.get('/ParentTree',{}))
         self.page_parent_keys={}
+        self.reused_semantic_pages_v318=set()
+        self._reused_graphical_artifacts_v318=set()
+        from .tagged_reuse_v318 import PageSemanticReuseV318
+        page_reuse=PageSemanticReuseV318(self.data)
         self._walk(self.tree.get('/K',[]),(),ref(self.tree),None,0)
         for number,page in enumerate(self.reader.pages):
             checkpoint()
-            self._page(number,page)
+            if not page_reuse.install(self,number,page):
+                self._page(number,page)
         self._validate_links()
 
     def _walk(self,value,path,parent,inherited_page,depth):
@@ -459,8 +464,9 @@ class TaggedStructure:
         identity=ref(raw);leaf=obj(raw)
         if (identity is None or identity in self.node_refs or mark.tag!='/Artifact'
                 or mark.nested_actual or set(mark.resolved)!={'/MCID'}
-                or not self._graphics_only(self.operations[page][mark.start:mark.end+1],
-                                           self.reader.pages[page].get('/Resources',{}))):
+                or ((page,mcid) not in self._reused_graphical_artifacts_v318
+                    and not self._graphics_only(self.operations[page][mark.start:mark.end+1],
+                                                self.reader.pages[page].get('/Resources',{})))):
             return None
         allowed={'/Type','/S','/P','/Pg','/K','/Lang'}
         nodes=[];seen=set();child=None;current=raw
@@ -512,6 +518,15 @@ class TaggedStructure:
 
     def semantic(self):
         checkpoint()
+        import pickle
+        readonly=getattr(self,'_readonly_analysis_v318',False)
+        cached=getattr(self,'_semantic_snapshot_v318',None)
+        if readonly and cached is not None:
+            # Only canonical base Python values are serialized here, never
+            # data supplied as a pickle by a PDF or a recovery file. The C
+            # round-trip creates private mutable containers without walking
+            # hundreds of thousands of immutable tuples in Python.
+            return pickle.loads(cached)
         calls=0
         def canonical(value,seen=None):
             nonlocal calls
@@ -530,17 +545,28 @@ class TaggedStructure:
                 return {str(k):canonical(v,seen) for k,v in value.items()}
             if isinstance(value,(list,tuple)):return tuple(canonical(v,seen) for v in value)
             if isinstance(value,bytes):return ('bytes',value.hex())
-            if isinstance(value,(str,int,float)) or value is None:return value
+            # pypdf scalar subclasses can carry indirect_reference and its
+            # complete reader. Semantic snapshots must contain base Python
+            # values only; deepcopy of a PDF scalar can clone the entire PDF.
+            if isinstance(value,str):return str(value)
+            if isinstance(value,bool):return bool(value)
+            if isinstance(value,int):return int(value)
+            if isinstance(value,float):return float(value)
+            if value is None:return None
             if isinstance(value,NullObject):return None
             if type(value).__name__=='BooleanObject':return value.value
             return str(value)
         result={'tree':canonical(dict(self.tree)),
                 'nodes':{path:canonical(dict(node)) for path,node in self.nodes.items()},
                 'catalog':{k:canonical(self.root.get(k)) for k in ('/MarkInfo','/Lang','/ViewerPreferences')},
-                'pages':[(p.get('/StructParents'),p.get('/Tabs')) for p in self.reader.pages],
+                'pages':[(canonical(p.get('/StructParents')),canonical(p.get('/Tabs'))) for p in self.reader.pages],
                 'marks':[{mcid:(str(m.tag),canonical(dict(m.resolved))) for mcid,m in marks.items()} for marks in self.marks]}
         if self.detached_nodes:
             result['detached_nodes']={path:canonical(dict(node)) for path,node in self.detached_nodes.items()}
+        if readonly:
+            snapshot=pickle.dumps(result,protocol=5)
+            if len(snapshot)<=16*1024*1024:
+                self._semantic_snapshot_v318=snapshot
         return result
 
     def glyph_contexts(self,page,model):
@@ -626,11 +652,14 @@ def _readonly_size(structure):
     # estimate is not an RSS cap: pypdf can resolve a few more objects lazily.
     # The worker pins at most one source and keeps one latest candidate; it
     # never accumulates graphs for a succession of previews or document tabs.
-    return (2 * len(structure.data) + 1024 * len(structure.nodes)
+    return (2 * len(structure.data) + 1536 * len(structure.nodes)
             + 512 * sum(len(ops) for ops in structure.operations)
             + 1024 * len(structure.reader.resolved_objects)
             + 32 * sum(len(contexts) for contexts in structure.contexts)
-            + 1024 * len(structure.marks))
+            + 1024 * len(structure.marks)
+            + len(getattr(structure,'_semantic_snapshot_v318',b''))
+            + sum(evidence.estimated_bytes for evidence in
+                  getattr(structure,'_page_evidence_v318',()) if evidence is not None))
 
 
 def analyze_readonly(data):
@@ -653,10 +682,20 @@ def analyze_readonly(data):
         if error is not None:
             raise EditError(error)
         return structure
+    reference=(pin[1] if pin is not None and pin is _pinned_source_cache else
+               _readonly_cache[1] if _readonly_cache is not None and _readonly_cache[2] is None else None)
     _readonly_cache = None
     _readonly_verdict = None
     try:
-        structure = analyze(source)
+        from .tagged_reuse_v318 import page_reference_v318,capture_page_evidence_v318,has_page_reference_v318
+        if has_page_reference_v318():
+            structure = analyze(source)
+        else:
+            with page_reference_v318(reference):
+                structure = analyze(source)
+        if structure is not None:
+            structure._readonly_analysis_v318=True
+            structure._page_evidence_v318=capture_page_evidence_v318(structure)
     except EditError as exc:
         # Retain only the diagnostic, never an exception/traceback that keeps
         # the rejected document and partially parsed graph alive.
@@ -1003,7 +1042,7 @@ class TaggedEdit:
             document.xref_set_key(ref(structure.nodes[path])[0],'A',buffer.getvalue().decode('latin1'))
 
     def insert(self,erased,resolved,reproduction=False):
-        from .engine import _insert,full_write
+        from .engine import _insert,transaction_write_v318
         current=analyze(erased)
         marks=current.marks[self.page]
         skipped={index for mcid in self.affected for index in (marks[mcid].start,marks[mcid].end)}
@@ -1063,7 +1102,7 @@ class TaggedEdit:
                 doc.xref_set_key(page.xref,'Contents','['+' '.join(f'{i} 0 R' for i in kept)+']')
             if not reproduction:
                 self.apply_updates(doc,current)
-            return full_write(doc)
+            return transaction_write_v318(doc)
 
     def validate(self,after):
         from .engine import extract_page

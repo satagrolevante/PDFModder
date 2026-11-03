@@ -1,13 +1,13 @@
 """Preserve semantics when transforming one independently tagged image instance."""
-from pypdf.generic import ContentStream
-
-from .tagged import PAINT, SHOW, analyze, assert_structure, fail, obj, _has_string
+from .tagged import PAINT, SHOW, analyze_readonly, fail, obj, _has_string
 
 
 class TaggedImageTransform:
     def __init__(self, data, page, item, *, structure=None):
-        self.data = data
-        self.structure = structure if structure is not None else analyze(data)
+        self.data = bytes(data)
+        if structure is not None and getattr(structure, 'data', None) != self.data:
+            fail('la estructura de la imagen pertenece a una versión anterior.')
+        self.structure = structure if structure is not None else analyze_readonly(self.data)
         self.page = page
         self.mcid = None
         if self.structure is None:
@@ -15,8 +15,18 @@ class TaggedImageTransform:
         s = self.structure
         contents = obj(s.reader.pages[page].get('/Contents', []))
         contents = contents if isinstance(contents, (list, tuple)) else [contents]
-        offset = sum(len(ContentStream(content, s.reader).operations)
-                     for content in contents[:item['stream_position']]) + item['do_index']
+        from .analysis_reuse_v315 import grouped_stream_operations_v318
+        offset=0
+        for positions,operations in grouped_stream_operations_v318(
+                (obj(content).get_data() for content in contents),s.reader):
+            if item['stream_position'] in positions:
+                if len(positions)!=1:
+                    fail('la imagen comparte un operador repartido entre bloques.')
+                offset+=item['do_index']
+                break
+            offset+=len(operations)
+        else:
+            fail('no se encuentra el bloque de la imagen seleccionada.')
         ops = s.operations[page]
         if offset >= len(ops) or ops[offset][1] != b'Do':
             fail('no se puede asociar la imagen seleccionada con su etiqueta.')
@@ -58,15 +68,29 @@ class TaggedImageTransform:
             fail('la imagen necesita una etiqueta Figure con descripción alternativa verificable.')
 
     def validate(self, output):
-        current = assert_structure(self.data, output)
+        # This guard never mutates its checked source. Capture its private
+        # expectation before independently checking only the exact candidate.
+        expected = self.structure.semantic() if self.structure is not None else None
+        current = analyze_readonly(output)
+        if ((self.structure is None) != (current is None)
+                or current is not None and expected != current.semantic()):
+            fail('se alteraron etiquetas, relaciones u otras propiedades accesibles de la imagen.')
         if self.structure is None:
             return None
-        def associations(structure):
-            return [[(context, str(args[0])) for (args, operator), context in zip(ops, contexts)
-                     if operator == b'Do']
-                    for ops, contexts in zip(structure.operations, structure.contexts)]
-        if associations(self.structure) != associations(current):
-            fail('se alteró la asociación de una imagen con su etiqueta u orden de lectura.')
+        from .page_fingerprint import PageProof
+        from .draft_control_v305 import checkpoint
+        unchanged = PageProof(self.data, output)
+        def associations(structure, number):
+            return [(context, str(args[0])) for (args, operator), context in zip(
+                    structure.operations[number], structure.contexts[number]) if operator == b'Do']
+        for number in range(len(self.structure.operations)):
+            checkpoint()
+            # A complete input graph proves every invocation and MCID context
+            # identical; the global tree and ParentTree were checked above.
+            if unchanged.unchanged(number):
+                continue
+            if associations(self.structure, number) != associations(current, number):
+                fail('se alteró la asociación de una imagen con su etiqueta u orden de lectura.')
         return {'verified': True, 'structure_preserved': True, 'reading_order_preserved': True,
                 'mcid': self.mcid, 'artifact_preserved': self.mcid is None,
                 'scope': 'Figure/Alt o Artifact, MCID y ParentTree conservados; no certificación PDF/UA.'}

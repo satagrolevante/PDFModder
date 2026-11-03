@@ -277,7 +277,7 @@ def _advance(font,code,text):
 
 def edit_clipped_text(data,request,model):
     """Copia y cambia sólo códigos de ancho idéntico en sus operadores originales."""
-    from .engine import _safe_selection,full_write
+    from .engine import _safe_selection,transaction_write_v318
     from .validation import validate_transition
     started = time.perf_counter()
     selected = model.selected(request.ids)
@@ -383,7 +383,7 @@ def edit_clipped_text(data,request,model):
         doc.update_object(stream,'<<>>')
         doc.update_stream(stream,_serialize(result))
         page.set_contents(stream)  # New page-local stream, never mutate a shared stream.
-        output = full_write(doc)
+        output = transaction_write_v318(doc)
     independent=PdfReader(BytesIO(output),strict=True)
     actual_operations=ContentStream(independent.pages[request.page].get_contents(),independent).operations
     if (len(result)!=len(actual_operations) or

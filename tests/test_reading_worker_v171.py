@@ -33,7 +33,7 @@ def test_reading_defers_analyses_and_prepare_materialises_full_page_without_new_
     monkeypatch.setattr(worker,'document_issues',lambda data,doc,**kwargs:calls.append(('document',len(data))) or [])
     monkeypatch.setattr(engine,'page_issues',lambda data,page:calls.append(('page_checks',page)) or [])
     monkeypatch.setattr('pdfmodder.clipping.annotate_font_resources',lambda data,page,model:calls.append(('resources',page)) or model)
-    monkeypatch.setattr(media,'image_items',lambda doc,page:calls.append(('images',page)) or [{'id':'synthetic'}])
+    monkeypatch.setattr(media,'image_items',lambda doc,page,**kwargs:calls.append(('images',page)) or [{'id':'synthetic'}])
     monkeypatch.setattr(tagged_pages,'page_capabilities',lambda data:calls.append(('caps',len(data))) or {'supported':True,'delete':True,'reason':''})
     session=Session(source,reading=True,config_path=tmp_path/'fonts.json',history_dir=tmp_path)
     try:

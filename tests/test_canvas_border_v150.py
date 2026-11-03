@@ -75,6 +75,23 @@ def test_border_tolerance_is_viewport_pixels_and_handles_keep_priority(qtbot,zoo
     assert resized[0][2:]==pytest.approx((rect[2]+20,rect[3]+10),abs=1.4)
 
 
+def test_explicit_move_remains_available_when_small_text_is_covered_by_resize_hotspots(qtbot):
+    canvas,_=make_canvas(qtbot,.4)
+    canvas.set_selection([g.id for g in canvas.model.glyphs[:6]])
+    canvas.set_interaction_mode('move')
+    glyph=canvas.model.selected(canvas.ids)[0]
+    x,y=(glyph.bbox[0]+glyph.bbox[2])/2,(glyph.bbox[1]+glyph.bbox[3])/2
+    moved=[];resized=[]
+    canvas.move_requested.connect(lambda *delta:moved.append(delta))
+    canvas.text_resize_requested.connect(resized.append)
+    start=canvas.viewport_point((x,y));finish=canvas.viewport_point((x+30,y+20))
+    qtbot.mousePress(canvas.viewport(),Qt.LeftButton,pos=start)
+    assert not canvas._text_resize and canvas._press is not None
+    qtbot.mouseMove(canvas.viewport(),pos=finish)
+    qtbot.mouseRelease(canvas.viewport(),Qt.LeftButton,pos=finish)
+    assert moved==[pytest.approx((30,20),abs=3)] and not resized
+
+
 def test_shift_drag_inside_selected_text_still_selects_characters(qtbot):
     canvas,_=make_canvas(qtbot,1.5)
     canvas.mode='character'

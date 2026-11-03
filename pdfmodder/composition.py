@@ -7,10 +7,11 @@ import unicodedata
 
 import pymupdf as fitz
 
-from .engine import _insert, _stroke_hits, extract_page, full_write, validate_rgb
+from .engine import _insert, _stroke_hits, extract_page, transaction_write_v318, validate_rgb
 from .fonts import FontError, FontResolver
 from .model import EditError, Glyph, intersects
 from .validation import document_issues, validate_transition
+from .validation_evidence_v318 import validated_result_v318
 
 
 @dataclass
@@ -59,6 +60,7 @@ def _lines(text, face, size, width, reflow):
     return result
 
 
+@validated_result_v318
 def insert_text_pdf(data: bytes, request: AddTextRequest, resolver=None):
     """Return a full-write PDF and validation report, without modifying input.
 
@@ -190,7 +192,7 @@ def insert_text_pdf(data: bytes, request: AddTextRequest, resolver=None):
         old_contents = page.get_contents()
         _insert(page, planned, {face.name: face})
         tagged_expected = tagged.apply(doc, old_contents)
-        output = full_write(doc)
+        output = transaction_write_v318(doc)
     regions = [g.bbox for g in planned]
     report = validate_transition(data, output, request.page, expected, regions, tagged_expected)
     report.update(page=request.page, source_regions=[], destination_regions=regions,

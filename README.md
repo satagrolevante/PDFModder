@@ -1,8 +1,17 @@
-# PDF Modder 3.0.16
+# PDF Modder 3.0.18 (código fuente)
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Rendimiento y compatibilidad 3.0.18
+
+Preparación de páginas y revisiones reutilizable, inventarios de edición bajo
+demanda, copiado de texto inmediato e impresión en segundo plano. Se corrigen
+bloqueos de edición en PDF con contenido fragmentado y firmas visibles en PDF
+etiquetados. Incluye las firmas manuscritas de 3.0.17.
+[Cambios y controles de integridad](docs/NOTAS_3.0.18.md).
+El instalador público sigue siendo **3.0.16** hasta publicar una nueva entrega.
 
 ## Edición ágil y adaptación automática 3.0.16
 

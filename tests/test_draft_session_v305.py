@@ -71,15 +71,19 @@ def test_two_different_drafts_keep_source_analysis_and_save_exact_validated_byte
 
 
 @pytest.mark.parametrize('release',['close','suspend'])
-def test_release_frees_old_source_pin_after_commit_changed_head(session,release):
+def test_close_releases_but_tab_suspension_retains_exact_source_proofs(session,release):
     value,data,_=session
     prepared=value.rich_preview(draft(value,data,'11/09/2026'),prepare=True)
     assert tagged._pinned_source_cache[0][0]==sha256(data).digest()
     value.rich_commit(prepared['token'])
     assert value.history.revision!=sha256(data).hexdigest()
+    pinned,readonly=tagged._pinned_source_cache,tagged._readonly_cache
     getattr(value,release)()
-    assert tagged._pinned_source_cache is None
-    assert tagged._readonly_cache is None
     if release=='suspend':
+        assert tagged._pinned_source_cache is pinned
+        assert tagged._readonly_cache is readonly
         value.resume()
         assert value.state()['history_index']==1
+    else:
+        assert tagged._pinned_source_cache is None
+        assert tagged._readonly_cache is None

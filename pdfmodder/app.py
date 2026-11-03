@@ -56,6 +56,8 @@ from .navigation_ui_v310 import NavigationUiV310Mixin
 from .sidebar_ui_v311 import SidebarUiV311Mixin
 from .appearance_ui_v311 import AppearanceUiV311Mixin
 from .toolbar_ui_v311 import ToolbarUiV311Mixin
+from .signatures_ui_v317 import SignaturesUiV317Mixin
+from .lazy_page_ui_v318 import LazyPageUiV318Mixin
 from . import __version__
 
 
@@ -1160,7 +1162,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
         event.accept()
 
 
-class MainWindow(ActionStateV310Mixin,ResponsiveUiV310Mixin,PrintingUiV314Mixin,ToolbarUiV311Mixin,AppearanceUiV311Mixin,NavigationUiV310Mixin,SidebarUiV311Mixin,PrintingV309Mixin,MenusUiV308Mixin,SharingUiV308Mixin,ViewZoomUiV308Mixin,DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,MainWindowCore):
+class MainWindow(ActionStateV310Mixin,SignaturesUiV317Mixin,ResponsiveUiV310Mixin,PrintingUiV314Mixin,ToolbarUiV311Mixin,AppearanceUiV311Mixin,NavigationUiV310Mixin,SidebarUiV311Mixin,PrintingV309Mixin,MenusUiV308Mixin,SharingUiV308Mixin,ViewZoomUiV308Mixin,DailyUpdatesUiV307Mixin,SearchUiV306Mixin,CompatibilityUiV300Mixin,SavingV300Mixin,ObjectEditorV300Mixin,ProgressiveOpeningV300Mixin,WorkspaceV200Mixin,PrintingV200Mixin,FormsRedactionMixin,LazyPageUiV318Mixin,MainWindowCore):
     """New workspace interceptors precede the existing window implementation."""
 
 

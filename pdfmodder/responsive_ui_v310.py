@@ -22,7 +22,9 @@ class ResponsiveUiV310Mixin:
         # The worker remains serial and busy. Only the presentation of safe
         # commands changes; no mutation is submitted concurrently with a read.
         return bool(self.busy and self._command in
-                    ('page', 'reading_info', 'search', 'reading_copy_range'))
+                    ('page', 'reading_info', 'search', 'reading_copy_range',
+                     'page_capabilities_v318', 'font_catalog',
+                     'selection_capabilities', 'clipboard_copy'))
 
     def _ui_mutation_locked_v310(self):
         return bool(self._closed or (self.busy and not self._render_busy_v310())
@@ -199,8 +201,8 @@ class ResponsiveUiV310Mixin:
     def choose_print_v200(self):
         return self._run_after_read_v310('print', super().choose_print_v200)
 
-    def choose_sign_document(self):
-        return self._run_after_read_v310('sign', super().choose_sign_document)
+    def choose_sign_document(self, *, visible=None):
+        return self._run_after_read_v310('sign', super().choose_sign_document, visible=visible)
 
     def choose_document_properties_v170(self):
         return self._run_after_read_v310('properties', super().choose_document_properties_v170)

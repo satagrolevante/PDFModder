@@ -13,6 +13,7 @@ from .fonts import FontResolver
 from .history import History
 from .model import EditError, EditRequest
 from .validation import document_issues
+from .source_analysis_v318 import pinned_source_write_v318
 
 
 def _reuse_analysis_v315(function):
@@ -21,10 +22,13 @@ def _reuse_analysis_v315(function):
     @wraps(function)
     def run(self,*args,**kwargs):
         from .analysis_reuse_v315 import AnalysisCacheV315,analysis_scope_v315
+        from .validation_evidence_v318 import ValidationEvidenceCacheV318,validation_scope_v318
         cache=getattr(self,'_analysis_cache_v315',None)
         if cache is None:
             cache=self._analysis_cache_v315=AnalysisCacheV315()
-        with analysis_scope_v315(cache):
+        evidence=getattr(self,'_validation_evidence_v318',None)
+        if evidence is None:evidence=self._validation_evidence_v318=ValidationEvidenceCacheV318()
+        with analysis_scope_v315(cache),validation_scope_v318(evidence):
             return function(self,*args,**kwargs)
     return run
 
@@ -150,6 +154,8 @@ class Session:
     def _cleanup_print(self):
         folder=getattr(self,'_print_folder_v200',None)
         if folder:folder.cleanup();self._print_folder_v200=None
+        from .printing_context_v318 import close_print_context_v318
+        close_print_context_v318(self)
 
     def _document(self,data,revision):
         if revision in self._documents:
@@ -169,15 +175,15 @@ class Session:
 
     def suspend(self):
         self._cleanup_print()
-        self._release_rich_analysis_v305()
+        # Keep only bounded, revision-addressed values between tab visits.
+        # Live MuPDF objects and prepared candidates are always released.
         self._clear_cache();self._close_documents()
-        cache=getattr(self,'_analysis_cache_v315',None)
-        if cache is not None:cache.clear()
-        self._reading_info_cache.clear();self._page_caps_cache.clear()
         self.history.suspend()
         if self.pending is not None:
             self._checkpoint();self._pending=None
         self._suspended_pending=bool(self.history.pending_path)
+        # The resolver contains installed file evidence, not PDF objects. Its
+        # potentially large file buffers are not part of the retained views.
         self.resolver=None
         self._rich_catalog=None;self._review_matches={};self._prepared_rich=None
 
@@ -348,11 +354,30 @@ class Session:
     def _mark_page_edit(self,report,page):
         report.update(_page_key=self._page_keys(False)[page],_instance_key=self._instance_key_at(page,False))
 
-    def _clear_cache(self):
-        self.cache.clear()
-        self.cache_bytes=0
-        self._model_cache.clear();self._model_bytes=0
+    def _clear_cache(self,drop_views=False):
+        # Content previews, commits and undo do not invalidate other immutable
+        # revisions. Every view/model key includes the SHA of its exact bytes.
+        # Font associations are the exception: the bytes can stay identical
+        # while the inventory changes, and explicitly request drop_views.
+        if drop_views:
+            self.cache.clear();self.cache_bytes=0
+            self._model_cache.clear();self._model_bytes=0
+            getattr(self,'_page_inventories_v318',{}).clear()
+            self._inventory_bytes_v318=0
         self._validated_rich=None
+
+    def _evict_preparation_v318(self):
+        self._clear_cache(drop_views=True)
+        self._close_documents()
+        cache=getattr(self,'_analysis_cache_v315',None)
+        if cache is not None:cache.clear()
+        self._reading_info_cache.clear();self._page_caps_cache.clear()
+
+    def _preparation_bytes_v318(self):
+        state=getattr(getattr(self,'_analysis_cache_v315',None),'_state',{})
+        return (self.cache_bytes+self._model_bytes+getattr(self,'_inventory_bytes_v318',0)
+                +getattr(getattr(self,'_validation_evidence_v318',None),'canonical_bytes',0)
+                +sum(state.get(key,0) for key in ('bytes','syntax_bytes','scope_bytes')))
 
     def _put_preview(self,candidate,report):
         self.history.checkpoint({'path':self.path,'saved_digest':self.saved_digest,
@@ -372,7 +397,7 @@ class Session:
         if not self._editing_prepared:
             raise EditError('Activa las herramientas para preparar y comprobar el PDF antes de modificarlo o exportarlo.')
 
-    def prepare_editing(self,number=0,zoom=1.,original=False):
+    def prepare_editing(self,number=0,zoom=1.,original=False,lazy=False):
         """Materialise edit checks once; retain the document and its history."""
         if not self._editing_prepared:
             with self._open(self.history.current) as document:
@@ -383,7 +408,7 @@ class Session:
             self.resolver=resolver
             self._editing_prepared=True
             self._clear_cache()
-        return self.page(number,zoom=zoom,original=original,reading=False)
+        return self.page(number,zoom=zoom,original=original,reading=False,lazy=lazy)
 
     def copy_reading_selection(self,page,ids=None,image_id=None,revision=None):
         """Copy selected plain text without resolving portable font programs."""
@@ -481,8 +506,54 @@ class Session:
         reports=[r for r in self.history.base_reports+self.history.reports[:self.history.index+1] if r]
         return bool(reports) and all(r.get('operation')=='document_metadata' for r in reports)
 
+    def _page_inventory_v318(self,document,revision,number,needs=(),*,source_data=None):
+        import pickle
+        inventory=getattr(self,'_page_inventories_v318',None)
+        if inventory is None:
+            inventory=self._page_inventories_v318=OrderedDict()
+            self._inventory_bytes_v318=0
+        key=(revision,number)
+        old=inventory.pop(key,None)
+        record=dict(old[0]) if old else {}
+        if old:self._inventory_bytes_v318-=old[1]
+        if 'images' in needs and (source_data is None or hashlib.sha256(source_data).hexdigest()!=revision):
+            raise EditError('La información de imágenes pertenece a una versión anterior.')
+        if 'fonts' in needs and 'fonts' not in record:
+            record['fonts']=self.resolver.inspect(document,number)
+        if 'images' in needs and 'images' not in record:
+            from .media import image_items
+            record['images']=image_items(document,number,source_data=source_data)
+        # Conservative retained-memory estimate; oversized inventories are
+        # returned for this request and never pinned in the tab cache.
+        size=len(pickle.dumps(record,protocol=5))*4+512
+        if size<=8*1024*1024:
+            inventory[key]=(record,size);self._inventory_bytes_v318+=size
+        while inventory and (self._inventory_bytes_v318>8*1024*1024 or len(inventory)>12):
+            _,removed=inventory.popitem(last=False);self._inventory_bytes_v318-=removed[1]
+        return record
+
     @_reuse_analysis_v315
-    def page(self,number,zoom=1.,original=False,thumbnail=False,reading=False):
+    def page_capabilities_v318(self,number,revision,original=False,needs=('fonts','images')):
+        self._require_editing()
+        if revision!=self._revision(original):
+            raise EditError('La página cambió; vuelve a seleccionar la herramienta.')
+        keys=self._page_keys()
+        if not 0<=number<len(keys):raise EditError('La página seleccionada ya no existe.')
+        source=keys[number] if original else number
+        if source<0:raise EditError('La página no existe en el original.')
+        requested=set(needs)
+        if not requested<= {'fonts','images'}:raise EditError('Capacidad de página desconocida.')
+        data=self._view_source(original)
+        document=self._document(data,revision)
+        record=self._page_inventory_v318(document,revision,source,requested,source_data=data)
+        _retain_preparation_v318(self)
+        return {'number':number,'revision':revision,'original':bool(original),
+                'fonts':record.get('fonts',[]),'images':record.get('images',[]),
+                'inventory_ready_v318':{name:name in record for name in ('fonts','images')}}
+
+    @_reuse_analysis_v315
+    def page(self,number,zoom=1.,original=False,thumbnail=False,reading=False,lazy=False,capabilities=()):
+        if not set(capabilities)<={'fonts','images'}:raise EditError('Capacidad de página desconocida.')
         reading=bool(reading or not self._editing_prepared)
         data=self._view_source(original) if reading else (self.original if original else (self.pending or self.history.current))
         keys=self._page_keys()
@@ -493,64 +564,60 @@ class Session:
             raise EditError('Esta página se añadió al combinar PDFs y no existe en el original.')
         zoom=max(.1,min(float(zoom),4.))
         revision=self._revision(original)
-        key=(revision,number,round(zoom,3),thumbnail,bool(original),reading)
+        # The original's SHA is fixed, but page mappings can change after
+        # extraction/reordering. Include its actual source page in the key.
+        key=(revision,number,source_number,zoom,thumbnail,bool(original),reading)
         model_key=(revision,source_number,reading)
-        cached_png=None
-        if key in self.cache:
-            result=self.cache.pop(key);self.cache[key]=result
-            if thumbnail:return {**result,'model':None,'fonts':[],'images':[],'state':self.state()}
-            if model_key in self._model_cache:
-                cached=self._model_cache.pop(model_key);self._model_cache[model_key]=cached
-                model,fonts,images,_=cached
-                return {**result,'model':model,'fonts':fonts,'images':images,'state':self.state()}
-            cached_png=result['png']
-        doc=self._document(data,revision)
-        page=doc[source_number]
-        if page.rect.width*page.rect.height*zoom*zoom>16_000_000:
-            zoom=(16_000_000/(page.rect.width*page.rect.height))**.5
-        png=cached_png
+        cached=self.cache.pop(key,None)
+        png=cached['png'] if cached is not None else None
+        model=None;record={}
+        model_entry=self._model_cache.pop(model_key,None) if not thumbnail else None
+        document=None
+        if png is None or (not thumbnail and model_entry is None) or (not reading and not thumbnail):
+            document=self._document(data,revision)
         if png is None:
+            page=document[source_number]
+            if page.rect.width*page.rect.height*zoom*zoom>16_000_000:
+                zoom=(16_000_000/(page.rect.width*page.rect.height))**.5
             display_key=(revision,source_number)
-            if display_key in self._displaylists:
-                display=self._displaylists.pop(display_key)
-            else:display=page.get_displaylist(annots=1)
+            display=self._displaylists.pop(display_key,None)
+            if display is None:display=page.get_displaylist(annots=1)
             self._displaylists[display_key]=display
             while len(self._displaylists)>4:self._displaylists.popitem(last=False)
             png=display.get_pixmap(matrix=fitz.Matrix(zoom,zoom),alpha=False,colorspace=fitz.csRGB).tobytes('png')
-        model=None;fonts=[];images=[]
+        elif cached is not None:zoom=cached['zoom']
         if not thumbnail:
-            if model_key in self._model_cache:
-                cached=self._model_cache.pop(model_key);self._model_cache[model_key]=cached
-                model,fonts,images,_=cached
+            if model_entry is not None:
+                self._model_cache[model_key]=model_entry;model=model_entry[0]
             else:
-                model=extract_page(doc,source_number,None if reading or doc.needs_pass else data)
+                model=extract_page(document,source_number,None if reading or document.needs_pass else data)
                 if reading:model=replace(model,revision=revision)
-                fonts=[] if reading else self.resolver.inspect(doc,source_number)
-                if not reading:
-                    from .media import image_items
-                    images=image_items(doc,source_number)
-                estimate=(2048+len(model.glyphs)*512+len(fonts)*2048+len(images)*2048
+                estimate=(2048+len(model.glyphs)*768
                           +len(getattr(model,'selection_boundaries',()))*192)
-                self._model_cache[model_key]=(model,fonts,images,estimate);self._model_bytes+=estimate
+                self._model_cache[model_key]=(model,[],[],estimate);self._model_bytes+=estimate
                 while self._model_bytes>16*1024*1024 or len(self._model_cache)>12:
                     _,removed=self._model_cache.popitem(last=False);self._model_bytes-=removed[3]
+            if not reading:
+                record=self._page_inventory_v318(document,revision,source_number,
+                                                 capabilities if lazy else ('fonts','images'),source_data=data)
         instance=self._instance_key_at(number)
         changes=self._instance_changes(original=original).get(instance,[])
         geometry_changed=instance in self._geometry_changed_instances()
-        result={'png':png,'number':number,'zoom':zoom,'model':model,'fonts':fonts,'images':images,'changes':changes,
+        result={'png':png,'number':number,'zoom':zoom,'model':model,
+                'fonts':record.get('fonts',[]),'images':record.get('images',[]),'changes':changes,
+                'inventory_ready_v318':{name:name in record for name in ('fonts','images')},
                 'reading':reading,
                 'comparison_geometry_changed':geometry_changed,
                 'comparison_warning':('El recorte cambió el área visible. El original conserva sus dimensiones; los resaltados se muestran en las coordenadas de cada vista.' if geometry_changed else '')}
-        # PNG entries must not retain a model evicted from its own bounded
-        # cache. Rehydrate text/font/image metadata on a later cache hit.
-        self.cache[key]={name:value for name,value in result.items() if name not in ('model','fonts','images')}
-        self.cache_bytes+=len(png)-(len(cached_png) if cached_png is not None else 0)
+        self.cache[key]={'png':png,'zoom':zoom}
+        if cached is None:self.cache_bytes+=len(png)
         while self.cache_bytes>32*1024*1024 or len(self.cache)>12:
-            _,removed=self.cache.popitem(last=False)
-            self.cache_bytes-=len(removed['png'])
+            _,removed=self.cache.popitem(last=False);self.cache_bytes-=len(removed['png'])
+        _retain_preparation_v318(self)
         return {**result,'state':self.state()}
 
     @_reuse_analysis_v315
+    @pinned_source_write_v318
     def preview(self,request):
         self._require_editing()
         if self.issues:
@@ -667,6 +734,8 @@ class Session:
         from .objects import object_info
         return object_info(self.history.current,page)
 
+    @_reuse_analysis_v315
+    @pinned_source_write_v318
     def object_operation(self,page,operation,items=None,**kwargs):
         self._writable()
         from .objects import group_pdf,transform_objects_pdf
@@ -677,6 +746,8 @@ class Session:
         self._mark_page_edit(report,page)
         return self._put_preview(candidate,report)
 
+    @_reuse_analysis_v315
+    @pinned_source_write_v318
     def insert_text(self,request):
         self._writable()
         from .composition import AddTextRequest,insert_text_pdf
@@ -688,6 +759,7 @@ class Session:
         return self._put_preview(candidate,report)
 
     @_reuse_analysis_v315
+    @pinned_source_write_v318
     def image_operation(self,operation,page,rect=None,image_bytes=None,image_id=None,revision=None,
                         replacement_bytes=None,crop=None,rotation=0,fit_mode=None,
                         flip_horizontal=False,flip_vertical=False,
@@ -740,6 +812,7 @@ class Session:
         self._review_matches={m['id']:m for m in matches}
         return {'matches':matches}
 
+    @_reuse_analysis_v315
     def preview_replacements(self,match_ids,replacement,auto_width=True):
         self._require_editing()
         if self.issues:raise EditError('\n'.join(self.issues))
@@ -772,6 +845,7 @@ class Session:
             png=p.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False).tobytes('png')
         return {'png':png,'page':page}
 
+    @_reuse_analysis_v315
     def organize_pages(self,plan,paths=None):
         self._writable()
         from .pageops import organize_pages_pdf
@@ -800,6 +874,7 @@ class Session:
         self.protected_paths.update(str(Path(path).resolve()) for path in (paths or {}).values())
         return self._put_preview(candidate,report)
 
+    @_reuse_analysis_v315
     def delete_pages(self,expression):
         self._writable()
         from .pageops import parse_pages,delete_pages_pdf
@@ -812,15 +887,18 @@ class Session:
         self._put_preview(candidate,report)
         return self.commit()
 
+    @_reuse_analysis_v315
     def extract_pages(self,expression,path):
         self._writable()
         from .pageops import parse_pages,extract_pages_pdf
         self._safe_destination(path)
         pages=parse_pages(expression,len(self._page_keys(False)))
         candidate,report=extract_pages_pdf(self.history.current,pages)
-        output=atomic_save(candidate,path,self.path)
+        from .validation_evidence_v318 import validated_snapshot_v318
+        output=atomic_save(candidate,path,self.path,validation_proof=validated_snapshot_v318(candidate))
         return {'path':output,'report':report,'state':self.state()}
 
+    @_reuse_analysis_v315
     def preview_replace_pages_v150(self,expression,path,source_expression):
         self._writable()
         from .pageops import parse_pages
@@ -846,6 +924,7 @@ class Session:
         self.protected_paths.add(str(source_path))
         return self._put_preview(candidate,report)
 
+    @_reuse_analysis_v315
     def preview_crop_pages_v150(self,expression,margins):
         self._writable()
         from .pageops import parse_pages
@@ -861,6 +940,7 @@ class Session:
                       _region_translations=shifts,_geometry_changed_instances=changed)
         return self._put_preview(candidate,report)
 
+    @_reuse_analysis_v315
     def split_document_v150(self,destination,expression=None,pages_per_part=None):
         self._writable()
         from .page_tools_v150 import parse_split_groups,split_pdf
@@ -902,6 +982,7 @@ class Session:
         return {'destination':report['destination'],'files':report['files'],
                 'report':report,'state':self.state()}
 
+    @_reuse_analysis_v315
     def merge(self,paths):
         self._writable()
         if not paths:
@@ -982,6 +1063,7 @@ class Session:
         except OSError:result['notice']='PDF guardado; no se pudo actualizar la recuperación local.'
         return result
 
+    @_reuse_analysis_v315
     def save(self,path,reading_copy=False):
         clean=(self.history.revision==self.saved_digest and self.pending is None
                and not self.history.metadata.get('draft') and not self.recovered_draft)
@@ -1010,7 +1092,9 @@ class Session:
             from .document_ops_v170 import save_metadata_snapshot
             result=save_metadata_snapshot(self.history.current,path,protected_paths=self.protected_paths)
         else:
-            result=atomic_save(self.history.current,path,self.path)
+            from .validation_evidence_v318 import validated_snapshot_v318
+            result=atomic_save(self.history.current,path,self.path,
+                               validation_proof=validated_snapshot_v318(self.history.current))
         self.saved_digest=self.history.revision
         self.history.metadata['last_save_path']=str(Path(path).resolve())
         try:self._checkpoint()
@@ -1025,11 +1109,13 @@ class Session:
             return [{'page':p.number,'width':p.rect.width,'height':p.rect.height}
                     for p in document]
 
+    @_reuse_analysis_v315
     def signature_preview(self, **payload):
         self._writable()
         from .signing import preview_signature
         return preview_signature(self.history.current, **payload)
 
+    @_reuse_analysis_v315
     def sign_pdf(self,path,certificate_path='',password='',reason='',location='',
                  certificate_thumbprint='',certificate_store='CurrentUser',visible_signature=None):
         """Export the committed snapshot; signed bytes never enter edit history."""
@@ -1073,7 +1159,7 @@ class Session:
     def associate(self,name,path):
         self._require_editing()
         self.resolver.associate(name,path)
-        self._clear_cache()
+        self._clear_cache(drop_views=True)
         return {'state':self.state()}
 
     def font_evidence(self,page,ids,revision,original=False):
@@ -1110,8 +1196,11 @@ class Session:
         if self._pending_digest:clear_readonly_cache(self._pending_digest)
 
     def close(self):
+        _prepared_sessions_v318.pop(self.session_id,None)
         cache=getattr(self,'_analysis_cache_v315',None)
         if cache is not None:cache.clear()
+        evidence=getattr(self,'_validation_evidence_v318',None)
+        if evidence is not None:evidence.clear()
         self._cleanup_print()
         self._close_documents()
         self._release_rich_analysis_v305()
@@ -1121,6 +1210,22 @@ class Session:
 
 _session=None
 _sessions=OrderedDict()
+_prepared_sessions_v318=OrderedDict()
+
+
+def _retain_preparation_v318(session):
+    """A three-tab LRU with a shared 256 MiB retained-value budget.
+
+    MuPDF documents/display lists are separately bounded and closed on tab
+    suspension. Eviction drops preparation only; immutable history remains.
+    """
+    _prepared_sessions_v318.pop(session.session_id,None)
+    _prepared_sessions_v318[session.session_id]=session
+    while _prepared_sessions_v318 and (
+            len(_prepared_sessions_v318)>3 or
+            sum(value._preparation_bytes_v318() for value in _prepared_sessions_v318.values())>256*1024*1024):
+        _,old=_prepared_sessions_v318.popitem(last=False)
+        old._evict_preparation_v318()
 
 
 def _activate(identifier):
@@ -1130,6 +1235,7 @@ def _activate(identifier):
     if _session is not new:
         if _session:_session.suspend()
         new.resume();_session=new
+    _retain_preparation_v318(new)
     return new
 
 
@@ -1143,6 +1249,7 @@ def _attach(new,retain_existing=False):
         if _session and _session not in _sessions.values():_session.close()
         _sessions.clear()
     _sessions[new.session_id]=new;_session=new
+    _retain_preparation_v318(new)
 
 
 def _install_v200_tools(command):
@@ -1159,26 +1266,41 @@ def dispatch(command,payload=None):
     """Keep cancellation control outside request values and session metadata."""
     from .draft_control_v305 import controlled_draft, DraftCancelled
     payload=dict(payload or {})
+    def invoke():
+        # Activate first: a queued request may address a different tab. Never
+        # let parser or validation evidence cross its originating Session.
+        excluded=('open','combine','recover','convert_office','list_recovery','discard_recovery',
+                  'list_sessions','close_all')
+        if command not in excluded and 'session_id' in payload:
+            _activate(payload['session_id'])
+        if command not in excluded and _session is not None:
+            return _session_dispatch_v318(_session,command,payload)
+        return _dispatch_command(command,payload)
     search_control=payload.pop('_search_control_v306',None)
     if command=='search' and search_control is not None:
         try:
             with controlled_draft(search_control):
-                return _dispatch_command(command,payload)
+                return invoke()
         except DraftCancelled:
             return {'search_cancelled_v306':True}
     control=payload.pop('_draft_control_v305',None)
     if control is None or command not in ('rich_preview','rich_prepare'):
-        return _dispatch_command(command,payload)
+        return invoke()
     started=False
     try:
         with controlled_draft(control):
             started=True
-            return _dispatch_command(command,payload)
+            return invoke()
     except DraftCancelled:
         if started and _session is not None:
             _session._prepared_rich=None
             _session._validated_rich=None
         return {'draft_cancelled_v305':True}
+
+
+@_reuse_analysis_v315
+def _session_dispatch_v318(session,command,payload):
+    return _dispatch_command(command,payload)
 
 
 def _dispatch_command(command,payload=None):
@@ -1227,9 +1349,10 @@ def _dispatch_command(command,payload=None):
         result=list_signing_certificates()
         if _session is not None:
             result['pages']=_session.signing_pages()
-            result['visible_signature_error']=(
-                'Este PDF está etiquetado. Puedes firmarlo sin sello visible; añadir el sello '
-                'requiere integrar su campo en la estructura accesible.' if _session.tagged else '')
+            # The signing engine now associates visible widgets with the
+            # accessible tree and validates that exact output. Geometry and
+            # malformed structure errors remain document-specific checks.
+            result['visible_signature_error']=''
         return result
     if command=='font_catalog':
         if _session is not None and not _session._editing_prepared:
@@ -1320,6 +1443,7 @@ def _dispatch_command(command,payload=None):
                                  protected_paths=_session.protected_paths,**payload)
         return {**result,'state':_session.state()}
     if command=='page': return _session.page(**payload)
+    if command=='page_capabilities_v318':return _session.page_capabilities_v318(**payload)
     if command=='preview': return _session.preview(payload['request'])
     if command=='rich_selection': return _session.rich_selection(**payload)
     if command=='rich_redistribute': return _session.rich_redistribute(**payload)

@@ -31,7 +31,7 @@ def test_source_precision_is_compared_as_serialized_and_move_stays_exact():
 
 def test_real_writer_operator_change_is_still_rejected(monkeypatch):
     import pdfmodder.engine as engine
-    original=engine.full_write
+    original=engine.transaction_write_v318
     def tamper(doc):
         output=original(doc)
         with fitz.open(stream=output,filetype='pdf') as result:
@@ -39,6 +39,6 @@ def test_real_writer_operator_change_is_still_rejected(monkeypatch):
             result.update_stream(x,b'1 0 0 1 1 0 cm\n'+page.read_contents());page.set_contents(x)
             return result.tobytes()
     data,model,ids=sample()
-    monkeypatch.setattr(engine,'full_write',tamper)
+    monkeypatch.setattr(engine,'transaction_write_v318',tamper)
     with pytest.raises(EditError,match='alteró operadores'):
         edit_pdf(data,EditRequest(0,ids,dx=3,dy=2))

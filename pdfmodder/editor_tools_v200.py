@@ -57,7 +57,7 @@ def install_editor_tools_v200(Session):
                 'text':model.text([g.id for g in selected]),'ids':[g.id for g in selected],
                 'state':self.state()}
 
-    def print_pages_v200(self, pages=None, dpi=300, *, revision=None, control=None, layout_page=None):
+    def print_pages_v200(self, pages=None, dpi=300, *, revision=None, control=None, layout_page=None, raw_rgb=False):
         if self.pending is not None:
             raise EditError('Acepta o cancela la vista previa antes de imprimir.')
         dpi=int(dpi)
@@ -76,7 +76,10 @@ def install_editor_tools_v200(Session):
                 folder=tempfile.TemporaryDirectory(prefix='pdfmodder-print-')
                 self._print_folder_v200=folder
                 result=[]
-                with self._open(data) as doc:
+                from .printing_context_v318 import print_context_v318
+                context = print_context_v318(self, data, current_revision)
+                doc = context.document
+                with nullcontext():
                     if not (doc.permissions & fitz.PDF_PERM_PRINT):
                         raise EditError('El documento no permite imprimir con las credenciales aportadas.')
                     if not (doc.permissions & fitz.PDF_PERM_PRINT_HQ):
@@ -93,15 +96,25 @@ def install_editor_tools_v200(Session):
                     total=0
                     for index,number in enumerate(numbers):
                         checkpoint()
-                        page=print_annotation_page_v314(doc,doc[number])
+                        page=doc[number]
+                        if number not in context.prepared_pages:
+                            page=print_annotation_page_v314(doc,page)
+                            context.prepared_pages.add(number)
                         checkpoint()
                         scale=dpi/72.
-                        # The existing raster format and quality cap stay unchanged.
+                        # Preserve the existing 24 MP cap; only transport changes.
                         scale=min(scale,(24_000_000/(page.rect.width*page.rect.height))**.5)
                         pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False,colorspace=fitz.csRGB)
                         checkpoint()
-                        target=Path(folder.name)/f'{index:05}.png'
-                        pix.save(target)
+                        target=Path(folder.name)/f'{index:05}.{"ppm" if raw_rgb else "png"}'
+                        if raw_rgb:
+                            # Lossless P6 RGB: avoid PNG compression and decoding
+                            # for a page that is consumed once by the spool thread.
+                            with target.open('wb') as stream:
+                                stream.write(f'P6\n{pix.width} {pix.height}\n255\n'.encode('ascii'))
+                                stream.write(pix.samples_mv)
+                        else:
+                            pix.save(target)
                         del pix
                         checkpoint()
                         total+=target.stat().st_size

@@ -8,6 +8,8 @@ from pdfmodder import clipboard_ui_v170 as ui
 
 
 class Action:
+    def __init__(self):self.enabled=True
+    def isEnabled(self):return self.enabled
     def setEnabled(self,value):self.enabled=bool(value)
 
 

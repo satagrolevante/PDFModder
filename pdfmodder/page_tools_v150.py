@@ -25,7 +25,9 @@ from .pageops import (
     organize_pages_pdf, parse_pages,
 )
 from .tagged import assert_structure
-from .validation import _canonical, assert_characters, assert_pixels, related, trace_chars
+from .validation import (_canonical, assert_characters, assert_pixels, related,
+                         trace_chars, assert_text_object_structure)
+from .validation_evidence_v318 import validated_result_v318
 
 
 def _page_count(data):
@@ -38,6 +40,7 @@ def _page_count(data):
         raise EditError("Se necesita un PDF válido con al menos una página.") from exc
 
 
+@validated_result_v318
 def replace_pages_pdf(data: bytes, pages: list[int], replacement: bytes,
                       replacement_pages: list[int] | None = None):
     """Replace specified 0-based positions, one complete page per position.
@@ -139,6 +142,7 @@ def _write_crop_boxes(reader, pdf_boxes):
     return stream.getvalue()
 
 
+@validated_result_v318
 def crop_pages_pdf(data: bytes, pages: list[int], margins: tuple[float, float, float, float]):
     """Crop by nonnegative displayed left/top/right/bottom margins in points.
 
@@ -189,12 +193,34 @@ def crop_pages_pdf(data: bytes, pages: list[int], margins: tuple[float, float, f
                 raise EditError("El recorte alteró los marcadores.")
             page_catalog.validate([reader], independent, [{n: n for n in range(len(doc))}])
             assert_structure(data, output)
+            from .page_content_proof_v318 import MappedPageContentProofV318
+            proof = MappedPageContentProofV318(data, output)
+            expected_crops = {number: ArrayObject([FloatObject(v) for v in values])
+                              for number, values in pdf_boxes}
             stats = []
             for number in range(len(doc)):
                 expected, copied = doc[number], result[number]
-                if (tuple(expected.cropbox) != tuple(copied.cropbox)
-                        or expected.rotation != copied.rotation
-                        or _page_properties(reader, number) != _page_properties(independent, number)):
+                geometry = lambda page: (tuple(page.mediabox), tuple(page.cropbox),
+                    tuple(page.bleedbox), tuple(page.trimbox), tuple(page.artbox),
+                    page.rotation, tuple(page.rect))
+                raw_geometry = lambda page: _semantic({key: page[key] for key in
+                    ('/MediaBox', '/BleedBox', '/TrimBox', '/ArtBox', '/Rotate', '/UserUnit') if key in page})
+                if (geometry(expected) != geometry(copied)
+                        or raw_geometry(reader.pages[number]) != raw_geometry(independent.pages[number])):
+                    raise EditError(f"El recorte alteró propiedades ajenas de la página {number + 1}.")
+                if _semantic(expected_crops.get(number, reader.pages[number].get('/CropBox'))) != _semantic(
+                        independent.pages[number].get('/CropBox')):
+                    raise EditError(f"El recorte no conserva exactamente la caja prevista de la página {number + 1}.")
+                if (_annotation_details(reader, number) != _annotation_details(independent, number)
+                        or _raw_link_targets(reader, number) != _raw_link_targets(independent, number)
+                        or _canonical(expected.get_links()) != _canonical(copied.get_links())):
+                    raise EditError(f"El recorte alteró anotaciones o destinos de la página {number + 1}.")
+                if (proof.unchanged(number, number)
+                        and _annotation_details(reader, number, exact_numbers=True)
+                        == _annotation_details(independent, number, exact_numbers=True)):
+                    stats.append({"page": number, **proof.report(number, number)})
+                    continue
+                if _page_properties(reader, number) != _page_properties(independent, number):
                     raise EditError(f"El recorte alteró propiedades ajenas de la página {number + 1}.")
                 if (expected.read_contents() != copied.read_contents()
                         or _font_programs(expected) != _font_programs(copied)
@@ -206,6 +232,7 @@ def crop_pages_pdf(data: bytes, pages: list[int], margins: tuple[float, float, f
                     raise EditError(f"El recorte alteró imágenes, vectores, enlaces o anotaciones de la página {number + 1}.")
                 assert_characters(trace_chars(expected), copied)
                 stats.append({"page": number, **assert_pixels(expected, copied, excluded=())})
+            assert_text_object_structure(output, reader=independent)
     return output, {"verified": True, "operation": "crop_pages", "page_count": len(reader.pages),
                     "writer": "pypdf", "independent_renderer": "MuPDF",
                     "page_map": list(range(len(reader.pages))), "crop_boxes": boxes, "pages": stats,

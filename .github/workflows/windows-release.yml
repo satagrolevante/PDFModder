@@ -93,6 +93,16 @@ jobs:
           tests/test_auto_overlap_v315.py tests/test_canvas_border_v150.py
           tests/test_owned_text_v316.py tests/test_auto_adapt_v316.py
           tests/test_preserved_graphics_v316.py tests/test_image_transactions_v316.py
+          tests/test_manual_signatures_v317.py tests/test_signature_draw_ui_v317.py
+          tests/test_signature_dialog_v317.py tests/test_signature_manual_appearance_v317.py
+          tests/test_signatures_panel_v317.py tests/test_signature_tagged_deletion_v317.py
+          tests/test_clipboard_fast_v318.py tests/test_split_content_v318.py
+          tests/test_scoped_validation_v318.py tests/test_tagged_reuse_v318.py
+          tests/test_tagged_move_v318.py tests/test_validation_evidence_v318.py
+          tests/test_tagged_signature_v318.py tests/test_print_background_v318.py
+          tests/test_prepared_views_v318.py tests/test_lazy_page_ui_v318.py
+          tests/test_source_analysis_v318.py tests/test_image_validation_reuse_v318.py
+          tests/test_transaction_write_v318.py
           tests/test_page_fingerprint.py tests/test_tagged_validation_cache.py
           tests/test_tagged_page_proof.py tests/test_unchanged_page_validation.py
           tests/test_text_structure_reuse.py tests/test_atomic_save_exact.py
@@ -132,7 +142,7 @@ jobs:
   publish:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.16-publicacion')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.18-publicacion')
     needs: build
     runs-on: windows-2025
     permissions:

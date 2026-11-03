@@ -345,6 +345,17 @@ def assert_text_object_structure(data, *, reader=None, tagged_structure=None,
     falls back to ordinary parsing; UI validation flags never authorize reuse.
     """
     try:
+        if tagged_structure is None:
+            # Page operations may already have independently rebuilt this
+            # exact candidate's tree. Reuse its bound syntax/events too; a
+            # separate caller reader has no additional authority over bytes.
+            from . import tagged
+            cached=getattr(tagged,'_readonly_cache',None)
+            if (cached is not None and cached[2] is None and cached[1] is not None
+                    and cached[0]==(hashlib.sha256(data).digest(),len(data))
+                    and cached[1].data==bytes(data)):
+                tagged_structure=cached[1]
+                reader=None
         # A supplied parser is only evidence for its exact immutable bytes.
         # In particular a stale reader must never populate the graph cache for
         # a different candidate. Non-memory and non-strict readers fall back.
@@ -400,6 +411,17 @@ def assert_text_object_structure(data, *, reader=None, tagged_structure=None,
             inside = False
             invoked = []
             events=None
+            if operations is not None:
+                from .tagged_reuse_v318 import LazyPageOperationsV318
+                if (isinstance(operations, LazyPageOperationsV318)
+                        and operations.reader is reader
+                        and identity == ('page', operations.number)):
+                    # The candidate's exact contents have already proved the
+                    # source AST identity. Reuse only its primitive events,
+                    # then run every BT/ET and invoked-Form check below against
+                    # this candidate's own resources. Do not materialize an
+                    # unchanged page's entire AST just to obtain these events.
+                    events=operations.scope_events_v318()
             if operations is None:
                 from .analysis_reuse_v315 import stream_scope_events_v316
                 sources=resolved(stream)
@@ -751,12 +773,14 @@ def validate_transition(before_data, after_data, page_number, expected, excluded
                 raise EditError("Se alteraron imágenes, vectores, enlaces, anotaciones o campos; operación cancelada.")
             assert_characters(expected if i==page_number else trace_chars(a), b)
             report.append(assert_pixels(a,b,excluded if i==page_number else ()))
-    # Independent parser proves that output is a structurally readable PDF.
-    independent = PdfReader(io.BytesIO(after_data), strict=True)
+    # Rebuild the candidate's tagged relationships first. Its strict reader
+    # and exact bound page events also serve the independent syntax check.
+    from .tagged import assert_structure
+    structure=assert_structure(before_data,after_data,tagged_expected)
+    independent = (structure.reader if structure is not None
+                   else PdfReader(io.BytesIO(after_data), strict=True))
     if len(independent.pages) != len(report):
         raise EditError("El lector independiente no confirma el número de páginas.")
-    assert_text_object_structure(after_data, reader=independent,
+    assert_text_object_structure(after_data, reader=independent,tagged_structure=structure,
                                  before_data=before_data,unchanged_pages=unchanged_pages)
-    from .tagged import assert_structure
-    assert_structure(before_data,after_data,tagged_expected)
     return {'pages':report, 'independent_parser':'pypdf', 'verified':True}

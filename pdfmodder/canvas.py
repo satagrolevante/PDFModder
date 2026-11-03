@@ -600,7 +600,8 @@ class PdfCanvas(QGraphicsView):
         if selected and not self.reading_mode:
             bounds = self._text_resize_rect or self.selection_rect_v300 or union(g.bbox for g in selected)
             self._rect_item(bounds, "#007cc2", None, True)
-            if not self.read_only and not self.editor.isVisible():
+            if (not self.read_only and not self.editor.isVisible()
+                    and self.interaction_mode!='move'):
                 self._draw_handles(bounds)
             if self.show_guides:
                 r = self.scene_rect(bounds)
@@ -707,7 +708,10 @@ class PdfCanvas(QGraphicsView):
         if self.ids and not self.read_only:
             selected=self.model.selected(self.ids)
             bounds=self.selection_rect_v300 or union(g.bbox for g in selected)
-            handle=self._handle_at(bounds,event.position().toPoint())
+            # At low zoom, resize hot spots can cover an entire short line.
+            # An explicit Move tool must always keep that gesture available.
+            handle=(self._handle_at(bounds,event.position().toPoint())
+                    if self.interaction_mode!='move' else None)
             if handle:
                 self._text_resize=handle
                 self._press=point

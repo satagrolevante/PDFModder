@@ -11,16 +11,8 @@ from .printing_v201 import print_job_pages_v201, printer_capabilities_v201
 class PrintingUiV314Mixin:
     @staticmethod
     def _release_print_images_v314(pages):
-        for page in pages:
-            path = Path(page['path'])
-            if path.parent.name.startswith('pdfmodder-print-') and path.suffix == '.png' and path.stem.isdigit():
-                try:
-                    path.unlink(missing_ok=True)
-                    path.parent.rmdir()
-                except OSError:
-                    # The worker also owns this temporary directory and cleans
-                    # it on its next request or when the document closes.
-                    pass
+        from .printing_background_v318 import release_print_pages_v318
+        release_print_pages_v318(pages)
 
     def choose_print_v200(self):
         if not self.state or self.busy or self.state.get('preview'):
@@ -138,10 +130,11 @@ class PrintingUiV314Mixin:
             numbers = print_job_pages_v201(printer, dialog.selected_pages())
             if not numbers:
                 raise ValueError('Selecciona al menos una página.')
-            from .printing_device_v314 import PrintSpoolV314
-            spool = PrintSpoolV314(printer, settings)
+            from .printing_background_v318 import BackgroundPrintSpoolV318
+            spool = BackgroundPrintSpoolV318(printer, settings)
             context.update(job=(numbers, settings, printer), spool=spool, index=0,
-                           preview_wanted=None, quality_noted=None, ticket=context['print_control'].ticket())
+                           preview_wanted=None, quality_noted=None, finishing_v318=False,
+                           spool_error_v318=None, ticket=context['print_control'].ticket())
             context['preview_control'].invalidate()
             dialog.preview_timer.stop()
             dialog.set_preparing(True)
@@ -153,20 +146,37 @@ class PrintingUiV314Mixin:
     def _pump_print_v314(self, context):
         if context['closed']:
             return
-        if not self._print_current_v314(context):
+        self._drain_print_spool_v318(context)
+        if context['closed']:
+            return
+        if not self._print_current_v314(context) and not context['cancelled']:
             self._cancel_print_v314(context)
+            return
+        if context['cancelled']:
+            if context['inflight'] is None and context['spool'] is None:
+                self._finish_cancel_v314(context)
+            else:
+                context['timer'].start()
+            return
+        if context.get('spool_error_v318'):
+            context['timer'].start()
+            return
+        if context['spool'] is not None and context['spool'].busy:
+            context['timer'].start()
             return
         if context['inflight'] is not None or self.busy:
             context['timer'].start()
-            return
-        if context['cancelled']:
-            self._finish_cancel_v314(context)
             return
         job = context['job']
         if job is not None:
             numbers, settings, _printer = job
             if context['index'] >= len(numbers):
-                self._complete_print_v314(context)
+                if not context.get('finishing_v318'):
+                    context['finishing_v318'] = True
+                    context['dialog'].status.setText('Finalizando el envío a la impresora…')
+                    if not context['spool'].finish():
+                        self._print_error_v314(context, 'No se pudo finalizar la impresión.')
+                context['timer'].start()
                 return
             kind, number, dpi = 'print', numbers[context['index']], settings['dpi']
             ticket = context['ticket']
@@ -229,28 +239,19 @@ class PrintingUiV314Mixin:
             try:
                 dialog.set_spooling(True)
                 numbers, settings, _ = context['job']
-                if context['index'] == 0:
-                    context['spool'].settings['sheet_page_v314'] = context['geometries'][numbers[0]]
+                anchor = context['geometries'][numbers[0]] if context['index'] == 0 else None
                 dialog.set_progress(context['index'], len(numbers), 'Enviando')
-                if not context['spool'].push(pages[0]):
-                    raise RuntimeError(context['spool'].error or 'No se pudo enviar la página.')
-                context['index'] += 1
-                dialog.set_progress(context['index'], len(numbers), 'Enviado')
-                # Preserve the established quality limit/notice, without adding
-                # new resolution controls or a different rendering path.
-                if (pages[0]['dpi'] < settings['dpi']-.1 and
-                        (context['quality_noted'] is None or pages[0]['dpi'] < context['quality_noted']-.1)):
-                    self._notice(f"Resolución efectiva limitada a {pages[0]['dpi']:.1f} ppp por memoria o permisos del documento.")
-                    context['quality_noted'] = pages[0]['dpi']
+                if not context['spool'].push(pages[0], sheet_page=anchor):
+                    self._release_print_images_v314(pages)
+                    raise RuntimeError('No se pudo iniciar el envío de la página.')
+                # The spool thread owns the prepared file until painting ends.
                 context['timer'].start(0)
             except Exception as exc:
                 self._print_error_v314(context, str(exc))
-            finally:
-                self._release_print_images_v314(pages)
 
         first = context['job'][0][0] if context['job'] is not None else context['dialog'].selected_pages()[0]
         payload = {'pages': [number], 'dpi': dpi, 'revision': context['revision'], 'control': ticket,
-                   'layout_page': first}
+                   'layout_page': first, 'raw_rgb': True}
         if not self._submit('print_pages_v200', payload, prepared):
             context['inflight'] = None
             if kind == 'preview':
@@ -261,8 +262,6 @@ class PrintingUiV314Mixin:
     def _complete_print_v314(self, context):
         dialog = context['dialog']
         try:
-            if not context['spool'].finish():
-                raise RuntimeError(context['spool'].error or 'No se pudo finalizar la impresión.')
             settings = context['job'][1]
             context['spool'] = None
             context['job'] = None
@@ -279,17 +278,18 @@ class PrintingUiV314Mixin:
     def _cancel_print_v314(self, context):
         if context['closed']:
             return
+        if context['cancelled']:
+            context['timer'].start()
+            return
         context['cancelled'] = True
         context['preview_control'].invalidate()
         context['print_control'].invalidate()
         context['preview_wanted'] = None
         spool = context['spool']
         if spool is not None:
-            if not spool.cancel():
-                self._notice('Preparación detenida. No se pudo confirmar la retirada del trabajo; comprueba la cola de impresión de Windows.')
-            context['spool'] = None
+            spool.cancel()
         context['dialog'].status.setText('Cancelando la impresión…')
-        if context['inflight'] is None:
+        if context['inflight'] is None and context['spool'] is None:
             self._finish_cancel_v314(context)
         else:
             context['timer'].start()
@@ -306,15 +306,66 @@ class PrintingUiV314Mixin:
         context['inflight'] = None
         context['preview_inflight'] = None
         if context['cancelled']:
-            self._finish_cancel_v314(context)
+            if context['spool'] is None:
+                self._finish_cancel_v314(context)
+            else:
+                context['spool'].cancel()
+                context['timer'].start()
             return
         context['print_control'].invalidate()
         if context['spool'] is not None:
+            context['spool_error_v318'] = message
             context['spool'].cancel()
-            context['spool'] = None
+            context['dialog'].status.setText('Deteniendo el envío…')
+            context['timer'].start()
+            return
+        self._show_print_error_v318(context, message)
+
+    def _show_print_error_v318(self, context, message):
         context['job'] = None
+        context['spool_error_v318'] = None
         context['timer'].stop()
         dialog = context['dialog']
         dialog.set_spooling(False)
         dialog.set_preparing(False)
         dialog.error.setText(message)
+
+    def _drain_print_spool_v318(self, context):
+        spool = context['spool']
+        if spool is None:
+            return
+        for record in spool.poll():
+            kind = record['kind']
+            if kind == 'push' and record['ok']:
+                if not context['cancelled'] and not context.get('spool_error_v318'):
+                    context['index'] += 1
+                    numbers, settings, _ = context['job']
+                    context['dialog'].set_progress(context['index'], len(numbers), 'Enviado')
+                    dpi = record.get('dpi')
+                    if (dpi is not None and dpi < settings['dpi']-.1 and
+                            (context['quality_noted'] is None or dpi < context['quality_noted']-.1)):
+                        self._notice(f'Resolución efectiva limitada a {dpi:.1f} ppp por memoria o permisos del documento.')
+                        context['quality_noted'] = dpi
+                continue
+            if kind == 'finish' and record['ok'] and not context['cancelled']:
+                context['spool'] = None
+                self._complete_print_v314(context)
+                return
+            if kind == 'cancel':
+                context['spool'] = None
+                if not record['ok']:
+                    self._notice('Preparación detenida. No se pudo confirmar la retirada del trabajo; comprueba la cola de impresión de Windows.')
+                if context.get('spool_error_v318'):
+                    self._show_print_error_v318(context, context['spool_error_v318'])
+                elif context['cancelled'] and context['inflight'] is None:
+                    self._finish_cancel_v314(context)
+                return
+            context['spool'] = None
+            if context['cancelled']:
+                if kind == 'finish' and record['ok']:
+                    self._notice('El trabajo ya se había enviado; comprueba la cola de impresión si necesitas retirarlo.')
+                if context['inflight'] is None:
+                    self._finish_cancel_v314(context)
+            else:
+                self._show_print_error_v318(context, record.get('error') or 'No se pudo imprimir.')
+            return

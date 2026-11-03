@@ -114,10 +114,12 @@ def settled(qtbot,window,*,allow_document_issues=False):
                    and not getattr(window,'_rich_accept_pending',False)
                    and getattr(window,'_rich_pending',None) is None
                    and getattr(window,'_save_transaction_v300',None) is None
+                   and not window._navigation_pending_v310()
+                   and not getattr(window,'_read_intents_v310',())
                    and not (getattr(window,'_rich_active',False) and window._rich_timer.isActive()),timeout=30000)
     if window.last_error:
         assert allow_document_issues and window.last_error in window.state.get('issues',[]),window.last_error
-    if window.application_mode=='reading' and window.model is not None:
+    if window.application_mode=='reading' and window.state:
         window._tools_mode_v171(True)
         qtbot.waitUntil(lambda:window.application_mode=='editing' and not window.busy
                        and not window._mode_preparing_v171 and window.model is not None
@@ -254,6 +256,9 @@ def test_tagged_justified_word_can_be_edited_again_after_save_and_reopen(qtbot,l
     source_bytes=source.read_bytes()
     window.open_document(source)
     settled(qtbot,window)
+    # Exercise explicit full-line justification. Automatic area adaptation
+    # intentionally composes the selected field while keeping neighbours fixed.
+    window.auto_adapt_box.setChecked(False)
     first=glyph_for(window,"PALABRA")
     original_line=window.model.selected(window.model.group(first,"line"))
     assert "".join(g.text for g in original_line)=="Mover PALABRA fin."

@@ -190,12 +190,15 @@ def verify_signed_pdf(data, expected_certificate_sha256=None):
         )
         if not intact or not valid:
             raise EditError('La comprobación criptográfica de la firma ha fallado.')
-        return {
+        report = {
             'cryptographic_integrity': True, 'covers_entire_file': True,
             'digest_algorithm': 'sha256', 'certificate_sha256': fingerprint,
             'trust_verified': False, 'revocation_checked': False,
             'trusted_timestamp': False,
         }
+        from .validation_evidence_v318 import remember_crypto_v318
+        remember_crypto_v318(data, fingerprint, report)
+        return report
     except EditError:
         raise
     except Exception:
@@ -277,15 +280,19 @@ def sign_pdf(data, certificate_path=None, password='', *, reason='', location=''
     report = _certificate_details(signer)
     # Complete rewrite removes old editing revisions before the signature's
     # own required incremental update. The normal export validator checks it.
-    from .engine import full_write
+    from .engine import transaction_write_v318
     from .validation import document_issues, validate_transition
     import pymupdf as fitz
-    with fitz.open(stream=data, filetype='pdf') as original:
-        issues = document_issues(data, original)
-        if issues:
-            raise EditError('\n'.join(issues))
-        canonical = full_write(original)
-    validate_transition(data, canonical, -1, [], [])
+    from .validation_evidence_v318 import canonical_snapshot_v318
+    def prepare():
+        with fitz.open(stream=data, filetype='pdf') as original:
+            issues = document_issues(data, original)
+            if issues:
+                raise EditError('\n'.join(issues))
+            prepared = transaction_write_v318(original)
+        validate_transition(data, prepared, -1, [], [])
+        return prepared
+    canonical = canonical_snapshot_v318(data, prepare)
     field_name = 'PDFModder_' + uuid.uuid4().hex
     metadata = signers.PdfSignatureMetadata(
         field_name=field_name, md_algorithm='sha256',
@@ -299,9 +306,17 @@ def sign_pdf(data, certificate_path=None, password='', *, reason='', location=''
         if appearance_geometry is not None:
             from .signature_appearance import CertificateStampStyle, signature_geometry
             appearance_geometry = signature_geometry(canonical, visible_signature)
-            style = CertificateStampStyle(certificate_der=signer.signing_cert.dump(), rotation=appearance_geometry['rotation'])
+            style = CertificateStampStyle(certificate_der=signer.signing_cert.dump(),
+                                          rotation=appearance_geometry['rotation'],
+                                          manual_signature_png=appearance_geometry.get('manual_signature_png'))
             field_spec = fields.SigFieldSpec(sig_field_name=field_name, on_page=appearance_geometry['page'],
                                              box=appearance_geometry['box'], readable_field_name='Firma digital del documento')
+        association = None
+        if appearance_geometry is not None:
+            # Associate the annotation before the CMS signature covers all bytes.
+            fields.append_signature_field(writer, field_spec)
+            from .tagged_signature_v318 import tag_signature_widget_v318
+            association = tag_signature_widget_v318(writer, field_name, appearance_geometry['page'])
         output = signers.PdfSigner(
             signature_meta=metadata, signer=signer, stamp_style=style,
             new_field_spec=field_spec,
@@ -314,6 +329,9 @@ def sign_pdf(data, certificate_path=None, password='', *, reason='', location=''
         signer = None
     if not output.startswith(canonical):
         raise EditError('La firma no ha conservado la copia PDF preparada.')
+    if appearance_geometry is not None:
+        from .tagged_signature_v318 import assert_tagged_signature_v318
+        assert_tagged_signature_v318(canonical, output, association)
     report.update(verify_signed_pdf(output, report['certificate_sha256']))
     report['visible_signature'] = None if appearance_geometry is None else {
         'page': appearance_geometry['page'], 'rect': appearance_geometry['rect'],
@@ -333,7 +351,9 @@ def atomic_save_signed(data, destination, *, protected_paths=(), certificate_sha
         original = Path(source).resolve()
         if target == original or (target.exists() and original.exists() and os.path.samefile(target, original)):
             raise EditError('Guarda la copia firmada en otra ruta para conservar el PDF original.')
-    verify_signed_pdf(data, certificate_sha256)
+    from .validation_evidence_v318 import crypto_evidence_v318
+    if crypto_evidence_v318(data, certificate_sha256) is None:
+        verify_signed_pdf(data, certificate_sha256)
     temporary = None
     try:
         fd, temporary = tempfile.mkstemp(prefix='.pdfmodder-firma-', suffix='.pdf', dir=target.parent)

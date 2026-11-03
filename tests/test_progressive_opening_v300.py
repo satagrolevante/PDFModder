@@ -82,15 +82,19 @@ def test_live_source_replacement_cannot_change_reading_comparison_or_revision(tm
     finally:session.close()
 
 
-def test_inactive_session_releases_buffers_and_reopens_its_snapshot(tmp_path):
+def test_inactive_session_closes_live_documents_and_retains_exact_prepared_values(tmp_path):
     path=pdf_file(tmp_path);session=Session(path,reading=True,history_dir=tmp_path)
     try:
         session.page(0,reading=True);session.reading_info(progressive=True,pages=[0,1])
         assert session._documents and session.cache
+        model=session.page(0,reading=True)['model']
+        geometries=dict(session._reading_info_cache)
         session.suspend()
-        assert not session._documents and not session.cache and not session._reading_info_cache
+        assert not session._documents and not session._displaylists
+        assert session.cache and session._reading_info_cache==geometries
         assert session.history._original is session.history._current is None
         session.resume()
+        assert session.page(0,reading=True)['model'] is model
         assert session.page(1,reading=True)['model'].number==1
         assert session.history._original is session.history._current is None
     finally:session.close()

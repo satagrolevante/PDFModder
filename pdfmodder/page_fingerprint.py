@@ -122,6 +122,7 @@ class _Graph:
     _OPAQUE = {"/LZWDecode", "/LZW", "/DCTDecode", "/DCT", "/JPXDecode",
                "/CCITTFaxDecode", "/CCF", "/JBIG2Decode"}
     _WHITESPACE = b"\x00\x09\x0a\x0c\x0d\x20"
+    _GLOBAL_KEYS = frozenset({"/OCProperties", "/OutputIntents", "/AcroForm"})
 
     def __init__(self, data, *, max_nodes, max_depth, max_stream_bytes,
                  max_total_stream_bytes):
@@ -144,9 +145,7 @@ class _Graph:
             raise _NoProof("Invalid catalog")
         self.pages = self.reader.pages
         self.page_count = len(self.pages)  # Resolve page-tree inheritance first.
-        self.global_hash = self.dictionary(self.root, 0, only={
-            "/OCProperties", "/OutputIntents", "/AcroForm",
-        })
+        self.global_hash = self.dictionary(self.root, 0, only=self._GLOBAL_KEYS)
 
     def check(self, depth):
         self.nodes += 1

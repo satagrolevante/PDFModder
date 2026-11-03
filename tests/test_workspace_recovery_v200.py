@@ -90,7 +90,7 @@ def test_recovery_rejects_modified_snapshot_and_path_escape(tmp_path):
     finally:session.close()
 
 
-def test_multidocument_sessions_keep_independent_history_and_suspend_caches(tmp_path,monkeypatch):
+def test_multidocument_sessions_keep_independent_history_and_prepared_views(tmp_path,monkeypatch):
     import pdfmodder.worker as worker
     monkeypatch.setattr(worker,'_session',None);monkeypatch.setattr(worker,'_sessions',worker.OrderedDict())
     first=make_pdf(tmp_path/'one.pdf');second=make_pdf(tmp_path/'two.pdf','Document two')
@@ -101,7 +101,7 @@ def test_multidocument_sessions_keep_independent_history_and_suspend_caches(tmp_
         worker.dispatch('commit',{'session_id':one});worker.dispatch('page',{'session_id':one,'number':0})
         old=worker._session
         two=worker.dispatch('open',{'path':str(second),'retain_existing':True,**options})['state']['session_id']
-        assert old.history._current is None and not old.cache and not old._documents and old.resolver is None
+        assert old.history._current is None and old.cache and not old._documents and old.resolver is None
         assert len(worker.dispatch('list_sessions')['sessions'])==2
         active=worker.dispatch('activate_session',{'session_id':one})['state']
         assert active['dirty'] and active['undo']

@@ -11,8 +11,10 @@ from pypdf.generic import FloatObject
 from .media import (_safe, _rect, _ops, _validate, _image_selection,
                     _write_image_transaction)
 from .model import EditError
+from .validation_evidence_v318 import validated_result_v318
 
 
+@validated_result_v318
 def transform_image_instance_pdf(data, page, image_id, rect=None, revision=None, *, rotation=0.):
     """Apply a clockwise delta around the visible frame centre, or map its box.
 
@@ -26,7 +28,7 @@ def transform_image_instance_pdf(data, page, image_id, rect=None, revision=None,
         raise EditError('Mueve o redimensiona y gira la imagen en operaciones separadas.')
     with fitz.open(stream=data, filetype='pdf') as doc:
         target = doc[page]
-        item = _image_selection(doc, page, image_id)
+        item = _image_selection(doc, page, image_id, source_data=data)
         from .tagged_image_v160 import TaggedImageTransform
         semantic_guard = TaggedImageTransform(data, page, item)
         if not item['editable']:
@@ -73,9 +75,9 @@ def transform_image_instance_pdf(data, page, image_id, rect=None, revision=None,
         doc.xref_set_key(target.xref, 'Contents', '['+' '.join(f'{xref} 0 R' for xref in contents)+']')
         expected_bbox = tuple(fitz.Rect(0, 0, 1, 1) * (fitz.Matrix(item['matrix_pdf']) * mapping * page_matrix))
         output = _write_image_transaction(doc)
+    accessibility = semantic_guard.validate(output)
     report = _validate(data, output, page, int(image_id), destination,
                        expected_bbox=expected_bbox, old_rect=original_rect)
-    accessibility = semantic_guard.validate(output)
     if accessibility is not None:
         report['accessibility'] = accessibility
     report.update(instance_only=True, pixels_preserved=True, rotation_clockwise=rotation,

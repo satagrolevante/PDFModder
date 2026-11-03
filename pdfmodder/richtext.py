@@ -20,12 +20,13 @@ from pypdf.generic import ArrayObject, ByteStringObject, ContentStream, NameObje
 
 from .clipping import CLIP_ISSUE, _advance, _raw, _serialize, _signature, _strings, operator_glyph_map
 from .clipped_layout import _state_at, _assert_typography
-from .engine import extract_page, full_write, _safe_selection, _safe_native_consolidation, validate_rgb
+from .engine import extract_page, full_write, transaction_write_v318, _safe_selection, _safe_native_consolidation, validate_rgb
 from .fonts import FontResolver, FontError, _font_metadata, normalized_name
 from .model import EditError, Glyph, intersects, union
 from .native_layout import _number, _compact_adjustments
 from .richmodels import RichTextRequest
 from .draft_control_v305 import checkpoint
+from .validation_evidence_v318 import validated_result_v318
 
 _BREAKS = '\n\u2028\t'
 _META_KEY = 'PDFModderRichText'
@@ -517,6 +518,7 @@ def _write_rich_transaction(doc):
     return output
 
 
+@validated_result_v318
 def edit_rich_pdf(data, request, resolver=None):
     """Compose, validate and return the exact final PDF candidate."""
     from .analysis_reuse_v315 import analysis_scope_v315
@@ -610,7 +612,7 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         return data, report
     if any(g.mode==3 and any(intersects(g.bbox,s.bbox) for s in selected) for g in others):
         raise EditError('La selección tiene OCR invisible superpuesto. Corrige esa capa por separado antes de usar formato por fragmentos.')
-    if any(abs(g.opacity-selected[0].opacity)>.001 for g in selected):
+    if not pure_delete and any(abs(g.opacity-selected[0].opacity)>.001 for g in selected):
         raise EditError('La selección mezcla opacidades. Edita cada opacidad en una sesión independiente.')
     checkpoint()
     reader,operations,shows,mapping=operator_glyph_map(data,request.page,model)
@@ -773,7 +775,18 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         natural.append(natural_width())
         rect=(rect[0],rect[1],rect[0]+max(.1,*natural),rect[3])
     from .auto_layout_v316 import adapt_rich_layout_v316
-    request,rect,adaptation=adapt_rich_layout_v316(request,tokens,rect,tuple(page_bounds & clip))
+    adaptation_limits=page_bounds & clip
+    if (source_metric_overhang and abs(rect[0]-bounds[0])<.025
+            and abs(rect[1]-bounds[1])<.025):
+        # Font metric boxes can extend outside a clipping cell while every
+        # painted pixel remains visible. Preserve the original vertical metric
+        # origin here; the unchanged clip, original face/baseline/size checks
+        # and independent ink checks below still govern the final result.
+        adaptation_limits=fitz.Rect(adaptation_limits.x0,
+            max(page_bounds.y0,min(adaptation_limits.y0,bounds[1])),
+            adaptation_limits.x1,
+            min(page_bounds.y1,max(adaptation_limits.y1,bounds[3])))
+    request,rect,adaptation=adapt_rich_layout_v316(request,tokens,rect,tuple(adaptation_limits))
     laid,lines,rect=_layout(request,tokens,rect)
     planned=[replace(first,id=-1,text=t['char'],origin=t['origin'],bbox=t['bbox'],trace_bbox=t['bbox'],
                      font=t['choice']['font_name'],size=t['size'],color=t['color'],line=t['line']) for t in laid]
@@ -1049,6 +1062,7 @@ def _add_rich_pdf(data,request,resolver):
     return output,report
 
 
+@validated_result_v318
 def move_rich_pdf(data, request, resolver=None):
     """Move native text while retaining its owned metadata and decorations."""
     from .analysis_reuse_v315 import analysis_scope_v315
@@ -1171,7 +1185,7 @@ def _move_rich_pdf(data, request, resolver=None):
                         signature[1] = list(shifted(origin))
         if groups:
             doc.xref_set_key(doc[request.page].xref, GROUP_KEY, fitz.get_pdf_str(json.dumps(groups, ensure_ascii=True)))
-        output = full_write(doc)
+        output = transaction_write_v318(doc)
     chosen = set(request.ids)
     planned = [replace(g, origin=shifted(g.origin), bbox=shifted(g.bbox), trace_bbox=shifted(g.trace_bbox)) for g in selected]
     expected = [g for g in model.glyphs if g.id not in chosen]+planned

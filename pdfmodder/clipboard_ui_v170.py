@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import Qt, QEvent, QMimeData, QByteArray, QBuffer, QIODevice
+from PySide6.QtCore import Qt, QEvent, QMimeData, QByteArray, QBuffer, QIODevice, QTimer
 from PySide6.QtGui import QImage, QAction, QTextCursor
 from PySide6.QtWidgets import QApplication, QWidget, QLineEdit, QTextEdit, QPlainTextEdit, QMenu
 
@@ -64,6 +64,7 @@ class ClipboardUiV170Mixin:
     def _create_clipboard_ui_v170(self):
         self._clipboard_placement_v170=None
         self._clipboard_menu_v170=None
+        self._init_fast_clipboard_v318()
         for attr,label,operation,key in (
                 ('copy_action_v170','Copiar','copy','Ctrl+C'),
                 ('cut_action_v170','Cortar','cut','Ctrl+X'),
@@ -85,12 +86,122 @@ class ClipboardUiV170Mixin:
         if hasattr(self.canvas,'text_context_requested'):
             self.canvas.text_context_requested.connect(self.text_context_v170)
         application=QApplication.instance()
-        application.clipboard().dataChanged.connect(self._refresh_clipboard_v170)
+        application.clipboard().dataChanged.connect(self._clipboard_changed_v318)
         application.focusChanged.connect(self._clipboard_focus_changed_v170)
         # AdvancedEditing installs the same window as an application filter.
         # Installing once more moves it last without creating a duplicate.
         application.installEventFilter(self)
         self._refresh_clipboard_v170()
+
+    def _init_fast_clipboard_v318(self):
+        self._clipboard_epoch_v318=0
+        self._clipboard_own_write_v318=False
+        self._clipboard_pending_v318=None
+        self._clipboard_paste_pending_v318=None
+        self._clipboard_copy_timer_v318=QTimer(self)
+        self._clipboard_copy_timer_v318.setSingleShot(True)
+        self._clipboard_copy_timer_v318.setInterval(40)
+        self._clipboard_copy_timer_v318.timeout.connect(self._enrich_clipboard_v318)
+        if hasattr(self,'error_raised'):
+            self.error_raised.connect(self._clipboard_failed_v318)
+
+    def _clipboard_changed_v318(self):
+        # Never retrieve external clipboard data here: Windows OLE providers
+        # may block. An ownership epoch also protects delayed enrichment from
+        # overwriting a later copy in this application or another program.
+        self._clipboard_epoch_v318+=1
+        if not self._clipboard_own_write_v318:
+            self._clipboard_pending_v318=None
+            self._clipboard_paste_pending_v318=None
+        self._refresh_clipboard_v170()
+
+    def _publish_clipboard_v318(self,mime):
+        self._clipboard_own_write_v318=True
+        try:QApplication.clipboard().setMimeData(mime)
+        finally:self._clipboard_own_write_v318=False
+
+    def _clipboard_failed_v318(self,*_):
+        pending=self._clipboard_pending_v318
+        if pending and pending.get('started') and self._command=='clipboard_copy':
+            self._clipboard_pending_v318=None
+            self._clipboard_paste_pending_v318=None
+
+    def _plain_copy_ready_v318(self):
+        model=getattr(self,'model',None)
+        state=getattr(self,'state',{})
+        canvas=self.canvas
+        safe_read=not self.busy or getattr(self,'_render_busy_v310',lambda:False)()
+        return bool(model and state.get('copy_allowed',False) and safe_read
+            and state.get('document_revision')==model.revision
+            and getattr(canvas,'model',None) is model and model.number==self.page_number
+            and not state.get('preview') and not self.compare_action.isChecked()
+            and not canvas.editor.isVisible() and not getattr(self,'_rich_loading',False)
+            and not getattr(self,'_rich_active',False)
+            and not getattr(self,'_navigation_pending_v310',lambda:False)()
+            and not canvas.selected_image())
+
+    def _copy_plain_v318(self):
+        if not self._plain_copy_ready_v318() or not self.canvas.ids:return False
+        selected=self.model.selected(self.canvas.ids)
+        if (len(selected)!=len(set(self.canvas.ids)) or not selected
+                or any(g.mode==3 or g.opacity<=0 for g in selected)):
+            return False
+        text=self.model.text(self.canvas.ids).replace('\u2028','\n')
+        if not text:return False
+        payload=self._clipboard_selection_v170()
+        mime=QMimeData();mime.setText(text)
+        self._publish_clipboard_v318(mime)
+        self._clipboard_pending_v318={
+            'epoch':self._clipboard_epoch_v318,'payload':payload,
+            'session':getattr(self,'_active_session_v200',None),'started':False}
+        self._clipboard_paste_pending_v318=None
+        self._clipboard_copy_timer_v318.start()
+        self._notice('Texto copiado. Preparando el formato editable en segundo plano…')
+        return True
+
+    def _enrich_clipboard_v318(self):
+        pending=self._clipboard_pending_v318
+        if not pending or pending['started']:return
+        if getattr(self,'_closed',False):
+            self._clipboard_pending_v318=None;return
+        if (pending['epoch']!=self._clipboard_epoch_v318
+                or pending['session']!=getattr(self,'_active_session_v200',None)
+                or pending['payload']['revision']!=self.state.get('document_revision')):
+            self._clipboard_pending_v318=None
+            self._clipboard_paste_pending_v318=None
+            return
+        # Clipboard enrichment must yield to a foreground dialog/gesture. A
+        # queued read starting inside a modal event loop can otherwise occupy
+        # the single worker exactly when that dialog accepts a modification.
+        if (self.busy or QApplication.activeModalWidget() is not None
+                or getattr(self,'_ui_mutation_locked_v310',lambda:False)()
+                or getattr(self.canvas,'pointer_gesture_pending',lambda:False)()):
+            self._clipboard_copy_timer_v318.start();return
+        if not self.state.get('copy_allowed',False):
+            self._clipboard_pending_v318=None
+            self._clipboard_paste_pending_v318=None
+            return
+        def copied(result):
+            if (self._clipboard_pending_v318 is not pending
+                    or pending['epoch']!=self._clipboard_epoch_v318):return
+            try:mime=bundle_mime_v170(result)
+            except (ValueError,TypeError,RuntimeError) as exc:
+                self._clipboard_pending_v318=None
+                self._clipboard_paste_pending_v318=None
+                self._error(str(exc));return
+            self._publish_clipboard_v318(mime)
+            self._clipboard_pending_v318=None
+            queued,self._clipboard_paste_pending_v318=self._clipboard_paste_pending_v318,None
+            if queued:
+                sid,revision,page,point=queued
+                if (sid==getattr(self,'_active_session_v200',None)
+                        and revision==self.state.get('document_revision') and page==self.page_number):
+                    self.clipboard_paste_v170(point)
+                else:self._notice('El destino cambió. Vuelve a pulsar Pegar.')
+        request=dict(pending['payload'],_background_ui=True)
+        if pending['session'] is not None:request['session_id']=pending['session']
+        pending['started']=bool(self._submit('clipboard_copy',request,copied))
+        if not pending['started']:self._clipboard_copy_timer_v318.start()
 
     def _clipboard_focus_changed_v170(self,old,new):
         if not getattr(self,'_closed',False):self._refresh_clipboard_v170()
@@ -140,7 +251,8 @@ class ClipboardUiV170Mixin:
         selected=bool(self.canvas.ids or image)
         ready=self._clipboard_ready_v170()
         editable=self._clipboard_ready_v170(True)
-        set_ui_enabled_v310(self, self.copy_action_v170, ready and selected)
+        fast_ready=bool(getattr(self,'model',None) and self._plain_copy_ready_v318())
+        set_ui_enabled_v310(self, self.copy_action_v170, (ready or fast_ready) and selected)
         set_ui_enabled_v310(self, self.cut_action_v170, editable and selected and (not image or image.get('editable')))
         set_ui_enabled_v310(self, self.delete_action_v170, editable and selected and (not image or image.get('editable')))
         set_ui_enabled_v310(self, self.paste_action_v170, editable and has_paste)
@@ -173,10 +285,13 @@ class ClipboardUiV170Mixin:
 
     def _copy_object_v170(self,cut):
         if self._native_clipboard_v170('cut' if cut else 'copy'):return
+        if not cut and self._copy_plain_v318():return
         if not self._clipboard_ready_v170(cut) or not (self.canvas.ids or self.canvas.selected_image()):return
         payload=self._clipboard_selection_v170()
+        source_session=getattr(self,'_active_session_v200',None)
         def copied(result):
-            if not self.model or payload!=self._clipboard_selection_v170():return
+            if (not self.model or source_session!=getattr(self,'_active_session_v200',None)
+                    or payload!=self._clipboard_selection_v170()):return
             try:
                 mime=bundle_mime_v170(result)
                 QApplication.clipboard().setMimeData(mime)
@@ -189,7 +304,9 @@ class ClipboardUiV170Mixin:
                     self._error('El texto se ha copiado, pero no se ha cortado porque la fuente no permite garantizar su recuperación. '
                                 +str(installed.get('font_error',''))+' Importa y asocia la fuente exacta antes de cortar.')
                     return
-                self._submit('clipboard_apply',dict(payload,operation='delete'),self._edited)
+                deletion=dict(payload,operation='delete')
+                if source_session is not None:deletion['session_id']=source_session
+                self._submit('clipboard_apply',deletion,self._edited)
             else:
                 self._notice('Objeto copiado. Pegar permite elegir su posición en la página. '+result.get('notice',''))
         self._submit('clipboard_copy',payload,copied)
@@ -216,6 +333,16 @@ class ClipboardUiV170Mixin:
 
     def clipboard_paste_v170(self,point=None):
         if self._native_clipboard_v170('paste'):return
+        pending=getattr(self,'_clipboard_pending_v318',None)
+        if pending and pending['epoch']==self._clipboard_epoch_v318:
+            # Waiting for the portable object keeps an immediate in-app paste
+            # from silently substituting a different font or losing styles.
+            if (self._plain_copy_ready_v318() and not self.state.get('issues')
+                    and getattr(self,'application_mode','editing')=='editing'):
+                self._clipboard_paste_pending_v318=(getattr(self,'_active_session_v200',None),
+                    self.state.get('document_revision'),self.page_number,point)
+                self._notice('Preparando el formato del texto para pegar…')
+            return
         if not self._clipboard_ready_v170(True):return
         try:
             mime=QApplication.clipboard().mimeData()

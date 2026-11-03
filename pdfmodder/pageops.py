@@ -20,8 +20,10 @@ from pypdf.generic import ArrayObject, Fit, IndirectObject, NameObject, StreamOb
 
 from .engine import full_write
 from .model import EditError
-from .validation import _canonical, assert_characters, assert_pixels, document_issues, related, trace_chars
+from .validation import (_canonical, assert_characters, assert_pixels, document_issues,
+                         related, trace_chars, assert_text_object_structure)
 from . import page_catalog
+from .validation_evidence_v318 import validated_result_v318
 
 
 def parse_pages(expression: str, page_count: int) -> list[int]:
@@ -62,7 +64,8 @@ def _object(value):
     return value.get_object() if isinstance(value, IndirectObject) else value
 
 
-def _semantic(value, *, page_refs=None, mapped=None, annotation_refs=None, seen=None):
+def _semantic(value, *, page_refs=None, mapped=None, annotation_refs=None, seen=None,
+              exact_numbers=False):
     """Compare PDF values independently of xref numbers / stream compression."""
     page_refs, annotation_refs = page_refs or {}, annotation_refs or {}
     seen = set() if seen is None else seen
@@ -81,17 +84,19 @@ def _semantic(value, *, page_refs=None, mapped=None, annotation_refs=None, seen=
         value = value.get_object()
     if isinstance(value, dict):
         result = {str(key): _semantic(item, page_refs=page_refs, mapped=mapped,
-                                     annotation_refs=annotation_refs, seen=seen)
+                                     annotation_refs=annotation_refs, seen=seen,
+                                     exact_numbers=exact_numbers)
                   for key, item in value.items() if not isinstance(value, StreamObject) or key not in ("/Length", "/Filter", "/DecodeParms")}
         if isinstance(value, StreamObject):
             result["__decoded_stream_sha256__"] = hashlib.sha256(value.get_data()).hexdigest()
         return result
     if isinstance(value, (list, tuple)):
-        return tuple(_semantic(item, page_refs=page_refs, mapped=mapped, annotation_refs=annotation_refs, seen=seen) for item in value)
+        return tuple(_semantic(item, page_refs=page_refs, mapped=mapped, annotation_refs=annotation_refs,
+                               seen=seen, exact_numbers=exact_numbers) for item in value)
     if isinstance(value, bytes):
         return ("bytes", value.hex())
     if isinstance(value, float):
-        return round(value, 5)
+        return float(value) if exact_numbers else round(value, 5)
     if isinstance(value, (str, int, bool)) or value is None:
         return value
     # pypdf NullObject / BooleanObject are explicit scalar wrappers.
@@ -144,7 +149,9 @@ def _preflight(data, label, *, readonly=False):
         page_catalog.preflight(reader)
         if root.get('/StructTreeRoot'):
             from .tagged_pages import preflight
-            preflight(data, readonly=readonly)
+            # This is an advisory scope check; no returned object is modified.
+            # The concrete planner always clones a private writer graph.
+            preflight(data, readonly=True)
         preferences = _object(root.get("/ViewerPreferences", {}))
         if preferences.get("/PrintPageRange"):
             raise EditError(f"{label}: intervalos de impresión predefinidos que requieren remapeo no compatible.")
@@ -224,7 +231,11 @@ def _mapped_toc(doc, mapping):
     return result, removed
 
 
-def _annotation_details(reader, page_number, mapping=None, *, ignore_struct_parent=False):
+def _annotation_details(reader, page_number, mapping=None, *, ignore_struct_parent=False,
+                        exact_numbers=False):
+    # Legacy semantic comparisons tolerate writer rounding. Skipping the
+    # raster validator additionally requires exact appearance operands: tiny
+    # matrix differences can be amplified by a large Form coordinate system.
     refs = list(_object(reader.pages[page_number].get("/Annots", [])))
     page_refs = {(page.indirect_reference.idnum, page.indirect_reference.generation): number for number, page in enumerate(reader.pages)}
     annot_refs = {(ref.idnum, ref.generation): index for index, ref in enumerate(refs) if isinstance(ref, IndirectObject)}
@@ -242,7 +253,8 @@ def _annotation_details(reader, page_number, mapping=None, *, ignore_struct_pare
         if annotation.get("/Subtype") == "/Link":
             annotation.pop("/A", None)
             annotation.pop("/Dest", None)
-        result.append(_semantic(annotation, page_refs=page_refs, mapped=mapping, annotation_refs=annot_refs))
+        result.append(_semantic(annotation, page_refs=page_refs, mapped=mapping,
+                                annotation_refs=annot_refs, exact_numbers=exact_numbers))
     return result
 
 
@@ -324,12 +336,24 @@ def _validate(output, inputs, assignments, maps, expected_toc):
             raise EditError("La operación alteró propiedades de visualización o idioma del documento actual.")
         if _canonical(expected_toc) != _canonical(result.get_toc(False)):
             raise EditError("La operación no conservó correctamente los marcadores y sus destinos.")
+        from .page_content_proof_v318 import MappedPageContentProofV318
+        proofs = [MappedPageContentProofV318(data, output) for data in inputs]
         stats = []
         for output_number, (source_number, input_page) in enumerate(assignments):
             original, copied = sources[source_number][input_page], result[output_number]
             boxes = lambda page: (tuple(page.mediabox), tuple(page.cropbox), tuple(page.bleedbox), tuple(page.trimbox), tuple(page.artbox), page.rotation, tuple(page.rect))
             if boxes(original) != boxes(copied):
                 raise EditError(f"La página {output_number+1} cambió de dimensiones, recorte o rotación.")
+            if (_annotation_details(readers[source_number], input_page, maps[source_number]) != _annotation_details(independent, output_number)
+                    or _raw_link_targets(readers[source_number], input_page, maps[source_number]) != _raw_link_targets(independent, output_number)
+                    or _mapped_links(original, maps[source_number]) != _canonical(copied.get_links())):
+                raise EditError(f"La página {output_number+1} no conserva todos los atributos y destinos de sus anotaciones o enlaces.")
+            if (proofs[source_number].unchanged(input_page, output_number)
+                    and _annotation_details(readers[source_number], input_page, maps[source_number], exact_numbers=True)
+                    == _annotation_details(independent, output_number, exact_numbers=True)):
+                stats.append({"output_page": output_number, "source_document": source_number,
+                              "source_page": input_page, **proofs[source_number].report(input_page, output_number)})
+                continue
             if original.read_contents() != copied.read_contents():
                 raise EditError(f"La página {output_number+1} sufrió una modificación de sus operadores de contenido.")
             assert_characters(trace_chars(original), copied)
@@ -343,6 +367,7 @@ def _validate(output, inputs, assignments, maps, expected_toc):
                 raise EditError(f"La página {output_number+1} no conserva todos los atributos y apariencias de sus anotaciones o enlaces.")
             pixels = assert_pixels(original, copied, excluded=())
             stats.append({"output_page": output_number, "source_document": source_number, "source_page": input_page, **pixels})
+        assert_text_object_structure(output, reader=independent)
         return stats
 
 
@@ -378,16 +403,19 @@ def _select_pdf(data, pages, operation):
                     "metadata_policy": "Se conservan metadatos y XMP del documento actual."}
 
 
+@validated_result_v318
 def delete_pages_pdf(data: bytes, pages: list[int]):
     """Remove 0-based pages while retaining all other pages in their original order."""
     return _select_pdf(data, pages, "delete_pages")
 
 
+@validated_result_v318
 def extract_pages_pdf(data: bytes, pages: list[int]):
     """Return a standalone PDF containing the requested 0-based pages in order."""
     return _select_pdf(data, pages, "extract_pages")
 
 
+@validated_result_v318
 def merge_pdfs(data: bytes, additions: list[bytes]):
     """Append complete PDFs in order. Metadata belongs to the current document."""
     if not isinstance(additions, (list, tuple)) or not additions:
@@ -602,6 +630,8 @@ def _validate_organized(output, inputs, entries, source_indices, maps, expected_
             raise EditError("El organizador alteró propiedades del catálogo.")
         if _canonical(expected_toc) != _canonical(result.get_toc(False)):
             raise EditError("No se conservaron los marcadores o sus destinos al organizar.")
+        from .page_content_proof_v318 import MappedPageContentProofV318
+        proofs = [MappedPageContentProofV318(data, output) for data in inputs]
         for (source_number, page_number), rotation in primary_rotations.items():
             page = docs[source_number][page_number]
             page.set_rotation(rotation)
@@ -632,6 +662,21 @@ def _validate_organized(output, inputs, entries, source_indices, maps, expected_
             boxes = lambda p: (tuple(p.mediabox), tuple(p.cropbox), tuple(p.bleedbox), tuple(p.trimbox), tuple(p.artbox), p.rotation, tuple(p.rect))
             if boxes(original) != boxes(copied):
                 raise EditError(f"La página final {output_number+1} cambió de cajas o giro fuera del plan.")
+            if (_annotation_details(readers[source_number], input_page, mapping, ignore_struct_parent=tagged_remap) != _annotation_details(independent, output_number, ignore_struct_parent=tagged_remap)
+                    or _raw_link_targets(readers[source_number], input_page, mapping) != _raw_link_targets(independent, output_number)
+                    or _mapped_links(original, mapping) != _canonical(copied.get_links())):
+                raise EditError(f"La página final {output_number+1} cambió atributos o destinos de anotaciones y enlaces.")
+            if (proofs[source_number].unchanged(input_page, output_number)
+                    and _annotation_details(readers[source_number], input_page, mapping,
+                                            ignore_struct_parent=tagged_remap, exact_numbers=True)
+                    == _annotation_details(independent, output_number,
+                                           ignore_struct_parent=tagged_remap, exact_numbers=True)):
+                original.set_rotation(first_rotation)
+                docs[source_number].reload_page(original)
+                stats.append({"output_page": output_number, "source": entry["source"], "source_page": input_page,
+                              "rotation_delta": entry["rotation"], "font_programs_equal": True,
+                              **proofs[source_number].report(input_page, output_number)})
+                continue
             if original.read_contents() != copied.read_contents() or _font_programs(original) != _font_programs(copied):
                 raise EditError(f"La página final {output_number+1} cambió operadores o programas de fuente.")
             assert_characters(trace_chars(original), copied)
@@ -650,9 +695,11 @@ def _validate_organized(output, inputs, entries, source_indices, maps, expected_
             docs[source_number].reload_page(original)
             stats.append({"output_page": output_number, "source": entry["source"], "source_page": input_page,
                           "rotation_delta": entry["rotation"], "font_programs_equal": True, **pixels})
+        assert_text_object_structure(output, reader=independent)
         return stats
 
 
+@validated_result_v318
 def organize_pages_pdf(data: bytes, plan: list[dict], additions: dict[str, bytes] | None = None, *, _tagged_replacement=False):
     """Execute an explicit final order; source indices and rotation deltas are 0-based.
 

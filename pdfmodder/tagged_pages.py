@@ -234,7 +234,7 @@ def build_tagged_pages(reader, entries, toc):
     """Return fully rewritten bytes plus a structure verification report."""
     require_single_source(entries)
     from .pageops import _organizer_toc
-    from .engine import full_write
+    from .engine import transaction_write_v318
     writer = PdfWriter(clone_from=reader)
     original_pages = list(writer.pages)
     forbidden = _prune_tree(writer, original_pages, entries)
@@ -260,12 +260,29 @@ def build_tagged_pages(reader, entries, toc):
     _assert_reachable(writer.root_object, forbidden)
     intermediate = BytesIO()
     writer.write(intermediate)
-    expected = TaggedStructure(intermediate.getvalue())
+    # Rebuild every global relationship from the candidate's own reader. Only
+    # page marked-content summaries may follow exact source→output paint-input
+    # proofs; page geometry and annotations are validated by the caller.
+    stream = reader.stream
+    position = stream.tell()
+    try:
+        stream.seek(0)
+        source_data = stream.read()
+    finally:
+        stream.seek(position)
+    from .tagged_reuse_v318 import page_reference_v318
+    source_structure = analyze_readonly(source_data)
+    mapping = {number: entry['page'] for number, entry in enumerate(entries)
+               if entry['source'] == 'current'}
+    with page_reference_v318(source_structure, mapping):
+        expected = analyze_readonly(intermediate.getvalue())
     with fitz.open(stream=intermediate.getvalue(), filetype='pdf') as doc:
-        output = full_write(doc)
-    verified = TaggedStructure(output)
+        output = transaction_write_v318(doc)
+    with page_reference_v318(expected):
+        verified = analyze_readonly(output)
     if expected.semantic() != verified.semantic():
         _fail('el guardado cambió relaciones, orden o propiedades accesibles.')
     return output, {'verified': True, 'retained_structural_elements': len(verified.nodes),
+                    'reused_semantic_pages': len(verified.reused_semantic_pages_v318),
                     'parent_tree_keys': sorted(verified.parents), 'removed_graph_objects': len(forbidden),
                     'policy': 'MCID y claves conservados; ramas, OBJR y asociaciones de páginas excluidas eliminados; orden de lectura verificado.'}

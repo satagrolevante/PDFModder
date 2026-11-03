@@ -67,7 +67,7 @@ def _state_at(operations,index,resources=None):
 
 
 def edit_clipped_layout(data,request,model):
-    from .engine import _safe_selection,full_write
+    from .engine import _safe_selection,transaction_write_v318
     started=time.perf_counter()
     if request.page!=model.number or (request.revision and request.revision!=hashlib.sha256(data).hexdigest()):
         raise EditError('La selección está desactualizada. Selecciona el texto de nuevo.')
@@ -216,7 +216,7 @@ def edit_clipped_layout(data,request,model):
         if planned:
             _safe_selection(doc[request.page],replace(model,issues=[i for i in model.issues if i!=CLIP_ISSUE]),planned,preserve_paint_order=True)
         xref=doc.get_new_xref();doc.update_object(xref,'<<>>');doc.update_stream(xref,_serialize(changed_ops));doc[request.page].set_contents(xref)
-        output=full_write(doc)
+        output=transaction_write_v318(doc)
     after=PdfReader(BytesIO(output),strict=True)
     new_ops=ContentStream(after.pages[request.page].get_contents(),after).operations
     if len(new_ops)!=len(operations):raise EditError('Cambió el número de operadores.')
@@ -262,7 +262,7 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
     siguen ejecutándose una sola vez; el siguiente carácter conserva su origen.
     El recorte ya establecido permanece fijo en coordenadas de página.
     """
-    from .engine import _safe_selection,full_write
+    from .engine import _safe_selection,transaction_write_v318
     started=time.perf_counter()
     if request.page!=model.number or (request.revision and request.revision!=hashlib.sha256(data).hexdigest()):
         raise EditError('La selección está desactualizada. Selecciona el texto de nuevo.')
@@ -297,7 +297,7 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
     tagged_move=None
     if reader.trailer['/Root'].get('/StructTreeRoot'):
         from .tagged_clip_move import TaggedNativeMove
-        tagged_move=TaggedNativeMove(data,request.page,model,selected)
+        tagged_move=TaggedNativeMove(data,request.page,model,selected,planned)
     target_ops={mapping[g.id]['operation'] for g in selected}
     replacements={}
     resources={}
@@ -384,9 +384,11 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
     with fitz.open(stream=data,filetype='pdf') as doc:
         stream=doc.get_new_xref();doc.update_object(stream,'<<>>')
         doc.update_stream(stream,serialized);doc[request.page].set_contents(stream)
+        if tagged_move is not None:
+            tagged_move.apply_updates(doc)
         if update_metadata is not None:
             update_metadata(doc)
-        output=(writer or full_write)(doc)
+        output=(writer or transaction_write_v318)(doc)
     after=PdfReader(BytesIO(output),strict=True)
     actual_ops=ContentStream(after.pages[request.page].get_contents(),after).operations
     if len(actual_ops)!=len(expected_ops) or any(o!=p or _signature(a)!=_signature(b) for (a,o),(b,p) in zip(expected_ops,actual_ops)):
@@ -395,7 +397,8 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
         raise EditError('La escritura alteró recursos compartidos; operación cancelada.')
     _assert_typography(output,request.page,others+planned)
     report=validate_transition(data,output,request.page,[(g.text,g.origin,g.font,g.size) for g in others+planned],
-                               [g.bbox for g in selected+planned])
+                               [g.bbox for g in selected+planned],
+                               tagged_expected=tagged_move.expected if tagged_move else None)
     if tagged_move:
         report['accessibility']=tagged_move.validate(output)
     report.update(page=request.page,elapsed_seconds=round(time.perf_counter()-started,3),

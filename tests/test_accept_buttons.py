@@ -85,6 +85,9 @@ def test_inspector_selects_direct_resource_not_another_font_with_zero_xref(qtbot
     timer.timeout.connect(capture_dialog)
     timer.start(20)
     window.font_inspector()
+    # Font inventories are deliberately loaded on demand. The request starts
+    # on the next event-loop turn, before the ordinary worker-busy flag rises.
+    qtbot.waitUntil(lambda:'choice' in captured,timeout=30000)
     settled(qtbot,window)
     assert '/hebo' in captured['choice'] and 'Helvetica-Bold' in captured['choice']
     assert 'Recurso de la selección: /hebo' in captured['details']

@@ -66,7 +66,12 @@ def test_adaptation_never_changes_origin_or_shrinks_an_unfittable_glyph(area,lim
 def test_normal_requests_and_fresh_drafts_enable_adaptation_with_opt_out(editor,monkeypatch):
     assert editor.auto_adapt_box.isChecked()
     assert editor._request(text='Cambio').auto_adapt
-    monkeypatch.setattr(editor,'_submit',lambda command,request,callback:callback(payload()))
+    def submit(command,request,callback):
+        if command=='selection_capabilities_v300':
+            callback({'status':'available','label':'Disponible','reasons':[],'actions':[]})
+        else:
+            callback(payload())
+    monkeypatch.setattr(editor,'_submit',submit)
     editor.start_rich_edit()
     assert editor.canvas.editor.payload()['auto_adapt']
     editor._end_rich()

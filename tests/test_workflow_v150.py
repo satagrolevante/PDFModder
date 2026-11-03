@@ -137,10 +137,13 @@ def test_tools_text_image_save_and_reopen_real_worker(qtbot, workflow, tmp_path,
 
     click_tool(qtbot, window, 'toolEditContent')
     page_click(qtbot, window, (360., 80.))
+    qtbot.waitUntil(lambda:window.canvas.image_mode and window.canvas.selected_image() is not None,
+                    timeout=30000)
     assert window.canvas.image_mode and window.canvas.selected_image()
     qtbot.mouseClick(window.format_tools_section.header, Qt.LeftButton)
     assert window.image_quick_controls.isVisible()
     assert not window.side_format_controls.isVisible()
+    window.mode_box.setCurrentIndex(window.mode_box.findData('word'))
     point = text_point(window, '2025')
     page_click(qtbot, window, point)
     assert not window.canvas.image_mode and window.model.text(window.canvas.ids) == '2025'
@@ -161,7 +164,10 @@ def test_tools_text_image_save_and_reopen_real_worker(qtbot, workflow, tmp_path,
     start = page_click(qtbot, window, point)
     selected = window.model.selected(window.canvas.ids)
     original_origin = selected[0].origin
-    finish = window.canvas.viewport_point((point[0]+35, point[1]+25))
+    bounds=union(g.bbox for g in selected)
+    drag_point=((bounds[0]+bounds[2])/2,(bounds[1]+bounds[3])/2)
+    start=window.canvas.viewport_point(drag_point)
+    finish = window.canvas.viewport_point((drag_point[0]+35, drag_point[1]+25))
     qtbot.mousePress(window.canvas.viewport(), Qt.LeftButton, pos=start)
     qtbot.mouseMove(window.canvas.viewport(), pos=finish)
     qtbot.mouseRelease(window.canvas.viewport(), Qt.LeftButton, pos=finish)
