@@ -457,6 +457,7 @@ class Session:
         if tagged_revision!=self._tagged_revision:
             with self._open(self._view_source()) as document:
                 self.tagged=document.xref_get_key(document.pdf_catalog(),'StructTreeRoot')[0]!='null'
+                self._has_form_fields_v300=bool(document.is_form_pdf)
             self._tagged_revision=tagged_revision
         page_caps={key:True for key in ('supported','delete','extract','reorder','rotate','duplicate','insert_blank','insert_pdf')}
         page_caps['reason']=''
@@ -483,7 +484,7 @@ class Session:
             from .forms_redaction_v200 import install_session_tools_v200
             install_session_tools_v200(Session)
             special_only=self.form_only_save_v200()
-        return {'path':self.path,'session_id':self.session_id,'recovery_id':self.recovery_id,
+        return {'path':self.history.metadata.get('display_path_v319',self.path),'session_id':self.session_id,'recovery_id':self.recovery_id,
                 'last_save_path':self.history.metadata.get('last_save_path'),
                 'draft_pending':bool(self.history.metadata.get('draft') or getattr(self,'recovered_draft',None)),
                 'recovered_draft':getattr(self,'recovered_draft',None),
@@ -983,22 +984,22 @@ class Session:
                 'report':report,'state':self.state()}
 
     @_reuse_analysis_v315
-    def merge(self,paths):
+    def merge(self,paths,as_copy=False):
         self._writable()
         if not paths:
             raise EditError('Selecciona al menos un PDF para añadir.')
-        from .pageops import merge_pdfs
-        additions=[Path(p).read_bytes() for p in paths]
-        candidate,report=merge_pdfs(self.history.current,additions)
+        sources=[self.history.metadata.get('display_path_v319',self.path),*[str(p) for p in paths]]
+        candidate,report=_merge_sources_v319(self.history.current,paths,sources,as_copy=as_copy)
         keys=self._page_keys(False)
         with fitz.open(stream=candidate,filetype='pdf') as check:
             count=check.page_count-len(keys)
         first=min(keys+[0])-1
         report.update(operation='merge',_page_keys=keys+list(range(first,first-count,-1)),
                       _instance_keys=self._instance_keys(False)+[uuid.uuid4().hex for _ in range(count)])
+        # Persist source protection with the transaction, including recovery.
+        self.protected_paths.update(str(Path(p).resolve()) for p in paths)
         self._put_preview(candidate,report)
         result=self.commit()
-        self.protected_paths.update(str(Path(p).resolve()) for p in paths)
         return result
 
     def commit(self):
@@ -1208,6 +1209,58 @@ class Session:
         self.history.close()
 
 
+def _merge_sources_v319(data,paths,source_paths,*,as_copy=False):
+    """Keep source filenames at the engine boundary, including failed inputs."""
+    from .pageops import merge_pdfs
+    import re
+    additions=[]
+    for path in paths:
+        try:additions.append(Path(path).read_bytes())
+        except OSError as error:
+            raise EditError(f'No se puede leer «{Path(path).name}»: {error}') from error
+    try:candidate,report=merge_pdfs(data,additions,as_copy=as_copy)
+    except EditError as error:
+        match=re.match(r'PDF añadido (\d+):',str(error))
+        index=int(match[1]) if match else 0 if str(error).startswith('Documento actual:') else None
+        if index is not None and 0<=index<len(source_paths):
+            raise EditError(f'«{Path(source_paths[index]).name}»: {error}') from error
+        raise
+    report['source_paths']=[str(path) for path in source_paths]
+    return candidate,report
+
+
+def _new_combined_session_v319(data,paths,source_paths,*,source=None,**options):
+    """A signed/read-only session stays immutable; its combined copy is new."""
+    candidate,report=_merge_sources_v319(data,paths,source_paths,as_copy=True)
+    report['operation']='merge'
+    if source is not None:
+        options.setdefault('config_path',source._config_path)
+        options.setdefault('recovery_root',source.history.root.parent)
+    with tempfile.TemporaryDirectory(prefix='pdfmodder-combined-') as directory:
+        seed=Path(directory)/'combined.pdf'
+        seed.write_bytes(candidate)
+        new=Session(seed,**options)
+    try:
+        # Use the durable snapshot for internal source guards; the proposed
+        # Save As name is a display hint, never a protected original file.
+        new.path=str(new.history.root/'original.pdf')
+        protected={str(Path(path).resolve()) for path in source_paths}
+        if source is not None:protected.update(source.protected_paths)
+        new.protected_paths=protected|{new.path}
+        first=Path(source_paths[0])
+        display=str(first.with_name(first.stem+'_combinado.pdf'))
+        new.saved_digest=''
+        new.history.reports[0]=report
+        new.history.checkpoint({'path':new.path,'display_path_v319':display,
+            'new_document_v319':True,'saved_digest':'',
+            'protected_paths':sorted(new.protected_paths)})
+        return new,{'state':new.state(),'report':report,'new_session':True,
+                    'source_session_id':source.session_id if source is not None else None}
+    except Exception:
+        new.close()
+        raise
+
+
 _session=None
 _sessions=OrderedDict()
 _prepared_sessions_v318=OrderedDict()
@@ -1328,7 +1381,7 @@ def _dispatch_command(command,payload=None):
         new=Session.recover(identifier,**payload);_attach(new,retain)
         return {'state':new.state()}
     if command=='list_sessions':
-        return {'sessions':[{'session_id':s.session_id,'path':s.path,
+        return {'sessions':[{'session_id':s.session_id,'path':s.history.metadata.get('display_path_v319',s.path),
             'last_save_path':s.history.metadata.get('last_save_path'),
             'draft_pending':bool(s.history.metadata.get('draft') or getattr(s,'recovered_draft',None)),
             'dirty':s.history.revision!=s.saved_digest,'preview':bool(s.pending is not None or getattr(s,'_suspended_pending',False)),
@@ -1362,6 +1415,16 @@ def _dispatch_command(command,payload=None):
         paths=payload.get('paths',[])
         if len(paths)<2:
             raise EditError('Selecciona al menos dos archivos PDF para combinar.')
+        if payload.get('as_copy',False):
+            try:data=Path(paths[0]).read_bytes()
+            except OSError as error:raise EditError(f'No se puede leer «{Path(paths[0]).name}»: {error}') from error
+            settings={key:payload[key] for key in ('config_path','history_dir','recovery_root','session_id') if key in payload}
+            new,result=_new_combined_session_v319(data,paths[1:],paths,**settings)
+            try:_attach(new,payload.get('retain_existing',False))
+            except Exception:
+                new.close()
+                raise
+            return result
         new=Session(paths[0],config_path=payload.get('config_path'),history_dir=payload.get('history_dir'),
                     recovery_root=payload.get('recovery_root'),session_id=payload.get('session_id'))
         try:
@@ -1378,6 +1441,21 @@ def _dispatch_command(command,payload=None):
         return {'state':new.state()}
     if _session is None:
         raise EditError('Abre primero un PDF.')
+    if command=='merge' and payload.get('as_copy',False):
+        if not payload.get('paths'):
+            raise EditError('Selecciona al menos un PDF para añadir.')
+        if (_session.pending is not None or _session.history.metadata.get('draft')
+                or getattr(_session,'recovered_draft',None)):
+            raise EditError('Acepta o cancela el borrador antes de combinar documentos.')
+        if not _session._editing_prepared or _session.issues:
+            source_paths=[_session.history.metadata.get('display_path_v319',_session.path),*payload['paths']]
+            new,result=_new_combined_session_v319(_session.history.current,payload['paths'],source_paths,source=_session)
+            try:_attach(new,True)
+            except Exception:
+                new.close()
+                raise
+            return result
+        return _session.merge(payload['paths'],as_copy=True)
     if command=='update_workspace':return _session.update_workspace(**payload)
     if command=='store_draft':return _session.store_draft(**payload)
     if command=='apply_stored_draft_v300':

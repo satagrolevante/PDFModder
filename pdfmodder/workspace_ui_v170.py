@@ -111,6 +111,7 @@ class UpdatesDialog(QDialog):
         self.message.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.message)
         self.progress = QProgressBar()
+        self.progress.setObjectName('updateProgressV319')
         self.progress.setRange(0, 100)
         layout.addWidget(self.progress)
         row = QHBoxLayout()
@@ -208,8 +209,19 @@ class UpdatesDialog(QDialog):
         latest = status['latestVersion']
         self.version_label.setText(f"Versión instalada: {status['installedVersion']}" + (f' · Publicada: {latest}' if latest else ''))
         self.message.setText(status['message'])
-        self.progress.setVisible(state in ('downloading', 'ready'))
-        self.progress.setValue(status['progress'])
+        # Download percentages describe that phase only. Checking hashes,
+        # resolving unsaved documents and handing off to the installer have
+        # no measurable total: keep an animated bar instead of a false 100%.
+        indeterminate = self._preparing_work_v300 or state in (
+            'checking', 'validating_download', 'verifying', 'installing')
+        self.progress.setVisible(indeterminate or state in ('downloading', 'ready'))
+        if indeterminate:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setFormat('Descarga: %p%' if state == 'downloading'
+                                    else 'Descarga comprobada' if state == 'ready' else '%p%')
+            self.progress.setValue(status['progress'])
         retry_at = status.get('retryAt', 0)
         can_query = retry_at <= time.time()
         set_ui_enabled_v310(self, self.check_button, not busy and not self._preparing_work_v300 and (can_query or state == 'ready'))

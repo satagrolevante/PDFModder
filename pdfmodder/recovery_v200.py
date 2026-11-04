@@ -90,7 +90,7 @@ def list_recovery(root=None,exclude=()):
             meta=manifest['metadata'];index=manifest['index']
             dirty=manifest['digests'][index]!=meta.get('saved_digest')
             if not dirty and not manifest.get('pending') and not meta.get('draft'):continue
-            entries.append({'recovery_id':folder.name,'path':meta.get('path',''),
+            entries.append({'recovery_id':folder.name,'path':meta.get('display_path_v319',meta.get('path','')),
                 'updated':manifest['updated'],'history_index':index,'history_states':len(manifest['states']),
                 'dirty':dirty,'preview':bool(manifest.get('pending')),'draft':bool(meta.get('draft')),
                 'workspace':meta.get('workspace',{})})

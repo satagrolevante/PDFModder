@@ -1,4 +1,5 @@
 """Herramientas Qt de composición y páginas; el motor permanece en el worker."""
+import os
 from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction,QColor,QImageReader,QIcon
@@ -57,7 +58,7 @@ class MergeDialog(QDialog):
     def __init__(self,parent=None,has_document=False):
         super().__init__(parent)
         self.setWindowTitle('Combinar archivos PDF')
-        self.resize(630,380)
+        self.resize(630,450)
         layout=QVBoxLayout(self)
         layout.addWidget(QLabel('Los archivos se incorporarán en este orden:'))
         self.files=QListWidget()
@@ -69,13 +70,27 @@ class MergeDialog(QDialog):
             button.clicked.connect(callback)
             row.addWidget(button)
         layout.addLayout(row)
-        self.append=QCheckBox('Añadir al final del documento de trabajo actual')
+        self.append=QCheckBox('Incluir primero el documento de trabajo actual')
         self.append.setChecked(has_document)
         self.append.setEnabled(has_document)
         layout.addWidget(self.append)
-        metadata=QLabel('El resultado conserva los metadatos del documento actual o, si creas uno nuevo, del primer PDF. Los archivos de origen se mantienen intactos.')
+        note=QLabel('Se creará un documento nuevo para consulta. Los originales se conservan. '
+                    'Las firmas no certifican el combinado; los campos se fijan y las etiquetas '
+                    'de accesibilidad podrían quitarse.')
+        note.setObjectName('mergeConsultationNote')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        metadata=QLabel('El resultado usa como base los metadatos del documento actual si lo incluyes o, en caso contrario, los del primer PDF.')
         metadata.setWordWrap(True)
         layout.addWidget(metadata)
+        self.duplicates=QLabel()
+        self.duplicates.setObjectName('mergeDuplicateWarning')
+        self.duplicates.setTextFormat(Qt.PlainText)
+        self.duplicates.setWordWrap(True)
+        layout.addWidget(self.duplicates)
+        for signal in (self.files.model().rowsInserted,self.files.model().rowsRemoved,
+                       self.files.model().rowsMoved,self.files.model().dataChanged):
+            signal.connect(self._refresh_duplicates)
         self.error=QLabel()
         self.error.setWordWrap(True)
         layout.addWidget(self.error)
@@ -102,6 +117,16 @@ class MergeDialog(QDialog):
 
     def paths(self):
         return [self.files.item(i).text() for i in range(self.files.count())]
+
+    def _refresh_duplicates(self,*_args):
+        occurrences={}
+        for number,path in enumerate(self.paths(),1):
+            key=os.path.normcase(str(Path(path).expanduser().resolve()))
+            occurrences.setdefault(key,[]).append(number)
+        repeated=[f'{Path(path).name} (posiciones {", ".join(map(str,positions))})'
+                  for path,positions in occurrences.items() if len(positions)>1]
+        self.duplicates.setText('Archivos repetidos: '+'; '.join(repeated)+'. '
+                                'Cada aparición se incluirá en el combinado.' if repeated else '')
 
     def validate(self):
         minimum=1 if self.append.isChecked() else 2
@@ -189,8 +214,17 @@ class ExtendedEditing:
             set_ui_enabled_v310(self, action, editable and not placing and allowed)
             action.setToolTip(capabilities.get('reason') or 'Se conservarán las etiquetas de las páginas restantes.' if tagged else action.text().replace('&',''))
         set_ui_enabled_v310(self, self.format_action, editable and bool(self.canvas.ids) and not placing)
-        set_ui_enabled_v310(self, self.merge_action, not self.busy and not self.canvas.editor.isVisible() and not self.state.get('preview') and not placing and not tagged)
-        self.merge_action.setToolTip('PDF etiquetado: combinar necesita remapear las etiquetas y todavía no está disponible.' if tagged else 'Combinar PDFs…')
+        writing=self.canvas.editor.isVisible() or getattr(self,'_rich_active',False) or getattr(self,'_rich_loading',False)
+        merge_ready=(not self.busy and not writing and not self.state.get('preview') and not placing
+                     and not getattr(self,'_closed',False)
+                     and not getattr(self,'_close_waiting_v300',False)
+                     and not getattr(self,'_rich_accept_pending',False)
+                     and not getattr(self,'_cell_draw_v200',False)
+                     and not getattr(self,'_mode_preparing_v171',False)
+                     and not getattr(self,'_save_transaction_v300',None)
+                     and not getattr(self,'_signature_placement_dialog',None))
+        set_ui_enabled_v310(self, self.merge_action, merge_ready)
+        self.merge_action.setToolTip('Crear un documento nuevo para consulta. Los originales se conservan y sus firmas no certifican el combinado.')
         self.image_box.setVisible(self.canvas.image_mode)
         im=self.canvas.selected_image()
         set_ui_enabled_v310(self, self.image_props_button, editable and bool(im and im.get('editable')))
@@ -456,14 +490,33 @@ class ExtendedEditing:
         if self._exec_edit_dialog(dialog)==QDialog.Accepted:
             if dialog.append.isChecked():
                 self.merge_pdfs(dialog.paths())
-            elif self._confirm_discard():
+            else:
                 self.combine_pdfs(dialog.paths())
 
     def merge_pdfs(self,paths):
-        self._submit('merge',{'paths':[str(p) for p in paths]},self._edited)
+        self._submit('merge',{'paths':[str(p) for p in paths],'as_copy':True},self._merged_v319)
+
+    def _merged_v319(self,result):
+        self._edited(result)
+        report=result.get('report') or {}
+        message='Combinado de consulta sin firmas digitales. Las firmas de los originales no certifican este combinado. Los originales se conservan.'
+        warning=report.get('warning')
+        if warning:
+            message+=' '+str(warning)
+        for warning in report.get('warnings',[]):
+            if warning and str(warning) not in message:
+                message+=' '+str(warning)
+        source_paths=report.get('source_paths',[])
+        for duplicate in report.get('duplicate_sources',[]):
+            indices=duplicate.get('indices',[])
+            names=[Path(source_paths[index]).name if 0<=index<len(source_paths)
+                   else f'documento {index+1}' for index in indices]
+            if names:
+                message+=' Contenido repetido: '+', '.join(names)+'. Se conserva cada aparición seleccionada.'
+        self._notice(message)
 
     def combine_pdfs(self,paths):
-        payload={'paths':[str(p) for p in paths]}
+        payload={'paths':[str(p) for p in paths],'as_copy':True}
         for name in ('config_path','history_dir'):
             if getattr(self,name):
                 payload[name]=str(getattr(self,name))
@@ -471,5 +524,5 @@ class ExtendedEditing:
             self.model=None
             self.page_number=0
             self.compare_action.setChecked(False)
-            self._edited(result)
+            self._merged_v319(result)
         self._submit('combine',payload,combined)

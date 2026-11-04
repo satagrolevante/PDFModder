@@ -127,7 +127,7 @@ def _check_destination(holder, *, context):
             raise EditError(f"{context}: destino con nombre o ajuste de vista distinto de XYZ no compatible.")
 
 
-def _preflight(data, label, *, readonly=False):
+def _preflight(data, label, *, readonly=False, merge_copy=False):
     try:
         doc = fitz.open(stream=data, filetype="pdf")
     except Exception as exc:
@@ -143,10 +143,15 @@ def _preflight(data, label, *, readonly=False):
         reader = PdfReader(io.BytesIO(data), strict=True)
         root = reader.trailer["/Root"]
         allowed_catalog = {"/Type", "/Pages", "/Outlines", "/Metadata", "/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/Version", "/MarkInfo", "/StructTreeRoot", "/AcroForm", "/Names"}
+        if merge_copy:
+            allowed_catalog.update({'/OCProperties', '/Extensions'})
         unsupported = sorted(str(key) for key in root if key not in allowed_catalog)
         if unsupported:
             raise EditError(f"{label}: estructura de documento no compatible al reorganizar páginas: {', '.join(unsupported)}. Puede contener destinos con nombre, capas, adjuntos, etiquetas o acciones.")
         page_catalog.preflight(reader)
+        if merge_copy:
+            from .merge_copies_v319 import preflight_layers
+            preflight_layers(reader)
         if root.get('/StructTreeRoot'):
             from .tagged_pages import preflight
             # This is an advisory scope check; no returned object is modified.
@@ -259,7 +264,12 @@ def _annotation_details(reader, page_number, mapping=None, *, ignore_struct_pare
 
 
 def _metadata(reader):
-    return _semantic(reader.trailer.get("/Info", {}))
+    # Custom Info values can be indirect dictionaries that refer back to Info.
+    # Compare that complete graph once instead of rejecting valid cycles.
+    from types import SimpleNamespace
+    from .untag_v180 import _metadata_and_bookmarks
+    return _metadata_and_bookmarks(SimpleNamespace(
+        trailer={'/Root': {}, '/Info': reader.trailer.get('/Info')}, pages=[]))
 
 
 def _catalog_metadata(reader):
@@ -267,7 +277,7 @@ def _catalog_metadata(reader):
     return {key: _semantic(root[key]) for key in ("/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/MarkInfo", "/AcroForm") if key in root}
 
 
-def _build_pdf(readers, selections, toc_groups):
+def _build_pdf(readers, selections, toc_groups, *, merge_copy=False):
     """Clone metadata, page/annotation graphs and exact PDF-space destinations.
 
     append() performs reference translation for full page graphs, including
@@ -275,6 +285,9 @@ def _build_pdf(readers, selections, toc_groups):
     avoiding a rotated CropBox get_toc/set_toc coordinate round-trip.
     """
     writer = PdfWriter(clone_from=readers[0])
+    writer.pdf_header = max(reader.pdf_header for reader in readers)
+    if '/Info' in readers[0].trailer:
+        writer._info_obj = writer._add_object(readers[0].trailer['/Info'].clone(writer))
     writer.root_object.pop(NameObject("/Outlines"), None)
     writer.root_object.pop(NameObject("/Names"), None)
     for number in reversed(range(len(writer.pages))):
@@ -282,6 +295,9 @@ def _build_pdf(readers, selections, toc_groups):
     writer.reset_translation(readers[0])
     for reader, pages in zip(readers, selections):
         writer.append(reader, pages=pages, import_outline=False)
+    if merge_copy:
+        from .merge_copies_v319 import rebuild_layers
+        rebuild_layers(writer, readers)
     # Preflight permits only empty forms. append() can otherwise introduce an
     # empty external AcroForm into a document that never had one.
     if '/AcroForm' not in readers[0].trailer['/Root']:
@@ -320,7 +336,7 @@ def _build_pdf(readers, selections, toc_groups):
         return full_write(final)
 
 
-def _validate(output, inputs, assignments, maps, expected_toc):
+def _validate(output, inputs, assignments, maps, expected_toc, *, merge_copy=False):
     """assignments[out] = (input_number, source_page); never compare wrong pages."""
     with ExitStack() as stack:
         sources = [stack.enter_context(fitz.open(stream=data, filetype="pdf")) for data in inputs]
@@ -328,6 +344,9 @@ def _validate(output, inputs, assignments, maps, expected_toc):
         result = stack.enter_context(fitz.open(stream=output, filetype="pdf"))
         independent = PdfReader(io.BytesIO(output), strict=True)
         page_catalog.validate(readers, independent, maps)
+        if merge_copy:
+            from .merge_copies_v319 import validate_layers
+            validate_layers(readers, independent)
         if result.page_count != len(assignments) or len(independent.pages) != len(assignments):
             raise EditError("Validación de páginas: número de páginas incorrecto.")
         if _metadata(readers[0]) != _metadata(independent) or sources[0].get_xml_metadata() != result.get_xml_metadata():
@@ -416,16 +435,20 @@ def extract_pages_pdf(data: bytes, pages: list[int]):
 
 
 @validated_result_v318
-def merge_pdfs(data: bytes, additions: list[bytes]):
+def merge_pdfs(data: bytes, additions: list[bytes], *, as_copy=False):
     """Append complete PDFs in order. Metadata belongs to the current document."""
     if not isinstance(additions, (list, tuple)) or not additions:
         raise EditError("Selecciona al menos un PDF para añadir.")
     started = time.perf_counter()
     inputs = [data, *additions]
+    copy_report = None
+    if as_copy:
+        from .merge_copies_v319 import prepare_sources
+        inputs, copy_report = prepare_sources(inputs)
     with ExitStack() as stack:
         docs, readers = [], []
         for index, payload in enumerate(inputs):
-            doc, reader = _preflight(payload, "Documento actual" if index == 0 else f"PDF añadido {index}")
+            doc, reader = _preflight(payload, "Documento actual" if index == 0 else f"PDF añadido {index}", merge_copy=as_copy)
             docs.append(stack.enter_context(doc))
             readers.append(reader)
         if any(reader.trailer['/Root'].get('/StructTreeRoot') for reader in readers):
@@ -444,13 +467,18 @@ def merge_pdfs(data: bytes, additions: list[bytes]):
             assignments.extend((index, page) for page in range(len(doc)))
             maps.append(mapping)
             source_metadata.append({"document": index, "metadata": dict(doc.metadata), "xml_metadata": doc.get_xml_metadata()})
-        output = _build_pdf(readers, selections, toc_groups)
-    stats = _validate(output, inputs, assignments, maps, toc)
-    return output, {"verified": True, "operation": "merge_pdfs", "page_count": len(assignments), "pages": stats,
+        output = _build_pdf(readers, selections, toc_groups, merge_copy=as_copy)
+    stats = _validate(output, inputs, assignments, maps, toc, merge_copy=as_copy)
+    report = {"verified": True, "operation": "merge_pdfs", "page_count": len(assignments), "pages": stats,
                     "source_page_counts": [len(mapping) for mapping in maps], "source_metadata": source_metadata,
                     "source_sha256": [hashlib.sha256(payload).hexdigest() for payload in inputs],
                     "elapsed_seconds": round(time.perf_counter()-started, 3), "independent_parser": "pypdf",
                     "metadata_policy": "Se conservan Info/XMP del documento actual. Los metadatos de los PDFs añadidos se registran en este informe; no reemplazan los del documento actual."}
+    if copy_report is not None:
+        report.update(copy_report)
+        report['warning'] = ' '.join(copy_report['warnings'])
+        report['metadata_policy'] += ' En la copia se ajustan únicamente las declaraciones de firma o PDF/UA que dejen de ser ciertas; los ajustes figuran por origen.'
+    return output, report
 
 
 def _organizer_plan(plan, counts):

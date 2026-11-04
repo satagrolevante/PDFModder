@@ -63,7 +63,7 @@ namespace PdfModderInstallation
                 throw new ArgumentException("Falta la carpeta de la aplicación anterior.");
             if (value.Update)
             {
-                value.Silent = true; value.Launch = !noLaunch;
+                value.Launch = !noLaunch;
                 if (value.Report == null) value.Report = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "PDFModder", "updates", "actualizacion-" + Guid.NewGuid().ToString("N") + ".json");
             }
@@ -248,9 +248,25 @@ namespace PdfModderInstallation
 
         static string Hash(string path)
         {
+            return Hash(path, null);
+        }
+
+        static string Hash(string path, Action<int> counted)
+        {
             using (var algorithm = SHA256.Create())
             using (var stream = File.OpenRead(path))
-                return BitConverter.ToString(algorithm.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+            {
+                if (counted == null)
+                    return BitConverter.ToString(algorithm.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+                byte[] buffer = new byte[131072]; int read;
+                while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    algorithm.TransformBlock(buffer, 0, read, buffer, 0);
+                    counted(read);
+                }
+                algorithm.TransformFinalBlock(buffer, 0, 0);
+                return BitConverter.ToString(algorithm.Hash).Replace("-", "").ToLowerInvariant();
+            }
         }
 
         static void WriteFileManifest(string staging)
@@ -514,6 +530,7 @@ namespace PdfModderInstallation
         static void RetirePrevious(PreviousInstallation previous, string installed, Result result, Action<int, string> progress)
         {
             if (previous == null) return;
+            progress(-1, "Comprobando y retirando PDF Modder " + previous.Version + "; se conservan sus documentos y archivos modificados…");
             if (result.previous_directory == null) { result.previous_directory = previous.Directory; result.previous_version = previous.Version; }
             Dictionary<string, long> before = null;
             string report = null;
@@ -523,7 +540,7 @@ namespace PdfModderInstallation
                 if (!previous.UninstallerHash.Equals(rechecked.UninstallerHash, StringComparison.Ordinal))
                     throw new IOException("El desinstalador anterior cambió durante la instalación.");
                 before = CaptureOwnedFileSizes(rechecked);
-                progress(97, "Retirando PDF Modder " + previous.Version + "; se conservan sus documentos y archivos modificados…");
+                progress(-1, "Retirando PDF Modder " + previous.Version + "; esperando su informe final de retirada…");
                 string folder = Absolute(UpdateCacheRoot);
                 NoLinks(folder); System.IO.Directory.CreateDirectory(folder);
                 report = Path.Combine(folder, "retirada-" + Guid.NewGuid().ToString("N") + ".json");
@@ -620,6 +637,7 @@ namespace PdfModderInstallation
                     if (result.removed_installations > removed && result.backup != null && SameLocation(previous.Directory, DisplayPath(result.backup)))
                         CleanupBackupRegistration(previous, installed, result);
                 }
+                progress(-1, "Comprobando y retirando instaladores anteriores de la caché…");
                 CleanupCachedInstallers(result);
                 if (result.backup != null && !System.IO.Directory.Exists(result.backup)) result.backup = null;
             }
@@ -970,6 +988,22 @@ namespace PdfModderInstallation
         static void Extract(string staging, Action<int, string> progress, Result result)
         {
             Dictionary<string, ExpectedFile> expected = Manifest();
+            // Both copying and the independent SHA-256 read of the written files
+            // contribute measured bytes. Decimal keeps even a large manifest safe.
+            decimal totalBytes = 0, copiedBytes = 0, verifiedBytes = 0;
+            foreach (ExpectedFile file in expected.Values) totalBytes += file.Size;
+            var updates = Stopwatch.StartNew();
+            Action<bool> reportBytes = delegate(bool force)
+            {
+                if (!force && updates.ElapsedMilliseconds < 100) return;
+                int percent = totalBytes == 0 ? 0 : (int)Math.Min(99m, (copiedBytes + verifiedBytes) * 100m / (totalBytes * 2m));
+                progress(percent, "Copiando y comprobando archivos: " + result.files + " de " + expected.Count + "." +
+                    "\r\nCopiados: " + (copiedBytes / 1048576m).ToString("N1", CultureInfo.CurrentCulture) + " de " +
+                    (totalBytes / 1048576m).ToString("N1", CultureInfo.CurrentCulture) + " MiB; leídos para comprobar SHA-256: " +
+                    (verifiedBytes / 1048576m).ToString("N1", CultureInfo.CurrentCulture) + " MiB.");
+                updates.Restart();
+            };
+            reportBytes(true);
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             using (Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("PDFModderPayload.zip"))
             {
@@ -994,18 +1028,20 @@ namespace PdfModderInstallation
                                 count += read;
                                 if (count > file.Size) throw new IOException("Tamaño incorrecto: " + entry.FullName);
                                 output.Write(buffer, 0, read);
+                                copiedBytes += read; reportBytes(false);
                             }
                             if (count != file.Size) throw new IOException("Archivo incompleto: " + entry.FullName);
                             output.Flush(true);
                         }
-                        if (!Hash(destination).Equals(file.Hash, StringComparison.Ordinal))
+                        if (!Hash(destination, delegate(int read) { verifiedBytes += read; reportBytes(false); }).Equals(file.Hash, StringComparison.Ordinal))
                             throw new IOException("La comprobación SHA-256 ha fallado: " + file.Relative + ". No se ha instalado el paquete.");
                         result.files++;
-                        progress(Math.Min(95, result.files * 95 / expected.Count), "Copiando y comprobando archivos: " + result.files + " de " + expected.Count);
+                        reportBytes(false);
                     }
                 }
             }
             if (seen.Count != expected.Count) throw new IOException("El paquete no contiene todos los archivos del inventario.");
+            reportBytes(true);
             foreach (string required in Critical)
                 if (!File.Exists(Path.Combine(staging, required.Replace('/', '\\')))) throw new IOException("Falta la dependencia " + required);
         }
@@ -1073,19 +1109,22 @@ namespace PdfModderInstallation
             catch (Exception ex) { result.warnings.Add("El programa está instalado, pero no se creó el acceso directo de desinstalación del menú Inicio: " + ex.Message); }
         }
 
+        // Progress is -1 for phases without measurable work, 0..99 for measured
+        // copy/verification bytes. The UI reaches 100 only after the final report.
         internal static Result Run(Options options, Action<int, string> progress)
         {
             var result = new Result(); var watch = Stopwatch.StartNew();
             string staging = null, parent = null;
             try
             {
+                progress(-1, "Comprobando la carpeta de destino y las instalaciones anteriores…");
                 string target = Extended(Absolute(options.Directory)); result.directory = DisplayPath(target);
                 ValidateDestination(target);
                 var previousInstallations = options.RemovePrevious ? DiscoverPreviousInstallations(result.directory, options.PreviousDirectory) : new List<PreviousInstallation>();
                 if (!String.IsNullOrEmpty(options.PreviousDirectory) && options.RemovePrevious)
                 {
                     PreviousInstallation active = Previous(options.PreviousDirectory, result.directory);
-                    progress(0, "Esperando a que termine PDF Modder " + active.Version + "…");
+                    progress(-1, "Esperando a que termine PDF Modder " + active.Version + "…");
                     WaitForPrevious(options, active);
                 }
                 parent = Path.GetDirectoryName(target);
@@ -1093,13 +1132,16 @@ namespace PdfModderInstallation
                 NoLinks(parent);
                 staging = Path.Combine(parent, ".pdfmodder-stage-" + Guid.NewGuid().ToString("N"));
                 System.IO.Directory.CreateDirectory(staging);
+                progress(-1, "Comprobando el inventario del paquete…");
                 Extract(staging, progress, result);
+                progress(-1, "Validando la instalación y su inventario de archivos…");
                 WriteFileManifest(staging);
                 string marker = new JavaScriptSerializer().Serialize(new { application_id = AppId, version = "1.7.0", installer_revision = InstallerRevision,
                     installed_utc = DateTime.UtcNow.ToString("o"), verified_files = result.files });
                 File.WriteAllText(Path.Combine(staging, Marker), marker, new UTF8Encoding(false));
                 CheckTree(staging);
                 // Recheck immediately before moving; only a recognized installation can be backed up.
+                progress(-1, "Activando la instalación comprobada y conservando la copia anterior…");
                 ValidateDestination(target);
                 if (System.IO.Directory.Exists(target))
                 {
@@ -1116,24 +1158,27 @@ namespace PdfModderInstallation
                 }
                 result.ok = true;
                 string installed = DisplayPath(target);
+                progress(-1, "Registrando PDF Modder y sus asociaciones en Windows…");
                 bool installationRegistered = RegisterInstallation(installed, result);
                 bool associationsRegistered = RegisterPdfAssociations(installed, result);
                 if (!RegisterShellActions(installed, result)) associationsRegistered = false;
+                progress(-1, "Creando los accesos directos de PDF Modder…");
                 StartMenuShortcuts(installed, result);
                 if (options.Shortcut) Shortcut(installed, result);
                 CleanupPreviousInstallations(options, previousInstallations, installed, result, installationRegistered, associationsRegistered, progress);
                 if (options.Launch)
                 {
+                    progress(-1, "Abriendo la nueva versión de PDF Modder…");
                     try { Process.Start(new ProcessStartInfo(Path.Combine(installed, "PDFModder.exe")) { WorkingDirectory = installed, UseShellExecute = false }); }
                     catch (Exception ex) { result.warnings.Add("Instalado, pero no se pudo abrir automáticamente: " + ex.Message); }
                 }
-                progress(100, "Instalación comprobada. " + result.files + " archivos verificados.");
             }
-            catch (Exception ex) { result.error = ex.Message; result.diagnostic = ex.ToString(); }
+            catch (Exception ex) { result.ok = false; result.error = ex.Message; result.diagnostic = ex.ToString(); }
             finally
             {
                 if (staging != null && System.IO.Directory.Exists(staging))
                 {
+                    progress(-1, "Limpiando los archivos temporales de la instalación…");
                     try
                     {
                         string full = Path.GetFullPath(staging);
@@ -1177,19 +1222,22 @@ namespace PdfModderInstallation
         readonly Button installButton = new Button { Text = "Instalar", AutoSize = true, Name = "installButton" };
         readonly Button closeButton = new Button { Text = "Cancelar", AutoSize = true, Name = "closeButton" };
         readonly Button browseButton = new Button { Text = "Elegir…", AutoSize = true };
-        readonly ProgressBar progress = new ProgressBar { Dock = DockStyle.Fill };
+        readonly ProgressBar progress = new ProgressBar { Dock = DockStyle.Fill, Name = "installationProgress" };
         readonly TextBox status = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None,
             BackColor = SystemColors.Control, ScrollBars = ScrollBars.Vertical, Name = "installationStatus" };
         readonly Options options;
-        bool busy;
+        bool busy, automaticPending;
+        internal int ExitCode { get; private set; }
 
         internal InstallerWindow(Options initial)
         {
             options = initial; pathBox.Text = options.Directory; shortcutCheck.Checked = options.Shortcut;
-            if (options.PreviousDirectory == null) options.PreviousDirectory = Installer.DiscoverPrevious(options.Directory);
+            // Discovery can read/hash older installations; an automatic update
+            // must first show its window, then do this work inside Installer.Run.
+            if (!options.Update && options.PreviousDirectory == null) options.PreviousDirectory = Installer.DiscoverPrevious(options.Directory);
             removePreviousCheck.Checked = options.RemovePrevious;
-            if (options.PreviousDirectory != null) launchCheck.Checked = true;
-            Text = "Instalar PDF Modder 1.7.0"; Font = new Font("Segoe UI", 10F);
+            launchCheck.Checked = options.Update ? options.Launch : options.PreviousDirectory != null;
+            Text = options.Update ? "Actualizar PDF Modder 1.7.0" : "Instalar PDF Modder 1.7.0"; Font = new Font("Segoe UI", 10F);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
             catch { }
             AutoScaleMode = AutoScaleMode.Dpi; StartPosition = FormStartPosition.CenterScreen;
@@ -1212,13 +1260,42 @@ namespace PdfModderInstallation
             status.Text = options.PreviousDirectory == null ? "Tus PDF y preferencias se conservan. No se ha detectado una instalación anterior reconocida." :
                 "Copia anterior: " + options.PreviousDirectory + "\r\nSe retirarán todas las versiones e instaladores anteriores verificados después de instalar correctamente; se conservan sus PDF y archivos modificados.";
             closeButton.Click += delegate { Close(); };
-            FormClosing += delegate(object sender, FormClosingEventArgs e) { if (busy) e.Cancel = true; };
+            FormClosing += delegate(object sender, FormClosingEventArgs e) { if (busy || automaticPending) e.Cancel = true; };
             browseButton.Click += delegate
             {
                 using (var chooser = new FolderBrowserDialog { Description = "Seleccione la carpeta PADRE. Se creará una subcarpeta PDFModder-1.7.0." })
                     if (chooser.ShowDialog(this) == DialogResult.OK) pathBox.Text = Path.Combine(chooser.SelectedPath, "PDFModder-1.7.0");
             };
             installButton.Click += StartInstall;
+            if (options.Update)
+            {
+                automaticPending = true; ExitCode = 1; ControlBox = false;
+                pathBox.Enabled = browseButton.Enabled = shortcutCheck.Enabled = launchCheck.Enabled = removePreviousCheck.Enabled = false;
+                installButton.Visible = false; closeButton.Enabled = false; closeButton.Text = "Cerrar";
+                AcceptButton = null; progress.Style = ProgressBarStyle.Marquee; progress.MarqueeAnimationSpeed = 30;
+                status.Text = "Preparando la actualización. Tus PDF y preferencias se conservan…";
+                Shown += delegate
+                {
+                    BeginInvoke(new MethodInvoker(delegate
+                    {
+                        automaticPending = false; StartInstall(this, EventArgs.Empty);
+                    }));
+                };
+            }
+        }
+
+        void ShowProgress(int percent, string message)
+        {
+            if (percent < 0)
+            {
+                progress.Style = ProgressBarStyle.Marquee; progress.MarqueeAnimationSpeed = 30;
+            }
+            else
+            {
+                progress.Style = ProgressBarStyle.Continuous; progress.MarqueeAnimationSpeed = 0;
+                progress.Value = Math.Max(progress.Value, Math.Min(99, percent));
+            }
+            status.Text = message;
         }
 
         void StartInstall(object sender, EventArgs e)
@@ -1227,22 +1304,26 @@ namespace PdfModderInstallation
             options.Directory = pathBox.Text; options.Shortcut = shortcutCheck.Checked; options.Launch = launchCheck.Checked;
             options.RemovePrevious = removePreviousCheck.Checked;
             busy = true; pathBox.Enabled = browseButton.Enabled = shortcutCheck.Enabled = launchCheck.Enabled = removePreviousCheck.Enabled = installButton.Enabled = closeButton.Enabled = false;
-            status.ForeColor = SystemColors.ControlText; status.Text = "Preparando la instalación…";
+            ControlBox = false; progress.Value = 0; progress.Style = ProgressBarStyle.Marquee; progress.MarqueeAnimationSpeed = 30;
+            status.ForeColor = SystemColors.ControlText; status.Text = options.Update ? "Preparando la actualización…" : "Preparando la instalación…";
             var worker = new BackgroundWorker { WorkerReportsProgress = true };
             worker.DoWork += delegate(object s, DoWorkEventArgs args)
             {
                 using (FileStream report = Installer.ReserveReport(options))
                 {
                     Result result = Installer.Run(options, delegate(int percent, string message) { worker.ReportProgress(percent, message); });
+                    worker.ReportProgress(-1, "Guardando el informe final de la instalación…");
                     Installer.WriteReport(report, result); args.Result = result;
                 }
             };
-            worker.ProgressChanged += delegate(object s, ProgressChangedEventArgs args) { progress.Value = args.ProgressPercentage; status.Text = (string)args.UserState; };
+            worker.ProgressChanged += delegate(object s, ProgressChangedEventArgs args) { ShowProgress(args.ProgressPercentage, (string)args.UserState); };
             worker.RunWorkerCompleted += delegate(object s, RunWorkerCompletedEventArgs args)
             {
-                busy = false; closeButton.Enabled = true; closeButton.Text = "Cerrar";
+                busy = false; ControlBox = true; closeButton.Enabled = true; closeButton.Text = "Cerrar";
+                progress.Style = ProgressBarStyle.Continuous; progress.MarqueeAnimationSpeed = 0;
                 Result result = args.Error == null ? args.Result as Result : new Result { error = args.Error.Message };
-                if (result != null && result.ok)
+                ExitCode = result != null && result.ok && String.IsNullOrEmpty(result.error) ? 0 : 1;
+                if (ExitCode == 0)
                 {
                     progress.Value = 100; status.ForeColor = Color.DarkGreen;
                     status.Text = "Instalación terminada: " + result.files + " archivos comprobados.\r\n" + result.directory;
@@ -1255,12 +1336,19 @@ namespace PdfModderInstallation
                 else
                 {
                     status.ForeColor = Color.Firebrick; status.Text = "No se ha completado la instalación. " + (result == null ? "Error desconocido." : result.error);
-                    pathBox.Enabled = browseButton.Enabled = shortcutCheck.Enabled = launchCheck.Enabled = installButton.Enabled = true;
-                    removePreviousCheck.Enabled = true;
+                    if (!options.Update)
+                    {
+                        pathBox.Enabled = browseButton.Enabled = shortcutCheck.Enabled = launchCheck.Enabled = installButton.Enabled = true;
+                        removePreviousCheck.Enabled = true;
+                    }
                     if (result != null && result.warnings.Count > 0) status.Text += "\r\n" + String.Join("\r\n", result.warnings);
                 }
+                if (options.Report != null && args.Error == null) status.Text += "\r\nInforme: " + options.Report;
                 worker.Dispose();
             };
+            // Paint the initial state before the worker can start discovery or wait
+            // for the application that handed off this automatic update.
+            Update();
             worker.RunWorkerAsync();
         }
     }
@@ -1275,7 +1363,6 @@ namespace PdfModderInstallation
             AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
             AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
             bool silent = Array.IndexOf(args, "--silent") >= 0;
-            bool update = Array.IndexOf(args, "--update") >= 0;
             try
             {
                 Options options = Options.Parse(args);
@@ -1285,19 +1372,18 @@ namespace PdfModderInstallation
                     {
                         Result result = Installer.Run(options, delegate { });
                         Installer.WriteReport(report, result);
-                        if (options.Update && !silent && (!result.ok || result.warnings.Count > 0))
-                            MessageBox.Show((result.ok ? "La nueva versión está instalada.\n" : "No se ha completado la actualización.\n" + result.error + "\n") +
-                                String.Join("\n", result.warnings) + "\nInforme: " + options.Report,
-                                "Actualización de PDF Modder", MessageBoxButtons.OK, result.ok ? MessageBoxIcon.Warning : MessageBoxIcon.Error);
                         return result.ok ? 0 : 1;
                     }
                 }
                 Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new InstallerWindow(options)); return 0;
+                using (var window = new InstallerWindow(options))
+                {
+                    Application.Run(window); return window.ExitCode;
+                }
             }
             catch (Exception ex)
             {
-                if (!silent || update) MessageBox.Show("No se ha completado la instalación.\n" + ex.Message, "PDF Modder 1.7.0", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (!silent) MessageBox.Show("No se ha completado la instalación.\n" + ex.Message, "PDF Modder 1.7.0", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
         }

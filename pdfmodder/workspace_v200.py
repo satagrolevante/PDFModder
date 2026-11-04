@@ -179,13 +179,25 @@ class WorkspaceV200Mixin(SelectionUiV300Mixin):
 
     def combine_pdfs(self,paths):
         self._stash_view_v200();sid=uuid4().hex
-        payload={'paths':[str(p) for p in paths],'session_id':sid,'retain_existing':True}
+        payload={'paths':[str(p) for p in paths],'session_id':sid,'retain_existing':True,'as_copy':True}
         for name in ('config_path','history_dir'):
             if getattr(self,name):payload[name]=str(getattr(self,name))
         def combined(result):
             self._active_session_v200=sid;self.page_number=0;self._add_tab_v200(sid,self.state['path'])
-            self._reset_view_v200();self._set_mode_v171('editing');self._edited(result)
+            self._reset_view_v200();self._set_mode_v171('editing');self._merged_v319(result)
         self._submit('combine',payload,combined)
+
+    def merge_pdfs(self,paths):
+        if not self.state or self.busy or self._ui_mutation_locked_v310():return False
+        self._stash_view_v200()
+        def merged(result):
+            if result.get('new_session'):
+                sid=result['state']['session_id']
+                self._active_session_v200=sid;self.page_number=0
+                self._add_tab_v200(sid,result['state']['path'])
+                self._reset_view_v200();self._set_mode_v171('editing')
+            self._merged_v319(result)
+        return self._submit('merge',{'paths':[str(path) for path in paths],'as_copy':True},merged)
 
     def open_document(self,path,password=''):
         if self.busy:return False

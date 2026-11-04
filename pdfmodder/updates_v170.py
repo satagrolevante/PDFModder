@@ -411,6 +411,8 @@ class AppUpdater:
                             raise ValueError('La descarga supera el tamaño o tiempo permitido.')
                         output.write(chunk)
                         self._set(progress=min(99, count*100//release['size']))
+                self._set(state='validating_download',
+                          message='Comprobando la integridad del instalador descargado…')
                 verify_file(temporary, release)
                 if self._cancel.is_set():
                     raise InterruptedError('Descarga cancelada.')
@@ -453,5 +455,5 @@ class AppUpdater:
             elif previous_pid is not None:
                 raise ValueError('No se puede esperar un proceso sin identificar su instalación.')
             subprocess.Popen(arguments, shell=False, cwd=str(path.parent))
-            self._set(state='installing', message='Se cerrará PDF Modder, se instalará la actualización y se abrirá la nueva versión. La copia anterior se retirará después de instalar correctamente.')
+            self._set(state='installing', message='Abriendo la ventana de progreso de la actualización. PDF Modder se cerrará; el instalador mostrará la instalación y la retirada de la copia anterior.')
         return self._start('verifying', 'Comprobando de nuevo el instalador antes de ejecutarlo…', operation)

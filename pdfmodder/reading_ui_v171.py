@@ -77,7 +77,7 @@ class ReadingUiV171Mixin:
     def _reading_command_allowed_v171(self, command):
         if self.application_mode == 'editing':
             return True
-        if command in ('open', 'close', 'page', 'reading_info', 'reading_copy_range', 'prepare_editing', 'search', 'document_properties', 'clipboard_copy', 'convert_office', 'combine'):
+        if command in ('open', 'close', 'page', 'reading_info', 'reading_copy_range', 'prepare_editing', 'search', 'document_properties', 'clipboard_copy', 'convert_office', 'combine', 'merge'):
             return True
         self._notice('Pulsa «EDITAR» para activar el modo Edición.')
         return False
@@ -96,7 +96,7 @@ class ReadingUiV171Mixin:
         self.canvas.allow_background_edit = False
         for name in ('save_action', 'sign_action', 'undo_action', 'redo_action', 'add_text_action',
                      'format_action', 'add_image_action', 'image_mode_action', 'delete_pages_action',
-                     'extract_pages_action', 'merge_action', 'replace_action', 'organize_action',
+                     'extract_pages_action', 'replace_action', 'organize_action',
                      'objects_action', 'copy_format_action', 'paste_format_action', 'edit_content_action',
                      'export_document_action', 'rotate_pages_action', 'insert_pages_action',
                      'replace_pages_action', 'crop_pages_action', 'split_document_action',
