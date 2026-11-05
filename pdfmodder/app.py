@@ -475,6 +475,7 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
                 if accepted:
                     self.open_document(self._open_retry[0],password)
                 else:
+                    self.cancel_shell_print_v320()
                     self._notice("Apertura cancelada. El documento de trabajo anterior se conserva.")
                     self._refresh_actions()
                 return
@@ -1171,6 +1172,7 @@ def main(argv=None):
     parser.add_argument("pdf",nargs="?")
     group=parser.add_mutually_exclusive_group()
     group.add_argument('--shell-request', metavar='REQUEST_JSON', help=argparse.SUPPRESS)
+    group.add_argument('--print', dest='print_pdf', metavar='PDF', help='Imprimir un PDF directamente en la impresora predeterminada')
     group.add_argument("--smoke-test",metavar="REPORT_JSON",help="Probar apertura, edición, movimiento, guardado y reapertura; generar informe y cerrar")
     group.add_argument("--smoke-extended",metavar="REPORT_JSON",help="Probar también texto nuevo, imágenes, extracción, eliminación y unión de páginas")
     group.add_argument("--smoke-tagged",metavar="REPORT_JSON",help="Probar PDF etiquetado, doble clic, ajuste de línea, accesibilidad e historial")
@@ -1190,7 +1192,7 @@ def main(argv=None):
     group.add_argument("--smoke-v201",metavar="REPORT_JSON",help="Prueba de edición e impresión con vista previa, sin enviar trabajos a impresoras físicas")
     group.add_argument("--smoke-v300",metavar="REPORT_JSON",help="Prueba de apertura, selección, objetos, tipografía, guardado y cierre 3.0.0")
     args = parser.parse_args(argv)
-    if args.shell_request and args.pdf:
+    if (args.shell_request or args.print_pdf) and args.pdf:
         parser.error('La acción del menú contextual no admite un PDF adicional.')
     shell_action = None
     shell_error = None
@@ -1223,7 +1225,9 @@ def main(argv=None):
     window.show()
     if not smoke_report:
         window.start_daily_update_check_v307()
-    if shell_action:
+    if args.print_pdf:
+        QTimer.singleShot(0, lambda: window.open_pdf_for_print_v320(args.print_pdf))
+    elif shell_action:
         QTimer.singleShot(0, lambda: window.start_shell_action_v305(*shell_action))
     elif shell_error:
         QTimer.singleShot(0, lambda: window._error(shell_error))

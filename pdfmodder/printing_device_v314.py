@@ -96,6 +96,8 @@ def configure_printer_v314(printer, settings, capabilities=None):
 
 def apply_sheet_layout_v314(printer, page, settings):
     """Use the first selected page as the common native/preview sheet anchor."""
+    if settings.get('preserve_driver_defaults_v320'):
+        return
     if settings.get('driver_layout') and isinstance(settings.get('page_layout_v314'), QPageLayout):
         if not printer.pageLayout().isEquivalentTo(settings['page_layout_v314']):
             if not printer.setPageLayout(settings['page_layout_v314']):
@@ -168,7 +170,8 @@ class PrintSpoolV314:
 
     def _start(self, page):
         apply_sheet_layout_v314(self.printer, page, self.settings)
-        if self.native and self.settings.get('duplex') == QPrinter.DuplexAuto:
+        if (self.native and self.settings.get('duplex') == QPrinter.DuplexAuto
+                and not self.settings.get('preserve_driver_defaults_v320')):
             self.printer.setDuplex(QPrinter.DuplexAuto)
         validate_printer_settings_v314(self.printer, self.settings)
         if self.native and (os.name == 'nt' or self._tracker_factory is not WindowsPrintJobV314):

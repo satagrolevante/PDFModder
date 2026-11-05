@@ -1,8 +1,17 @@
-# PDF Modder 3.0.19 (código fuente)
+# PDF Modder 3.0.20 (código fuente)
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Firmas y menú Imprimir 3.0.20
+
+Firmas empieza plegado, incorpora el icono de firma y muestra miniaturas más
+compactas. Imprimir en el menú contextual de un PDF envía el documento directamente
+a la impresora predeterminada de Windows, con sus ajustes predeterminados y sin
+diálogo de opciones.
+Instalador y portable: [publicación 3.0.20](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.20).
+[Cambios y comprobaciones](docs/NOTAS_3.0.20.md).
 
 ## Combinación de PDF firmados y progreso de actualización 3.0.19
 

@@ -41,6 +41,7 @@ class ShellRegistrationHarness {
         parent.DeleteSubKey(path,false);
     }
     static string Verb(string extension) { return @"Software\Classes\SystemFileAssociations\"+extension+@"\shell\"+(extension==".pdf"?"PDFModder.CombinePdf":"PDFModder.ConvertToPdf"); }
+    const string PrintVerb = @"Software\Classes\SystemFileAssociations\.pdf\shell\PDFModder.Print";
     static string Class(string clsid) { return @"Software\Classes\CLSID\"+clsid; }
     static bool Register(string path) {
         object result=Activator.CreateInstance(Result,true);
@@ -55,6 +56,10 @@ class ShellRegistrationHarness {
     }
     static void AssertCurrent(string root) {
         string server="\""+Path.Combine(root,"PDFModderShellActions.exe")+"\" --com-server";
+        string printCommand="\""+Path.Combine(root,"PDFModder.exe")+"\" --print \"%1\"";
+        Check(Get(PrintVerb,"MUIVerb")=="Imprimir" && Get(PrintVerb,"MultiSelectModel")=="Single","Print menu missing or not single-selection");
+        Check(Get(PrintVerb,"PDFModderInstallRoot")==root && Get(PrintVerb+@"\command","")==printCommand,"Stale print executable or unquoted file argument");
+        Check(Get(PrintVerb+@"\command","DelegateExecute")==null,"Print uses an unexpected delegated action");
         foreach(string ext in new[]{".pdf",".doc",".docx"}) {
             string verb=Verb(ext), clsid=ext==".pdf"?CombineId:ConvertId;
             Check(Get(verb,"MUIVerb")== (ext==".pdf"?"Combinar archivos PDF":"Convertir a PDF"),"Missing menu label");
@@ -144,6 +149,7 @@ class ShellRegistrationHarness {
             Pass("missing_helper_and_registry_errors_preserve_current_registration");
             Remove(current);
             foreach(string ext in new[]{".pdf",".doc",".docx"}) Check(!Exists(Verb(ext)),"Owned verb not removed");
+            Check(!Exists(PrintVerb),"Owned print action not removed");
             foreach(string clsid in new[]{ConvertId,CombineId}) Check(!Exists(Class(clsid)),"Owned COM server not removed");
             foreach(string ext in new[]{".pdf",".doc",".docx"}) {
                 Check(Get(@"Software\Classes\"+ext,"")=="OtherApplication"+ext,"Default app changed");
@@ -155,16 +161,17 @@ class ShellRegistrationHarness {
             Put(Verb(".docx"),"PDFModderApplicationId","foreign-owner");
             Put(Verb(".docx"),"MUIVerb","Foreign label");
             Check(!Register(current),"Foreign-owned identifier overwritten");
-            Check(!Exists(Verb(".doc")) && !Exists(Verb(".pdf")) && !Exists(Class(ConvertId)),"Conflict caused partial registration");
+            Check(!Exists(Verb(".doc")) && !Exists(Verb(".pdf")) && !Exists(PrintVerb) && !Exists(Class(ConvertId)),"Conflict caused partial registration");
             Remove(current);
             Check(Get(Verb(".docx"),"MUIVerb")=="Foreign label","Foreign collision removed");
             Root.DeleteSubKeyTree(Verb(".docx"),false);
             Pass("foreign_owned_identifiers_are_preflighted_and_never_deleted");
             Check(Register(current),"Final registration failed");
             Put(Verb(".pdf")+@"\command","DelegateExecute","{00000000-0000-0000-0000-000000000001}");
+            Put(PrintVerb+@"\command","","different-printer-command");
             Put(Class(ConvertId)+@"\LocalServer32","","different-server");
             Remove(current);
-            Check(Exists(Verb(".pdf")) && Exists(Class(ConvertId)),"Modified handler removed");
+            Check(Exists(Verb(".pdf")) && Exists(Class(ConvertId)) && Get(PrintVerb+@"\command","")=="different-printer-command","Modified handler removed");
             Check(!Exists(Verb(".doc")) && !Exists(Verb(".docx")) && !Exists(Class(CombineId)),"Unmodified owned handler retained");
             Pass("uninstall_preserves_handlers_changed_by_another_installation");
             outcome["ok"]=true;

@@ -55,7 +55,7 @@ def send_drop(window, location):
 
 def test_panel_creates_named_signatures_without_a_certificate(qtbot, saving_window, monkeypatch):
     window = saving_window
-    assert window.signature_tools_section_v317.header.text() == 'Firmas'
+    assert window.signature_tools_section_v317.header.text().startswith('Firmas')
     assert not any('iniciales' in button.text().lower()
                    for button in window.signature_tools_section_v317.findChildren(QToolButton))
     def capture(dialog):

@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem,
     QPlainTextEdit, QProgressDialog, QPushButton, QVBoxLayout,
@@ -74,6 +74,59 @@ def _conversion_errors(errors):
 
 
 class ShellActionsUiMixin:
+    def open_pdf_for_print_v320(self, filename):
+        """Open one Explorer PDF and print with fresh Windows defaults."""
+        if self._closed or self.busy:
+            return False
+        try:
+            path = Path(filename).expanduser().resolve()
+            if path.suffix.lower() != '.pdf':
+                raise ValueError('Imprimir admite archivos PDF.')
+            if not path.is_file():
+                raise ValueError(f'No se encuentra el archivo: {path}')
+        except (OSError, ValueError, TypeError) as exc:
+            self._error(str(exc))
+            return False
+        self.cancel_shell_print_v320()
+        self._shell_print_v320 = {'path': path, 'previous_session': self._active_session_v200}
+        self.operation_finished.connect(self._opened_for_shell_print_v320)
+        self.error_raised.connect(self._failed_shell_print_v320)
+        if not self.open_document(path):
+            self.cancel_shell_print_v320()
+            return False
+        return True
+
+    def cancel_shell_print_v320(self):
+        if getattr(self, '_shell_print_v320', None) is None:
+            return
+        self._shell_print_v320 = None
+        self.operation_finished.disconnect(self._opened_for_shell_print_v320)
+        self.error_raised.disconnect(self._failed_shell_print_v320)
+
+    def _failed_shell_print_v320(self, _message):
+        request = getattr(self, '_shell_print_v320', None)
+        # A failed open keeps the old session. A read-only compatibility notice
+        # on the newly opened document must not prevent ordinary printing.
+        if request and self._active_session_v200 == request['previous_session']:
+            self.cancel_shell_print_v320()
+
+    def _opened_for_shell_print_v320(self, command, result):
+        request = getattr(self, '_shell_print_v320', None)
+        if command != 'open' or request is None:
+            return
+        self.cancel_shell_print_v320()
+        state = result.get('state', {})
+        if Path(state.get('path', '')).resolve() != request['path']:
+            return
+        context = (state.get('session_id'), state.get('document_revision'))
+
+        def print_document():
+            if (not self._closed and context ==
+                    (self._active_session_v200, self.state.get('document_revision'))):
+                self.print_to_default_v320()
+
+        QTimer.singleShot(0, print_document)
+
     def start_shell_action_v305(self, action, paths, *, destination_dir=None):
         """Run one explicit shell request after the main window is ready."""
         if getattr(self, '_closed', False):

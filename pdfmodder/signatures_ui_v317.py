@@ -13,6 +13,7 @@ from .action_state_v310 import set_ui_enabled_v310, ui_enabled_v310
 from .manual_signatures_v317 import SignatureLibraryV317
 from .signature_draw_ui_v317 import SignatureDrawingDialogV317
 from .tools_ui_v150 import ToolSection
+from .ui_icons_v170 import icon_v170
 from .workspace_ui_v170 import local_data_directory
 
 
@@ -24,11 +25,11 @@ def signature_thumbnail_v317(data):
     source = QPixmap()
     if not source.loadFromData(data, 'PNG'):
         raise ValueError('No se puede mostrar la firma guardada.')
-    thumbnail = QPixmap(210, 64)
+    thumbnail = QPixmap(170, 44)
     thumbnail.fill(Qt.white)
-    artwork = source.scaled(202, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    artwork = source.scaled(162, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     painter = QPainter(thumbnail)
-    painter.drawPixmap((210-artwork.width())//2, (64-artwork.height())//2, artwork)
+    painter.drawPixmap((170-artwork.width())//2, (44-artwork.height())//2, artwork)
     painter.end()
     return thumbnail
 
@@ -45,9 +46,9 @@ class SignatureListV317(QListWidget):
         self.setMovement(QListView.Static)
         self.setResizeMode(QListView.Adjust)
         self.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.setIconSize(QSize(210, 64))
-        self.setGridSize(QSize(238, 94))
-        self.setMinimumHeight(110)
+        self.setIconSize(QSize(170, 44))
+        self.setGridSize(QSize(198, 62))
+        self.setMinimumHeight(90)
         self.setMaximumHeight(260)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setDragEnabled(True)
@@ -128,7 +129,9 @@ class SignaturesUiV317Mixin:
         super()._create_ui()
         self.signature_library_v317 = SignatureLibraryV317(local_data_directory(self.config_path)/'firmas')
         self._placing_signature_v317 = None
-        section = self.signature_tools_section_v317 = ToolSection('Firmas', 'signatureToolsSectionV317')
+        section = self.signature_tools_section_v317 = ToolSection('Firmas', 'signatureToolsSectionV317', expanded=False)
+        section._section_icon_v170 = icon_v170('sign')
+        section.set_expanded(False)
         layout = self.tools_scroll.widget().layout()
         layout.insertWidget(layout.indexOf(self.advanced_tools_section), section)
         self.create_signature_action_v317 = QAction('Crear firma manual…', self)

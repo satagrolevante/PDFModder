@@ -1,7 +1,7 @@
-# Convertir documentos y combinar PDF desde el Explorador
+# Convertir documentos, combinar e imprimir PDF desde el Explorador
 
-Estas acciones se registran al instalar PDF Modder 3.0.5. La carpeta portable por
-sí sola no registra menús. En Windows 11 abre **Mostrar más opciones** dentro del
+Convertir y combinar se registran desde PDF Modder 3.0.5; Imprimir se añade en
+3.0.20. La carpeta portable por sí sola no registra menús. En Windows 11 abre **Mostrar más opciones** dentro del
 menú contextual, o utiliza **Mayús + F10**.
 
 ## Convertir a PDF
@@ -34,6 +34,26 @@ Después de combinar, el documento nuevo queda abierto para revisarlo y guardarl
 con **Guardar como…**. Los PDF de origen permanecen intactos. Si seleccionas un
 solo PDF, puedes añadir otros en el diálogo. Esta acción admite únicamente PDF;
 los DOC y DOCX deben convertirse antes.
+
+## Imprimir
+
+Desde la versión 3.0.20, pulsa con el botón derecho sobre un PDF y elige
+**Imprimir**. PDF Modder envía directamente el documento completo a la impresora
+predeterminada de Windows, con los ajustes predeterminados de esa impresora y sin
+mostrar vista previa ni un diálogo de opciones. Las preferencias guardadas en
+PDF Modder no sustituyen los valores de Windows. Si el PDF necesita contraseña,
+primero solicita la contraseña del documento.
+
+El estado del envío aparece en la aplicación. Si no hay impresora predeterminada
+o el controlador no permite enviar el trabajo, muestra el error. No elige otra
+impresora ni reintenta automáticamente un envío fallido.
+
+La opción Imprimir dentro de la aplicación conserva su diálogo habitual para
+elegir impresora y ajustar el trabajo.
+
+Esta acción procesa un archivo cada vez y se registra con el instalador. La
+actualización conserva la impresora predeterminada de Windows y el programa
+predeterminado para abrir PDF.
 
 ## Instalación y límites
 

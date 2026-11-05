@@ -26,39 +26,77 @@ class PrintingUiV314Mixin:
         from .printing_dialog_v314 import PrintDialogV314
         dialog = PrintDialogV314(self.state['page_count'], self.page_number, self,
                                 preferences=self._printer_preferences_v311)
+        context = self._new_print_context_v314(dialog)
+        self._print_dialog_v200 = dialog
+        dialog.preview_invalidated.connect(lambda: self._preview_changed_v314(context))
+        dialog.preview_requested.connect(lambda: self._request_preview_v314(context))
+        dialog.print_requested.connect(lambda: self._request_print_v314(context))
+        dialog.cancel_requested.connect(lambda: self._cancel_print_v314(context))
+        try:
+            self._exec_edit_dialog(dialog)
+        finally:
+            self._close_print_context_v314(context)
+
+    def print_to_default_v320(self):
+        if (not self.state or self.busy or self.state.get('preview') or self._closed
+                or getattr(self, '_print_context_v314', None) is not None):
+            return False
+        if (self.canvas.editor.isVisible() or getattr(self, '_rich_active', False)
+                or getattr(self, '_rich_loading', False)):
+            self._error('Acepta o cancela el texto que estás escribiendo antes de imprimir.')
+            return False
+        from .printing_direct_v320 import DirectPrintStatusV320, system_default_printer_v320
+        try:
+            settings = system_default_printer_v320(self.state.get('path', 'Documento.pdf'))
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._error(str(exc))
+            return False
+        status = DirectPrintStatusV320(self, settings, self.state['page_count'])
+        context = self._new_print_context_v314(status, direct=True)
+        status.context = context
+        self._refresh_actions()
+        self._request_print_v314(context)
+        return not context['closed']
+
+    def _new_print_context_v314(self, dialog, *, direct=False):
         context = {'dialog': dialog, 'session': self._active_session_v200,
                    'revision': self.state['document_revision'], 'closed': False,
                    'cancelled': False, 'inflight': None, 'job': None, 'spool': None,
                    'preview_wanted': None, 'preview_inflight': None,
                    'preview_control': DraftControl(), 'print_control': DraftControl(),
-                   'ticket': None, 'index': 0, 'geometries': {}, 'quality_noted': None}
+                   'ticket': None, 'index': 0, 'geometries': {}, 'quality_noted': None,
+                   'direct_v320': direct}
         timer = QTimer(dialog)
         timer.setSingleShot(True)
         timer.setInterval(25)
         timer.timeout.connect(lambda: self._pump_print_v314(context))
         context['timer'] = timer
         self._print_context_v314 = context
-        # Retain the established reference used by other window safeguards.
-        self._print_dialog_v200 = dialog
-        dialog.preview_invalidated.connect(lambda: self._preview_changed_v314(context))
-        dialog.preview_requested.connect(lambda: self._request_preview_v314(context))
-        dialog.print_requested.connect(lambda: self._request_print_v314(context))
-        dialog.cancel_requested.connect(lambda: self._cancel_print_v314(context))
         failed = lambda message: self._print_error_v314(context, message)
+        context['error_handler_v320'] = failed
         self.error_raised.connect(failed)
-        try:
-            self._exec_edit_dialog(dialog)
-        finally:
-            context['closed'] = True
-            timer.stop()
-            context['preview_control'].close()
-            context['print_control'].close()
-            if context['spool'] is not None:
-                context['spool'].cancel()
-            self.error_raised.disconnect(failed)
+        return context
+
+    def _close_print_context_v314(self, context):
+        if context['closed']:
+            return
+        context['closed'] = True
+        context['timer'].stop()
+        context['preview_control'].close()
+        context['print_control'].close()
+        if context['spool'] is not None:
+            context['spool'].cancel()
+        self.error_raised.disconnect(context['error_handler_v320'])
+        if getattr(self, '_print_context_v314', None) is context:
             self._print_context_v314 = None
+        if getattr(self, '_print_dialog_v200', None) is context['dialog']:
             self._print_dialog_v200 = None
-            dialog.deleteLater()
+        context['dialog'].deleteLater()
+        if context.get('direct_v320'):
+            self._refresh_actions()
+            if getattr(self, '_close_after_print_v320', False):
+                self._close_after_print_v320 = False
+                QTimer.singleShot(0, self.close)
 
     def _print_current_v314(self, context):
         return bool(not context['closed'] and not self._closed
@@ -113,9 +151,13 @@ class PrintingUiV314Mixin:
         if printer is None:
             printer = QPrinter(QPrinter.HighResolution)
             printer.setOutputFormat(QPrinter.NativeFormat)
-        configure_printer_v314(printer, settings, printer_capabilities_v201(settings['printer']))
-        printer.setPrintRange(QPrinter.AllPages)
-        printer.setPageOrder(QPrinter.FirstPageFirst)
+        if settings.get('preserve_driver_defaults_v320'):
+            from .printing_device_v314 import validate_printer_settings_v314
+            validate_printer_settings_v314(printer, settings)
+        else:
+            configure_printer_v314(printer, settings, printer_capabilities_v201(settings['printer']))
+            printer.setPrintRange(QPrinter.AllPages)
+            printer.setPageOrder(QPrinter.FirstPageFirst)
         printer.setDocName(Path(self.state.get('path', 'PDF Modder')).name)
         return printer
 
@@ -266,10 +308,11 @@ class PrintingUiV314Mixin:
             context['spool'] = None
             context['job'] = None
             self.statusBar().showMessage('Trabajo enviado a la impresora.')
-            try:
-                self._printer_preferences_v311.remember(settings['printer'], settings)
-            except OSError as exc:
-                self._notice('Trabajo enviado. No se pudieron recordar las preferencias: '+str(exc))
+            if not context.get('direct_v320'):
+                try:
+                    self._printer_preferences_v311.remember(settings['printer'], settings)
+                except OSError as exc:
+                    self._notice('Trabajo enviado. No se pudieron recordar las preferencias: '+str(exc))
             dialog.set_spooling(False)
             dialog.accept()
         except Exception as exc:

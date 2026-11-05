@@ -517,6 +517,13 @@ namespace PdfModderUninstallation
                         UserRegistryRoot.DeleteSubKeyTree(path, false); changed = true;
                     }
                 }
+                string printPath = @"Software\Classes\SystemFileAssociations\.pdf\shell\PDFModder.Print";
+                string printCommand = "\"" + Path.Combine(root, "PDFModder.exe") + "\" --print \"%1\"";
+                if (OwnShellKey(printPath, root) && RegistryStringEquals(printPath + @"\command", "", printCommand)
+                    && RegistryStringEquals(printPath + @"\command", "DelegateExecute", null))
+                {
+                    UserRegistryRoot.DeleteSubKeyTree(printPath, false); changed = true;
+                }
                 string server = "\"" + Path.Combine(root, "PDFModderShellActions.exe") + "\" --com-server";
                 foreach (string clsid in new [] { ShellConvertClsid, ShellCombineClsid })
                 {

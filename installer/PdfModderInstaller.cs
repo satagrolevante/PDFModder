@@ -850,6 +850,28 @@ namespace PdfModderInstallation
             RequireRegistryString(path + @"\command", "DelegateExecute", clsid);
         }
 
+        static void RegisterPrintShellVerb(string target, string exe, string icon)
+        {
+            string path = @"Software\Classes\SystemFileAssociations\.pdf\shell\PDFModder.Print";
+            string command = Quoted(exe) + " --print \"%1\"";
+            using (RegistryKey key = AssociationKey(path))
+            {
+                key.SetValue("MUIVerb", "Imprimir", RegistryValueKind.String);
+                key.SetValue("Icon", icon, RegistryValueKind.String);
+                key.SetValue("MultiSelectModel", "Single", RegistryValueKind.String);
+                key.SetValue("PDFModderApplicationId", AppId, RegistryValueKind.String);
+                key.SetValue("PDFModderInstallRoot", target, RegistryValueKind.String);
+            }
+            using (RegistryKey key = AssociationKey(path + @"\command"))
+            {
+                key.DeleteValue("DelegateExecute", false);
+                key.SetValue("", command, RegistryValueKind.String);
+            }
+            RequireRegistryString(path, "MUIVerb", "Imprimir");
+            RequireRegistryString(path, "MultiSelectModel", "Single");
+            RequireRegistryString(path + @"\command", "", command);
+        }
+
         internal static bool RegisterShellActions(string target, Result result)
         {
             bool changed = false;
@@ -865,6 +887,7 @@ namespace PdfModderInstallation
                 foreach (string extension in extensions)
                     snapshots.Add(@"Software\Classes\SystemFileAssociations\" + extension + @"\shell\" +
                         (extension == ".pdf" ? "PDFModder.CombinePdf" : "PDFModder.ConvertToPdf"), null);
+                snapshots.Add(@"Software\Classes\SystemFileAssociations\.pdf\shell\PDFModder.Print", null);
                 snapshots.Add(@"Software\Classes\CLSID\" + ShellConvertClsid, null);
                 snapshots.Add(@"Software\Classes\CLSID\" + ShellCombineClsid, null);
                 var paths = new List<string>(snapshots.Keys);
@@ -878,6 +901,7 @@ namespace PdfModderInstallation
                 RegisterShellVerb(".doc", "PDFModder.ConvertToPdf", "Convertir a PDF", ShellConvertClsid, target, icon);
                 RegisterShellVerb(".docx", "PDFModder.ConvertToPdf", "Convertir a PDF", ShellConvertClsid, target, icon);
                 RegisterShellVerb(".pdf", "PDFModder.CombinePdf", "Combinar archivos PDF", ShellCombineClsid, target, icon);
+                RegisterPrintShellVerb(target, exe, icon);
                 return true;
             }
             catch (Exception exception)

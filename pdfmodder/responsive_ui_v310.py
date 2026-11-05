@@ -28,6 +28,7 @@ class ResponsiveUiV310Mixin:
 
     def _ui_mutation_locked_v310(self):
         return bool(self._closed or (self.busy and not self._render_busy_v310())
+                    or (getattr(self, '_print_context_v314', None) or {}).get('direct_v320')
                     or self.state.get('preview')
                     or self.canvas.editor.isVisible()
                     or getattr(self, '_rich_active', False)
@@ -200,6 +201,9 @@ class ResponsiveUiV310Mixin:
 
     def choose_print_v200(self):
         return self._run_after_read_v310('print', super().choose_print_v200)
+
+    def print_to_default_v320(self):
+        return self._run_after_read_v310('print_default', super().print_to_default_v320)
 
     def choose_sign_document(self, *, visible=None):
         return self._run_after_read_v310('sign', super().choose_sign_document, visible=visible)

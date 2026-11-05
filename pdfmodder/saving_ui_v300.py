@@ -659,6 +659,12 @@ class SavingV300Mixin:
         return super()._pump_reader_v180()
 
     def closeEvent(self, event):
+        printing = getattr(self, '_print_context_v314', None)
+        if printing and printing.get('direct_v320') and not printing['closed']:
+            event.ignore()
+            self._close_after_print_v320 = True
+            self._cancel_print_v314(printing)
+            return
         if self._allow_close or self._closed:
             return super().closeEvent(event)
         event.ignore()
