@@ -1,5 +1,6 @@
 """Missing embedded characters require a concrete, explicit font choice."""
 from dataclasses import replace
+from pathlib import Path
 import pickle
 
 import pymupdf as fitz
@@ -27,7 +28,10 @@ def partial_document(tmp_path):
 
 
 def bundled_face():
-    return next(e for e in FontResolver().catalog() if e['name']=='LiberationSans')
+    # Use the licensed font shipped with the project; do not assume that the
+    # host OS has installed it or lists it in its system font catalogue.
+    return {'name':'LiberationSans', 'path':str(Path(__file__).resolve().parents[1]
+        /'assets/fonts/LiberationSans-Regular.ttf')}
 
 
 def test_missing_font_error_survives_worker_serialization_and_explicit_retry(tmp_path):
@@ -103,9 +107,12 @@ def test_gui_worker_font_choice_preview_accept_save_and_undo(qtbot, window, tmp_
     monkeypatch.setattr(window, '_exec_edit_dialog', lambda dialog:QDialog.Rejected)
     window._choose_compatible_font_v321()
     assert editor.payload() == before and window.state['history_index'] == 0
+    monkeypatch.setattr('pdfmodder.font_choice_ui_v321.QFileDialog.getOpenFileName',
+        lambda *args:(bundled_face()['path'], 'Fuentes (*.ttf *.otf)'))
     def choose(dialog):
-        index = next(i for i in range(dialog.fonts.count()) if dialog.fonts.itemData(i)['name']=='LiberationSans')
-        dialog.fonts.setCurrentIndex(index); dialog.accept()
+        dialog.import_font()
+        assert dialog.fonts.currentData()['name']=='LiberationSans'
+        dialog.accept()
         return dialog.result()
     monkeypatch.setattr(window, '_exec_edit_dialog', choose)
     window._choose_compatible_font_v321()
