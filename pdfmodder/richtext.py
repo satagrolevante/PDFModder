@@ -579,16 +579,26 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
             from .paired_deletion_v304 import try_delete_paired_text
             paired=try_delete_paired_text(data,request,model)
             if paired is not None:return paired
-        clean=replace(model,issues=[v for v in model.issues if v!=CLIP_ISSUE])
-        metadata=_read_metadata(doc,request.page)
-        from .linked_text_v303 import prepare_linked_text
-        linked_text=prepare_linked_text(data,request.page,model,selected,''.join(str(r.get('text','')) for r in request.runs))
-        _safe_rich_selection(doc[request.page],clean,selected,metadata,linked_text=linked_text)
         rotation=doc[request.page].rotation
         doc[request.page].set_rotation(0)
         page_matrix=doc[request.page].transformation_matrix
         page_bounds=fitz.Rect(0,0,doc[request.page].cropbox.width,doc[request.page].cropbox.height)
         doc[request.page].set_rotation(rotation)
+        visible_selected=selected
+        reader,operations,shows,mapping=operator_glyph_map(data,request.page,model)
+        hidden=[]
+        new_text=''.join(str(r.get('text','')) for r in request.runs)
+        if new_text.replace('\n','').replace('\u2028','')!=''.join(g.text for g in selected):
+            from .clipped_fields_v321 import hidden_field_glyphs
+            hidden=hidden_field_glyphs(operations,shows,selected,
+                reader.pages[request.page]['/Resources'].get_object(),page_matrix,page_bounds)
+            if hidden:
+                selected=sorted(selected+hidden,key=lambda g:g.id)
+        clean=replace(model,issues=[v for v in model.issues if v!=CLIP_ISSUE])
+        metadata=_read_metadata(doc,request.page)
+        from .linked_text_v303 import prepare_linked_text
+        linked_text=prepare_linked_text(data,request.page,model,selected,new_text)
+        _safe_rich_selection(doc[request.page],clean,selected,metadata,linked_text=linked_text)
     chosen={g.id for g in selected}
     others=[g for g in model.glyphs if g.id not in chosen]
     pure_delete=not any(str(run.get('text','')) for run in request.runs)
@@ -615,10 +625,9 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     if not pure_delete and any(abs(g.opacity-selected[0].opacity)>.001 for g in selected):
         raise EditError('La selección mezcla opacidades. Edita cada opacidad en una sesión independiente.')
     checkpoint()
-    reader,operations,shows,mapping=operator_glyph_map(data,request.page,model)
     checkpoint()
     byop={s['operation']:s for s in shows}
-    first=selected[0]
+    first=visible_selected[0]
     first_op=mapping[first.id]['operation']
     resources=reader.pages[request.page]['/Resources'].get_object()
     first_state=_state_at(operations,first_op,resources)
@@ -644,7 +653,7 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     # never expands a table cell or silently frees text from its original clip.
     clip=fitz.Rect(source_clips[0])
     for part in source_clips[1:]:clip &= part
-    bounds=union(g.bbox for g in selected)
+    bounds=union(g.bbox for g in visible_selected)
     rect=tuple(request.rect or bounds)
     if len(rect)!=4:raise EditError('El área de texto debe tener cuatro coordenadas.')
     rect=tuple(_finite(v,'Posición') for v in rect)
@@ -720,7 +729,9 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
                 try:
                     extension=prepare_native_font(working,request.page,source,same_text,
                         font_name=font_name if explicit else None,font_file=run.get('font_file'),resolver=resolver)
-                except FontError as exc:raise EditError(str(exc)) from exc
+                except FontError as exc:
+                    from .font_choice_v321 import FontChoiceRequired
+                    raise FontChoiceRequired(str(exc),original_run,same_text) from exc
                 working=extension.data
                 original_scale=1.
                 if extension.evidence.get('mapping_only'):
@@ -795,9 +806,9 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     for g, token in zip(planned, laid):
         inside_clip=(clip+(-.035,-.035,.035,.035)).contains(fitz.Rect(g.bbox))
         if not inside_clip:
-            # Permit only original-resource text on an original baseline and
-            # at its original size. Horizontal cell limits still apply. Its
-            # actual paint must then be proved below, with clips unchanged.
+            # Retain the original baseline/size, or a face explicitly chosen
+            # by the user. Different fonts have different vertical metric
+            # boxes. Horizontal limits and the saved ink proof still apply.
             original_face=(working==data and any(
                 token['choice']['resource']==mapping[old.id]['font_resource']
                 and abs(g.size-old.size)<.001 and abs(g.origin[1]-old.origin[1])<.025
@@ -805,7 +816,8 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
                 for old in selected))
             within_cell=(not clip.is_empty and g.bbox[0]>=clip.x0-.035
                          and g.bbox[2]<=clip.x1+.035)
-            if not original_face or not within_cell:
+            explicit_face=evidence.get(token['choice']['resource'],{}).get('explicit',False)
+            if not (original_face or explicit_face) or not within_cell:
                 raise EditError('El texto nuevo queda fuera de la página o del recorte original.')
             metric_clip_exception=True
         if not page_bounds.contains(fitz.Rect(g.bbox)):
@@ -814,9 +826,9 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         overlap_neighbors.update(collisions)
         if collisions and not request.allow_overlap:
             raise EditError('El texto se solapa con caracteres vecinos. Amplía o mueve el cuadro, o permite el solapamiento explícitamente.')
-    if source_metric_overhang and planned:
-        _assert_clip_paint(data, request.page, [bounds],
-                           'Un carácter original está parcialmente oculto por el recorte.')
+    # The source may already contain cropped ink. Only the replacement must
+    # fit: the source codes are removed in place, retaining every W/W* and
+    # cursor advance. The final candidate still passes the ink and pixel proof.
     with fitz.open(stream=data,filetype='pdf') as safety:
         from .marked_content_v303 import assert_unstructured_artifact_bounds
         assert_unstructured_artifact_bounds(data,request.page,model,selected,planned,mapping,operations)
@@ -836,7 +848,7 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     if source_decoration:source_decoration.plan(planned,allow_overlap=request.allow_overlap)
     from .tagged_artifacts import verified_artifact_selection
     artifact=(structure is not None and verified_artifact_selection(
-        structure,request.page,request.ids,mapping,operations,model=model,planned=planned))
+        structure,request.page,[g.id for g in selected],mapping,operations,model=model,planned=planned))
     tagged=(TaggedEdit(structure,request.page,model,selected,planned,selected,True,native_inplace=True,
                        decoration_policy=source_decoration)
             if structure is not None and not artifact else None)
@@ -976,7 +988,7 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         # the actual original document; this option never crosses the UI API.
         report={}
     elif insertion_source is None:
-        report=_validate(data,output,request.page,others+planned,selected+planned,old_validation_shapes,new_validation_shapes,
+        report=_validate(data,output,request.page,others+planned,visible_selected+planned,old_validation_shapes,new_validation_shapes,
                          tagged.expected if tagged else None,expected_links=linked_text.expected_links if linked_text else None)
     else:
         # The temporary positioning anchor is an implementation detail. Check
@@ -1012,6 +1024,12 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         report['warning']=warning
     if source_metric_overhang:
         report['clip_metric_overhang_verified']=True
+    if hidden:
+        report['hidden_field_characters_removed']=len(hidden)
+        report['hidden_field_text_removed']=''.join(g.text for g in hidden)
+        report.setdefault('warnings',[]).append(
+            f'Se ha sustituido también el contenido oculto del campo ({len(hidden)} caracteres).')
+        report['warning']=report['warnings'][-1]
     if pure_delete and retained_complex_clip:
         report['complex_clip_preserved_by_deletion']=True
     if metric_clip_exception:

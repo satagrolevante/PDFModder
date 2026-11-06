@@ -6,7 +6,7 @@ discarded by generation; accepting uses validation of the exact latest draft.
 from copy import deepcopy
 from PySide6.QtCore import Qt,QTimer,QRect
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QComboBox,QLabel,QGroupBox,QVBoxLayout
+from PySide6.QtWidgets import QComboBox,QLabel,QGroupBox,QVBoxLayout,QPushButton,QDialog
 from .model import union,transform_rect,pt
 from .auto_layout_v316 import automatic_area_enabled_v316
 
@@ -34,6 +34,12 @@ class RichEditing:
         self.rich_result_image=QLabel();self.rich_result_image.setAlignment(Qt.AlignCenter)
         self.rich_result_message=QLabel('Escribe para generar la vista del PDF.');self.rich_result_message.setWordWrap(True)
         layout.addWidget(self.rich_result_image);layout.addWidget(self.rich_result_message)
+        self.font_choice_button_v321=QPushButton('Elegir fuente compatible…')
+        self.font_choice_button_v321.setObjectName('chooseCompatibleFontV321')
+        self.font_choice_button_v321.clicked.connect(self._choose_compatible_font_v321)
+        self.font_choice_button_v321.hide()
+        self._font_choice_v321=None
+        layout.addWidget(self.font_choice_button_v321)
         panel_layout.insertWidget(1,self.rich_result);self.rich_result.hide()
 
     def start_rich_edit(self,join_items=None):
@@ -96,6 +102,7 @@ class RichEditing:
 
     def _rich_changed(self,payload):
         if not self._rich_active:return
+        self._font_choice_v321=None;self.font_choice_button_v321.hide()
         # This channel reaches the occupied process immediately. A queued
         # worker command would have to wait for the obsolete preview itself.
         submission=getattr(self,'_draft_submission_v305',None)
@@ -158,7 +165,34 @@ class RichEditing:
             self.canvas.editor.toolbar.status.setText(message)
             self.rich_result_message.setText('Borrador no validado: '+message)
 
+    def _offer_font_choice_v321(self,error):
+        if not self._rich_active:return
+        self._font_choice_v321=(error,self._rich_generation,self._rich_serial)
+        self.rich_result_message.setText('La fuente «'+(error.source_style.get('font_name') or 'original')
+            +'» no permite escribir este texto. Elige una fuente compatible o importa su versión completa. '
+            'El borrador se conserva y podrás revisar el resultado antes de aplicarlo.')
+        self.font_choice_button_v321.show()
+
+    def _choose_compatible_font_v321(self):
+        offer=self._font_choice_v321
+        if not offer or not self._rich_active or self._rich_accept_pending or self.busy:return
+        error,generation,serial=offer
+        from .font_choice_v321 import face_identity
+        from .font_choice_ui_v321 import FontChoiceDialog
+        editor=self.canvas.editor
+        text=''.join(r['text'] for r in editor.payload()['runs']
+                     if face_identity(r)==face_identity(error.source_style))
+        text=''.join(c for c in text if c not in '\n\r\u2028\t\u200c\u200d')
+        if not text:return
+        dialog=FontChoiceDialog(error.source_style.get('font_name') or 'original',text,editor._catalog,self)
+        result=self._exec_edit_dialog(dialog) if hasattr(self,'_exec_edit_dialog') else dialog.exec()
+        if (result==QDialog.Accepted and self._rich_active
+                and (generation,serial)==(self._rich_generation,self._rich_serial)):
+            if editor.replace_unavailable_face_v321(error.source_style,dialog.entry):
+                self._notice('Fuente elegida: '+dialog.entry['name']+'. Revisa la vista del PDF y pulsa Aceptar para aplicar el cambio.')
+
     def _end_rich(self):
+        self._font_choice_v321=None;self.font_choice_button_v321.hide()
         self._draft_control_v305.invalidate()
         self._rich_generation+=1;self._rich_active=False;self._rich_loading=False
         self._rich_pending=None;self._rich_accept_pending=False;self._rich_timer.stop()

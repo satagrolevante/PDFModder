@@ -72,7 +72,7 @@ jobs:
         env:
           PYTHONUNBUFFERED: '1'
         run: .venv/Scripts/python.exe scripts/release_v300.py --source-ui-only --headless-qa
-      - name: Comprobar regresiones de 3.0.20 y recorrido GUI
+      - name: Comprobar regresiones de 3.0.21 y recorrido GUI
         timeout-minutes: 10
         env:
           PYTEST_ADDOPTS: '-vv -o faulthandler_timeout=60'
@@ -94,6 +94,7 @@ jobs:
           tests/test_update_progress_v319.py tests/test_updates_v170.py
           tests/test_merge_copies_v319.py tests/test_merge_worker_v319.py tests/test_merge_ui_v319.py
           tests/test_shell_print_v320.py tests/test_signatures_panel_v317.py
+          tests/test_clipped_fields_v321.py tests/test_font_choice_v321.py
           tests/test_shell_requests_v305.py tests/test_shell_ui_v305.py
           tests/test_print_pipeline_v314.py tests/test_print_device_v314.py tests/test_print_worker_v314.py
           tests/test_upgrade_v180.py tests/test_update_saving_v300.py
@@ -162,7 +163,7 @@ jobs:
   publish:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.20-publicacion')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.21-publicacion')
     needs: build
     runs-on: windows-2022
     permissions:

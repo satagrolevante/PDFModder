@@ -107,9 +107,9 @@ def test_delete_three_cells_preserves_clips_even_if_source_ink_was_cut(clip_top)
         (op, _signature(args)) for args, op in new if op in (b'W', b'W*', b're', b'cm')]
 
 
-def test_replacement_of_genuinely_clipped_ink_stays_blocked():
+def test_replacement_with_new_ink_still_clipped_stays_blocked():
     data = footer_pdf(clip_top=176)
-    with pytest.raises(EditError, match='original.*recorte'):
+    with pytest.raises(EditError, match='texto nuevo.*recorte'):
         edit_rich_pdf(data, draft(data, text='FEDCBA', auto_width=True))
 
 

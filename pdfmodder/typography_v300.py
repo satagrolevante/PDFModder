@@ -611,7 +611,8 @@ def _prepare(doc, request, resolver):
         try:
             face = _face(doc, request.page, run, printable, resolver)
         except FontError as exc:
-            raise EditError(str(exc)) from exc
+            from .font_choice_v321 import FontChoiceRequired
+            raise FontChoiceRequired(str(exc),run,printable) from exc
         key = sha256(bytes(face.buffer or face.font.buffer)).hexdigest()
         try:
             with TTFont(BytesIO(bytes(face.buffer or face.font.buffer))) as program:
@@ -953,6 +954,13 @@ def edit_shaped_pdf(data, request, resolver=None):
         prepared = doc.tobytes(garbage=0)
     reader, operations, shows, mapping = operator_glyph_map(data, request.page, model)
     byop = {show['operation']: show for show in shows}
+    visible_selected = selected
+    hidden = []
+    if ''.join(r['text'] for r in runs).replace('\n', '').replace('\u2028', '') != ''.join(g.text for g in selected):
+        from .clipped_fields_v321 import hidden_field_glyphs
+        hidden = hidden_field_glyphs(operations, shows, selected,
+            reader.pages[request.page]['/Resources'].get_object(), page_matrix, bounds)
+        selected = sorted(selected+hidden, key=lambda g:g.id)
     chosen = {g.id for g in selected}
     others = [g for g in model.glyphs if g.id not in chosen]
     logical_text = ''.join(run['text'] for run in runs)
@@ -977,7 +985,7 @@ def edit_shaped_pdf(data, request, resolver=None):
         old_text = owning_records[0]['paragraph_text']
         parent_text = old_text[:parent_offset]+logical_text+old_text[old_end:]
         adopted = (parent_id, parent_offset, old_end, len(logical_text)-(old_end-parent_offset))
-    first = selected[0]
+    first = visible_selected[0]
     first_op = mapping[first.id]['operation']
     page_resources = reader.pages[request.page]['/Resources'].get_object()
     first_state = _state_at(operations, first_op, page_resources)
@@ -993,6 +1001,8 @@ def edit_shaped_pdf(data, request, resolver=None):
     for op in {mapping[g.id]['operation'] for g in selected}:
         state = _state_at(operations, op, page_resources)
         states[op] = state
+        if state['unknown']:
+            raise EditError('El campo usa un recorte complejo no reproducible.')
         if operations[op][1] not in (b'Tj', b'TJ') or byop[op]['render_mode'] != 0:
             raise EditError('El salto o modo de pintura original no puede aislarse para este párrafo.')
         if state['clip'] is not None:
@@ -1011,9 +1021,16 @@ def edit_shaped_pdf(data, request, resolver=None):
     with fitz.open(stream=data, filetype='pdf') as safety:
         _safe_selection(safety[request.page], clean, safe_selected, preserve_paint_order=True,
                         owned_auxiliary_ids=owned_auxiliary)
+    metric_clip_exception = False
     for cluster in clusters:
-        if not (bounds+(-.035, -.035, .035, .035)).contains(fitz.Rect(cluster['bbox'])) or not (clip+(-.035, -.035, .035, .035)).contains(fitz.Rect(cluster['bbox'])):
+        if not (bounds+(-.035, -.035, .035, .035)).contains(fitz.Rect(cluster['bbox'])):
             raise EditError('El texto nuevo queda fuera de la página o del recorte original.')
+        if not (clip+(-.035, -.035, .035, .035)).contains(fitz.Rect(cluster['bbox'])):
+            if clip.is_empty or cluster['bbox'][0] < clip.x0-.035 or cluster['bbox'][2] > clip.x1+.035:
+                raise EditError('El texto nuevo queda fuera de la página o del recorte original.')
+            # Different complete fonts have different vertical metric boxes.
+            # Verify actual saved ink; no clipping operator is changed.
+            metric_clip_exception = True
         if not request.allow_overlap and any(intersects(cluster['bbox'], g.bbox, .12) for g in others):
             raise EditError('El texto se solapa con caracteres vecinos. Amplía el cuadro o permite el solapamiento.')
     # Compose each shaped glyph at its measured offset. TJ restores the text
@@ -1207,7 +1224,11 @@ def edit_shaped_pdf(data, request, resolver=None):
             if tagged.marker_updates:
                 raise EditError('Este párrafo tiene ActualText marcado; requiere conservar su propiedad antes de recomponerlo.')
             output = full_write(doc)
-    report = _validate(data, output, request.page, others+new_chars, selected+new_chars, [], [],
+    if metric_clip_exception:
+        from .richtext import _assert_clip_paint
+        _assert_clip_paint(output, request.page, [union(c['bbox'] for c in clusters)],
+                           'El texto nuevo queda parcialmente oculto por el recorte original.')
+    report = _validate(data, output, request.page, others+new_chars, visible_selected+new_chars, [], [],
                        tagged.expected if tagged else None)
     if tagged:
         report['accessibility'] = tagged.validate(output)
@@ -1223,6 +1244,12 @@ def edit_shaped_pdf(data, request, resolver=None):
                   original=model.text(request.ids), replacement=record['text'], rich_text=True,
                   typography=True, shaping_engine='HarfBuzz', bidi_engine='Unicode bidi',
                   auxiliary_glyphs=len(auxiliary), removed_groups=removed)
+    if hidden:
+        report.update(hidden_field_characters_removed=len(hidden),
+                      hidden_field_text_removed=''.join(g.text for g in hidden))
+        report.setdefault('warnings', []).append(
+            f'Se ha sustituido también el contenido oculto del campo ({len(hidden)} caracteres).')
+        report['warning'] = report['warnings'][-1]
     return output, report
 
 

@@ -92,5 +92,5 @@ def test_auto_adaptation_preserves_verified_footer_metric_origin(rotation):
     assert report['clip_paint_verified'] and report['clip_metric_overhang_verified']
     assert_preserved(source,output)
     clipped=footer_pdf(clip_top=176,rotation=rotation)
-    with pytest.raises(EditError,match='original.*recorte'):
+    with pytest.raises(EditError,match='texto nuevo.*recorte'):
         edit_rich_pdf(clipped,draft(clipped,text='FEDCBA',auto_width=True,auto_height=True,auto_adapt=True))

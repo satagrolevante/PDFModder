@@ -466,6 +466,9 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
                 self._refresh_actions()
                 return
             self._rich_failed(command,str(exc))
+            from .font_choice_v321 import FontChoiceRequired
+            if command in ('rich_preview','rich_prepare') and isinstance(exc,FontChoiceRequired):
+                self._offer_font_choice_v321(exc)
             if command == 'recover' and 'PASSWORD_REQUIRED:' in str(exc):
                 self._retry_recovery_password_v200()
                 self._refresh_actions()

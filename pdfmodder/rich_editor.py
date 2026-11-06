@@ -347,6 +347,52 @@ class PageEditor(QTextEdit):
                          font_xref=None, font_resource=None, font_axes=deepcopy(entry.get('font_axes') or {}))
         return True
 
+    def replace_unavailable_face_v321(self, source_style, entry):
+        """One undoable, explicit choice; retain all other run properties."""
+        from .font_choice_v321 import face_identity
+        if not self.rich_mode or self.isReadOnly():
+            return False
+        face = register_face(entry)
+        if not face:
+            self.notice.emit('No se puede mostrar la fuente elegida. Elige otra fuente TTF/OTF.')
+            return False
+        self._faces[(entry['name'], None)] = face
+        spans = []
+        block = self.document().begin()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                style = dict(fragment.charFormat().property(STYLE_PROPERTY) or {})
+                if fragment.isValid() and face_identity(style) == face_identity(source_style):
+                    spans.append((fragment.position(), fragment.length(), style))
+                iterator += 1
+            block = block.next()
+        if not spans:
+            return False
+        if not any(e.get('name') == entry['name'] and e.get('path') == entry.get('path') for e in self._catalog):
+            self._catalog.append(dict(entry))
+            self.toolbar.set_catalog(self._catalog)
+        saved = self.textCursor()
+        self._loading = True
+        try:
+            cursor = QTextCursor(self.document())
+            cursor.beginEditBlock()
+            for start, length, style in spans:
+                style.update(font_name=entry['name'], font_file=entry.get('path') or entry.get('font_file'),
+                             font_xref=None, font_resource=None, font_axes=deepcopy(entry.get('font_axes') or {}))
+                cursor.setPosition(start)
+                cursor.setPosition(start+length, QTextCursor.KeepAnchor)
+                cursor.setCharFormat(self.format_for(style))
+            cursor.endEditBlock()
+            self.setTextCursor(saved)
+        finally:
+            self._loading = False
+        self._on_changed()
+        self.toolbar.sync_cursor()
+        self.setFocus()
+        return True
+
     def merge_paragraph(self, **values):
         if not self.rich_mode or self.isReadOnly():
             return
