@@ -25,6 +25,8 @@ def selection_capabilities_v300(session,page,ids,revision=None,new_text=None,ope
         widget_problems=content_widget_issues(doc[page],[g.bbox for g in selected])
     if not selected or len(selected)!=len(set(ids)):
         raise EditError('Selecciona texto de la revisión actual.')
+    from .validation import scope_text_graphics_v322
+    model=scope_text_graphics_v322(data,model,selected)
     text=preflight_text(data,page,ids,new_text,session.resolver,
                         page_model=model,document_problems=document_problems)
     text['resolution_ids']=[]
@@ -46,6 +48,18 @@ def selection_capabilities_v300(session,page,ids,revision=None,new_text=None,ope
             text=deepcopy(shaped);text.setdefault('actions',[])
             text.setdefault('reasons',[]);text.setdefault('resolution_ids',[])
             if text['status']=='conditional':text['resolution_ids'].append('fonts')
+    if operation=='text' and text['status']=='blocked' and not document_problems and not widget_problems:
+        from .reconstruct_text_v322 import reconstruction_issues
+        if not reconstruction_issues(data,model,selected):
+            # A blocked native font mapping need not prevent opening a draft:
+            # its explicit reconstruction action still requires a chosen face
+            # and validates actual source removal plus all retained content.
+            text.update(status='conditional',label='Reconstrucción explícita del bloque disponible')
+            text.setdefault('actions',[]).append(
+                'Abre el editor y elige «Reconstruir este bloque…» con una fuente completa. '
+                'El PDF se valida antes de aplicar el cambio.')
+            text.setdefault('resolution_ids',[]).append('reconstruct')
+            text['reconstruction_available']=True
     if operation=='text':
         # Editing text does not need to probe every native object on the page.
         # The operation chooser requests those checks explicitly when needed.

@@ -24,7 +24,7 @@ class ResponsiveUiV310Mixin:
         return bool(self.busy and self._command in
                     ('page', 'reading_info', 'search', 'reading_copy_range',
                      'page_capabilities_v318', 'font_catalog',
-                     'selection_capabilities', 'clipboard_copy'))
+                     'selection_capabilities', 'clipboard_copy', 'list_recovery'))
 
     def _ui_mutation_locked_v310(self):
         return bool(self._closed or (self.busy and not self._render_busy_v310())

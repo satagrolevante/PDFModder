@@ -242,7 +242,11 @@ class AdvancedEditing:
         dialog=SearchReplaceDialog(self.search_box.text(),selection,self)
         submit=self._start_dialog_jobs(dialog)
         dialog.find_requested.connect(lambda params:submit('find_replacements',params,lambda r:dialog.set_matches(r['matches'])))
-        dialog.preview_requested.connect(lambda ids,text,auto:submit('preview_replacements',{'match_ids':ids,'replacement':text,'auto_width':auto},lambda r:dialog.set_preview(r['png'],r['report'])))
+        dialog.preview_requested.connect(lambda ids,text,auto:submit('preview_replacements',{'match_ids':ids,'replacement':text,
+            'auto_width':auto,'font_choices':dialog.font_choices[:],
+            'allow_overlap':self.allow_overlap_box.isChecked(),'auto_adapt':self.auto_adapt_box.isChecked()},
+            lambda r:dialog.set_preview(r['png'],r['report'])))
+        dialog.font_requested.connect(lambda:submit('font_catalog',{},dialog.choose_font))
         dialog.page_requested.connect(lambda number:submit('review_page',{'number':number},lambda r:dialog.set_preview(r['png'],r['report'])))
         def commit():
             def committed(result):dialog.accept();self._edited(result)
@@ -256,6 +260,11 @@ class AdvancedEditing:
                 if self.busy:QTimer.singleShot(30,discard_pending);return
                 if self.state.get('preview'):self._submit('cancel',callback=lambda _:self.load_page())
             discard_pending()
+
+    def _advanced_font_choice_v322(self,error):
+        dialog=getattr(self,'_advanced_dialog',None)
+        if dialog is not None and hasattr(dialog,'set_font_error') and getattr(error,'match_id',None):
+            dialog.set_font_error(error)
 
     def open_organizer(self):
         if self.busy:return

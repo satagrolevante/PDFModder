@@ -40,6 +40,13 @@ class RichEditing:
         self.font_choice_button_v321.hide()
         self._font_choice_v321=None
         layout.addWidget(self.font_choice_button_v321)
+        self.reconstruct_button_v322=QPushButton('Reconstruir este bloque…')
+        self.reconstruct_button_v322.setObjectName('reconstructTextBlockV322')
+        self.reconstruct_button_v322.setToolTip('Elegir una fuente completa y retirar realmente el texto original. '
+            'Genera una vista previa verificable; Aceptar sigue siendo necesario.')
+        self.reconstruct_button_v322.clicked.connect(self._reconstruct_block_v322)
+        self.reconstruct_button_v322.hide()
+        layout.addWidget(self.reconstruct_button_v322)
         panel_layout.insertWidget(1,self.rich_result);self.rich_result.hide()
 
     def start_rich_edit(self,join_items=None):
@@ -84,6 +91,10 @@ class RichEditing:
             payload['auto_height']=bool(self.auto_height_box.isChecked())
             payload['allow_overlap']=bool(self.allow_overlap_box.isChecked())
             payload['auto_adapt']=automatic_area_enabled_v316(self)
+            capability=getattr(self,'_preflight_result_v200',{}) or {}
+            if (capability.get('revision')==payload.get('revision')
+                    and capability.get('reconstruction_available')):
+                payload['reconstruction_available']=True
             self._open_rich_payload(payload)
         self._submit('rich_selection',{'page':self.page_number,'ids':self.canvas.ids[:]},ready)
 
@@ -96,7 +107,11 @@ class RichEditing:
         self.canvas.read_only=False
         self.canvas.start_rich_editor(payload,payload.get('catalog'))
         self.rich_result.show();self.rich_result_image.clear()
+        self.reconstruct_button_v322.setVisible(bool(payload.get('reconstruction_available')
+            and payload.get('reconstruction_allowed',True)))
         self.rich_result_message.setText('Borrador: la vista PDF aparecerá al escribir. El contenido se valida antes de aplicarlo.')
+        if payload.get('reconstruction_reason'):
+            self.rich_result_message.setText(payload['reconstruction_reason'])
         self._notice('Escribir: arrastra para seleccionar letras. Intro: párrafo · Mayús+Intro: línea · ✓ Aceptar: Ctrl+Intro · × Cancelar: Esc.')
         self._refresh_actions()
 
@@ -164,6 +179,30 @@ class RichEditing:
             self._rich_accept_pending=False;self.canvas.editor.set_accepting(False)
             self.canvas.editor.toolbar.status.setText(message)
             self.rich_result_message.setText('Borrador no validado: '+message)
+            self.reconstruct_button_v322.setVisible(bool(self.canvas.editor._payload.get('ids')
+                and self.canvas.editor._payload.get('reconstruction_allowed',False)))
+
+    def _reconstruct_block_v322(self):
+        if not self._rich_active or self._rich_accept_pending or self.busy:return
+        from .font_choice_ui_v321 import FontChoiceDialog
+        from .font_choice_v321 import face_identity
+        editor=self.canvas.editor;payload=editor.payload()
+        generation,serial=self._rich_generation,self._rich_serial
+        text=''.join(r.get('text','') for r in payload['runs'])
+        printable=''.join(c for c in text if c not in '\r\n\u2028\t')
+        source=payload['runs'][0] if payload['runs'] else editor.current_style()
+        dialog=FontChoiceDialog(source.get('font_name') or 'original',printable,editor._catalog,self)
+        dialog.setWindowTitle('Reconstruir el bloque con una fuente completa')
+        result=self._exec_edit_dialog(dialog) if hasattr(self,'_exec_edit_dialog') else dialog.exec()
+        if (result!=QDialog.Accepted or not self._rich_active
+                or (generation,serial)!=(self._rich_generation,self._rich_serial)):return
+        # The explicit action chooses one complete face for this block while
+        # preserving each run's size, colour and other independent formatting.
+        editor._payload['reconstruct']=True
+        identities={face_identity(r):r for r in payload['runs']}
+        for style in identities.values():editor.replace_unavailable_face_v321(style,dialog.entry)
+        self._notice('Reconstrucción explícita: revisa el texto y la vista PDF; Aceptar aplicará el bloque verificado.')
+        self._rich_changed(editor.payload())
 
     def _offer_font_choice_v321(self,error):
         if not self._rich_active:return
@@ -193,6 +232,7 @@ class RichEditing:
 
     def _end_rich(self):
         self._font_choice_v321=None;self.font_choice_button_v321.hide()
+        self.reconstruct_button_v322.hide()
         self._draft_control_v305.invalidate()
         self._rich_generation+=1;self._rich_active=False;self._rich_loading=False
         self._rich_pending=None;self._rich_accept_pending=False;self._rich_timer.stop()

@@ -40,6 +40,14 @@ def _properties(tag, operand, resources):
     if not isinstance(props, (dict, DictionaryObject)):
         _reject()
     allowed = {'/MCID'}
+    if '/PMInstanceID' in props:
+        # Passive temporary identity for a locally isolated Form. It grants
+        # no ownership or editing waiver; the final repacker verifies every
+        # identity against the original invocation graph and removes it.
+        import re
+        if not isinstance(props['/PMInstanceID'],str) or not re.fullmatch(r'\d+(?:\.\d+)*',props['/PMInstanceID']):
+            _reject()
+        allowed.add('/PMInstanceID')
     if tag == '/Artifact':
         allowed |= {'/Type', '/Subtype', '/Attached', '/BBox'}
         if '/Type' in props and (not isinstance(_resolve(props['/Type']),NameObject) or
@@ -141,7 +149,7 @@ def assert_compatible_unstructured_marks(reader, page, operations=None):
 
 
 def assert_unstructured_artifact_bounds(data, page_number, model, selected,
-                                        planned, mapping, operations):
+                                       planned, mapping, operations, *, expand=False):
     """Retain advisory Artifact BBoxes and prove affected text stays bounded.
 
     The ordinary transaction already proves every untouched artifact's glyphs
@@ -189,4 +197,68 @@ def assert_unstructured_artifact_bounds(data, page_number, model, selected,
             if item and owner in contexts.get(item['operation'],()):
                 allowed |= fitz.Rect(glyph.bbox)
         if any(not (allowed+(-.035,-.035,.035,.035)).contains(fitz.Rect(g.bbox)) for g in planned):
-            raise EditError('El texto nuevo queda fuera de la caja del encabezado o pie de página original.')
+            members={g.id for g in model.glyphs if g.id in mapping
+                     and owner in contexts.get(mapping[g.id]['operation'],())}
+            if not expand or not members <= {g.id for g in selected}:
+                raise EditError('El texto nuevo queda fuera de la caja del encabezado o pie de página original.')
+            import copy
+            from pypdf.generic import ArrayObject,FloatObject
+            args,op=operations[owner]
+            props=copy.deepcopy(_properties(str(args[0]),args[1],resources))
+            updated=fitz.Rect(boxes[owner])
+            for glyph in planned:updated |= fitz.Rect(glyph.bbox)*(~matrix)
+            props[NameObject('/BBox')]=ArrayObject([FloatObject(v) for v in updated])
+            operations[owner]=([args[0],props],op)
+    if expand:
+        from .clipping import _signature
+        return [_signature(_properties(str(a[0]),a[1],resources)) for a,op in operations
+                if op==b'BDC' and str(a[0])=='/Artifact']
+
+
+def verify_artifact_properties(data,page,expected):
+    if expected is None:return
+    from .clipping import _signature
+    reader=PdfReader(BytesIO(data),strict=True)
+    resources=_resolve(reader.pages[page].get('/Resources',{}))
+    operations=ContentStream(reader.pages[page].get_contents(),reader).operations
+    actual=[_signature(_properties(str(a[0]),a[1],resources)) for a,op in operations
+            if op==b'BDC' and str(a[0])=='/Artifact']
+    if actual!=expected:raise EditError('El guardado alteró propiedades de los encabezados o pies de página.')
+
+
+def scope_unstructured_marks_v322(data,model,selected):
+    """Unrelated layered Forms must not block an ordinary page-level SHOW.
+
+    This does not permit editing inside an unknown/semantic marked scope.
+    Native transactions still preserve all other operators and validate the
+    actual complete result; malformed nesting never gains an exception.
+    """
+    if MARKED_ISSUE not in model.issues or not selected:return model
+    from dataclasses import replace
+    from hashlib import sha256
+    from .clipping import operator_glyph_map,SHOW
+    if model.revision and model.revision!=sha256(data).hexdigest():
+        raise EditError('La selección pertenece a otra revisión del documento.')
+    reader,operations,shows,mapping=operator_glyph_map(data,model.number,model)
+    if reader.trailer['/Root'].get('/StructTreeRoot'):return model
+    if any(g.id not in mapping for g in selected):return model
+    targets={mapping[g.id]['operation'] for g in selected}
+    resources=_resolve(reader.pages[model.number].get('/Resources',{}))
+    stack=[];seen=set()
+    for index,(args,op) in enumerate(operations):
+        if op in (b'BMC',b'BDC'):
+            safe=False
+            try:
+                if op==b'BDC':_properties(str(args[0]),args[1],resources)
+                elif len(args)!=1 or str(args[0]) not in _PLAIN_TAGS:_reject()
+                safe=str(args[0]) not in _SPECIAL_TAGS
+            except EditError:pass
+            stack.append(safe)
+        elif op==b'EMC':
+            if not stack:return model
+            stack.pop()
+        if index in targets:
+            if op not in SHOW or not all(stack):return model
+            seen.add(index)
+    if stack or seen!=targets:return model
+    return replace(model,issues=[i for i in model.issues if i!=MARKED_ISSUE])

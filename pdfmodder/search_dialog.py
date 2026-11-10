@@ -2,7 +2,16 @@
 from PySide6.QtCore import Qt,Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QFormLayout,QLineEdit,QComboBox,
-    QCheckBox,QPushButton,QLabel,QTableWidget,QTableWidgetItem,QSplitter,QScrollArea,QWidget)
+    QCheckBox,QPushButton,QLabel,QTableWidget,QTableWidgetItem,QSplitter,QScrollArea,QWidget,QPlainTextEdit)
+
+
+class PhraseEdit(QPlainTextEdit):
+    """Small multiline input with the existing text()/setText() interface."""
+    def __init__(self,text='',parent=None):
+        super().__init__(parent)
+        self.setPlainText(text);self.setMaximumHeight(60);self.setTabChangesFocus(True)
+    def text(self):return self.toPlainText()
+    def setText(self,text):self.setPlainText(text)
 
 
 class SearchReplaceDialog(QDialog):
@@ -10,6 +19,7 @@ class SearchReplaceDialog(QDialog):
     preview_requested=Signal(object,str,bool)
     page_requested=Signal(int)
     apply_requested=Signal()
+    font_requested=Signal()
 
     def __init__(self,query='',selection=None,parent=None):
         super().__init__(parent)
@@ -20,10 +30,12 @@ class SearchReplaceDialog(QDialog):
         self.found_parameters=None
         self.preview_valid=False
         self._preview_pixmap=QPixmap()
+        self.font_choices=[];self._font_offer=None;self._preview_ids=[]
         outer=QVBoxLayout(self)
         form=QFormLayout()
-        self.query=QLineEdit(query);self.query.setObjectName('replaceQuery')
-        self.replacement=QLineEdit();self.replacement.setObjectName('replaceValue')
+        self.query=PhraseEdit(query);self.query.setObjectName('replaceQuery')
+        self.query.setPlaceholderText('Texto o frase; puede atravesar saltos de línea dentro de un párrafo.')
+        self.replacement=PhraseEdit();self.replacement.setObjectName('replaceValue')
         self.scope=QComboBox();self.scope.addItems(['Todo el documento','Páginas indicadas','Selección actual'])
         if not selection:self.scope.model().item(2).setEnabled(False)
         self.pages=QLineEdit();self.pages.setPlaceholderText('Ejemplo: 1,3-5')
@@ -69,6 +81,8 @@ class SearchReplaceDialog(QDialog):
         outer.addLayout(buttons)
         self.message=QLabel('Marca exactamente las apariciones que quieras cambiar.');self.message.setWordWrap(True)
         outer.addWidget(self.message)
+        self.font_button=QPushButton('Elegir fuente compatible…');self.font_button.setObjectName('replaceCompatibleFont')
+        self.font_button.clicked.connect(self.font_requested);self.font_button.hide();outer.addWidget(self.font_button)
         end=QHBoxLayout()
         self.apply_button=QPushButton('Aplicar cambios previsualizados');self.apply_button.setObjectName('applyReviewedMatches')
         self.apply_button.setEnabled(False);self.apply_button.clicked.connect(self.apply_requested)
@@ -80,9 +94,11 @@ class SearchReplaceDialog(QDialog):
 
     def invalidate(self,*_):
         self.preview_valid=False;self.apply_button.setEnabled(False)
+        self._font_offer=None;self.font_button.hide()
 
     def find(self):
         self.invalidate()
+        self.font_choices=[]
         if self.scope.currentIndex()==1 and not self.pages.text().strip():
             self.message.setText('Indica las páginas donde buscar.');return
         self.find_requested.emit({'query':self.query.text(),'pages':self.pages.text() if self.scope.currentIndex()==1 else None,
@@ -114,7 +130,8 @@ class SearchReplaceDialog(QDialog):
         rows=([i for i in range(len(self.matches)) if self.table.item(i,0).checkState()==Qt.Checked]
               if marked else [self.table.currentRow()] if self.table.currentRow()>=0 else [])
         if not rows:self.message.setText('Selecciona una coincidencia o marca varias.');return
-        self.preview_requested.emit([self.matches[i]['id'] for i in rows],self.replacement.text(),self.auto.isChecked())
+        self._preview_ids=[self.matches[i]['id'] for i in rows]
+        self.preview_requested.emit(self._preview_ids,self.replacement.text(),self.auto.isChecked())
 
     def parameters_key(self):
         return self.query.text(),self.scope.currentIndex(),self.pages.text(),self.case.isChecked(),self.whole.isChecked(),self.ocr.isChecked()
@@ -136,9 +153,31 @@ class SearchReplaceDialog(QDialog):
 
     def set_busy(self,busy):
         for widget in (self.find_button,self.one_button,self.marked_button,self.all_button,self.none_button,
-                       self.query,self.replacement,self.scope,self.pages,self.case,self.whole,self.ocr,self.auto,self.table,self.close_button):widget.setEnabled(not busy)
+                       self.query,self.replacement,self.scope,self.pages,self.case,self.whole,self.ocr,self.auto,self.table,self.font_button):widget.setEnabled(not busy)
         self.apply_button.setEnabled(not busy and self.preview_valid)
         if not busy:self.pages.setEnabled(self.scope.currentIndex()==1)
 
     def set_error(self,error):
         self.set_busy(False);self.invalidate();self.message.setText(error)
+
+    def set_font_error(self,error):
+        self._font_offer=(error,self.parameters_key(),self.replacement.text(),tuple(self._preview_ids))
+        self.font_button.show()
+        self.message.setText('La fuente no permite escribir el texto solicitado. Elige una fuente compatible '
+            'para esa coincidencia y vuelve a revisar el PDF. Los cambios no se han aplicado.')
+
+    def choose_font(self,result):
+        offer=self._font_offer
+        if not offer:return
+        error,parameters,text,ids=offer
+        from .font_choice_ui_v321 import FontChoiceDialog
+        dialog=FontChoiceDialog(error.source_style.get('font_name') or 'original',error.text,result.get('catalog',[]),self)
+        if self._exec_font_dialog(dialog)!=QDialog.Accepted:return
+        if parameters!=self.parameters_key() or text!=self.replacement.text() or ids!=tuple(self._preview_ids):return
+        entry={k:dialog.entry[k] for k in ('name','path','font_file','font_axes') if k in dialog.entry}
+        self.font_choices.append({'match_id':error.match_id,'source_style':error.source_style,'entry':entry})
+        self._font_offer=None;self.font_button.hide()
+        self.preview_requested.emit(list(ids),text,self.auto.isChecked())
+
+    def _exec_font_dialog(self,dialog):
+        return dialog.exec()

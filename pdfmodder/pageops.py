@@ -142,7 +142,7 @@ def _preflight(data, label, *, readonly=False, merge_copy=False):
             raise EditError(f"{label}: el PDF necesita reparación; no se reorganiza una estructura incierta.")
         reader = PdfReader(io.BytesIO(data), strict=True)
         root = reader.trailer["/Root"]
-        allowed_catalog = {"/Type", "/Pages", "/Outlines", "/Metadata", "/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/Version", "/MarkInfo", "/StructTreeRoot", "/AcroForm", "/Names"}
+        allowed_catalog = {"/Type", "/Pages", "/Outlines", "/Metadata", "/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/Version", "/MarkInfo", "/StructTreeRoot", "/AcroForm", "/Names", "/OutputIntents"}
         if merge_copy:
             allowed_catalog.update({'/OCProperties', '/Extensions'})
         unsupported = sorted(str(key) for key in root if key not in allowed_catalog)
@@ -274,7 +274,26 @@ def _metadata(reader):
 
 def _catalog_metadata(reader):
     root = reader.trailer["/Root"]
-    return {key: _semantic(root[key]) for key in ("/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/MarkInfo", "/AcroForm") if key in root}
+    return {key: _semantic(root[key], exact_numbers=key=="/OutputIntents") for key in ("/PageLayout", "/PageMode", "/ViewerPreferences", "/Lang", "/MarkInfo", "/AcroForm", "/OutputIntents") if key in root}
+
+
+def _compatible_output_intents(readers, used=None):
+    """The first catalog governs the output, even if none of its pages remain.
+
+    Cloning just that catalog must never discard an imported page's distinct
+    output color profile. Equal graphs include all intent attributes and the
+    exact decoded ICC bytes; xrefs and compression are not identities.
+    """
+    def intents(reader):
+        return _semantic(reader.trailer['/Root'].get('/OutputIntents'), exact_numbers=True)
+    expected = intents(readers[0])
+    for index, reader in enumerate(readers[1:], 1):
+        if used is not None and index not in used:
+            continue
+        if intents(reader) != expected:
+            raise EditError(f'PDF añadido {index}: los perfiles de color de salida (OutputIntents) '
+                            'son distintos. Incorporar sus páginas requiere una conversión de color; '
+                            'no se elimina ni sustituye su perfil automáticamente.')
 
 
 def _build_pdf(readers, selections, toc_groups, *, merge_copy=False):
@@ -352,7 +371,8 @@ def _validate(output, inputs, assignments, maps, expected_toc, *, merge_copy=Fal
         if _metadata(readers[0]) != _metadata(independent) or sources[0].get_xml_metadata() != result.get_xml_metadata():
             raise EditError("La operación alteró los metadatos del documento actual.")
         if _catalog_metadata(readers[0]) != _catalog_metadata(independent):
-            raise EditError("La operación alteró propiedades de visualización o idioma del documento actual.")
+            raise EditError("La operación alteró los perfiles de color, las propiedades de visualización o el idioma del documento actual.")
+        _compatible_output_intents(readers, {index for index, mapping in enumerate(maps) if mapping})
         if _canonical(expected_toc) != _canonical(result.get_toc(False)):
             raise EditError("La operación no conservó correctamente los marcadores y sus destinos.")
         from .page_content_proof_v318 import MappedPageContentProofV318
@@ -454,6 +474,7 @@ def merge_pdfs(data: bytes, additions: list[bytes], *, as_copy=False):
         if any(reader.trailer['/Root'].get('/StructTreeRoot') for reader in readers):
             raise EditError('PDF etiquetado: combinar PDFs requiere fusionar sus árboles de accesibilidad; esta operación todavía no está habilitada.')
         page_catalog.require_unambiguous(readers)
+        _compatible_output_intents(readers)
         assignments, maps, toc, source_metadata, toc_groups, selections = [], [], [], [], [], []
         for index, doc in enumerate(docs):
             offset = len(assignments)
@@ -596,6 +617,7 @@ def _organizer_toc(writer, readers, groups):
 
 def _build_organized(readers, entries, source_indices, maps, toc_groups):
     writer = PdfWriter(clone_from=readers[0])
+    writer.pdf_header = max(reader.pdf_header for reader in readers)
     writer.root_object.pop(NameObject("/Outlines"), None)
     writer.root_object.pop(NameObject("/Names"), None)
     for index in reversed(range(len(writer.pages))):
@@ -624,6 +646,7 @@ def _build_organized(readers, entries, source_indices, maps, toc_groups):
         mapping[entry["page"]] = output_number
         _retarget_page_annotations(readers[source_number], entry["page"], copied, output_number, mapping)
     final_writer = PdfWriter(clone_from=copied)
+    final_writer.pdf_header = writer.pdf_header
     page_catalog.rebuild_many(final_writer, readers, maps)
     _organizer_toc(final_writer, readers, toc_groups)
     output = io.BytesIO()
@@ -656,6 +679,7 @@ def _validate_organized(output, inputs, entries, source_indices, maps, expected_
             raise EditError("El organizador alteró metadatos del documento actual.")
         if _catalog_metadata(readers[0]) != _catalog_metadata(independent):
             raise EditError("El organizador alteró propiedades del catálogo.")
+        _compatible_output_intents(readers, {index for index, mapping in enumerate(maps) if mapping})
         if _canonical(expected_toc) != _canonical(result.get_toc(False)):
             raise EditError("No se conservaron los marcadores o sus destinos al organizar.")
         from .page_content_proof_v318 import MappedPageContentProofV318
@@ -764,6 +788,7 @@ def organize_pages_pdf(data: bytes, plan: list[dict], additions: dict[str, bytes
             if page not in maps[number]:
                 maps[number][page] = output_number
                 primary_rotations[number, page] = (docs[number][page].rotation + entry["rotation"]) % 360
+        _compatible_output_intents(readers, {index for index, mapping in enumerate(maps) if mapping})
         for (number, page), rotation in primary_rotations.items():
             changed = docs[number][page]
             changed.set_rotation(rotation)

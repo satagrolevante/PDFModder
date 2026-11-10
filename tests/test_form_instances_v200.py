@@ -56,15 +56,15 @@ def test_edit_one_form_occurrence_and_reopen():
     assert report['form_isolation']['shared_objects_unchanged']
 
 
-def test_group_form_reports_local_limit():
+def test_group_form_has_a_recoverable_isolated_scope():
     data = form_document()
     with fitz.open(stream=data, filetype='pdf') as doc:
         first = doc[0].get_xobjects()[0][0]
         doc.xref_set_key(first, 'Group', '<< /S /Transparency /I true >>')
         data = doc.tobytes()
     model, ids = selection(data)
-    with pytest.raises(EditError, match='/Group'):
-        isolate_selected_forms(data, EditRequest(0, ids, text='2026'))
+    local,current,evidence=isolate_selected_forms(data, EditRequest(0, ids, text='2026'))
+    assert local and current.ids==ids and evidence['repack_ids']
 
 
 def test_direct_text_on_form_page_is_not_globally_blocked():

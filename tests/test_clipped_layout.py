@@ -324,12 +324,12 @@ def test_native_movement_uses_unrotated_crop_coordinates(rotation):
     assert report['new_bounds'][1]==pytest.approx(report['old_bounds'][1]+3,abs=.001)
 
 
-def test_native_movement_blocks_destination_outside_clip_and_leaves_source_identical():
+def test_native_movement_carries_owned_clip_and_leaves_source_identical():
     data=fixture(clip_right=70)
     fingerprint=sha256(data).hexdigest()
     model,chosen=selected(data,'SOL')
-    with pytest.raises(EditError,match='fuera del recorte'):
-        edit_pdf(data,EditRequest(0,[g.id for g in chosen],dx=30,dy=1,revision=model.revision))
+    output,report=edit_pdf(data,EditRequest(0,[g.id for g in chosen],dx=30,dy=1,revision=model.revision))
+    assert report['verified'] and output!=data
     assert sha256(data).hexdigest()==fingerprint
 
 

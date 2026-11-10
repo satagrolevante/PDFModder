@@ -159,8 +159,9 @@ class WorkspaceV200Mixin(SelectionUiV300Mixin):
 
     def _open_recent_v170(self,item):
         path=item.data(Qt.UserRole)
-        if path and Path(path).is_file() and not self.busy:self.open_document(path)
-        elif path and not Path(path).is_file():self._notice('El documento se ha movido o eliminado. Usa Abrir para localizarlo.')
+        # Availability is checked in the PDF process. Offline UNC shares can
+        # otherwise freeze the GUI before the ordinary opening state appears.
+        if path and not self.busy:self.open_document(path)
 
     def dragEnterEvent(self,event):
         if self._drop_paths(event.mimeData()) and not self.busy and not self.canvas.editor.isVisible():event.acceptProposedAction()

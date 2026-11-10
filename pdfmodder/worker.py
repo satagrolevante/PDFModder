@@ -133,7 +133,7 @@ class Session:
                     clean['request']=asdict(request)
             elif kind=='rich':
                 source=draft.get('payload',{})
-                payload={key:source[key] for key in ('page','ids','rect','revision','width','height','allow_overlap','auto_width','auto_height','auto_adapt') if key in source}
+                payload={key:source[key] for key in ('page','ids','rect','revision','width','height','allow_overlap','auto_width','auto_height','auto_adapt','reconstruct') if key in source}
                 styles=('text','font_name','font_file','font_xref','font_resource','size','color','opacity','char_spacing','underline','bold','italic','_complementary_source','font_axes','font_features','direction')
                 settings=('index','alignment','left_indent','right_indent','first_indent','line_spacing','space_before','space_after','tab_stops','tab_interval','direction')
                 payload['runs']=[{key:run[key] for key in styles if key in run} for run in source.get('runs',[])]
@@ -638,8 +638,24 @@ class Session:
         from .richtext import selection_payload
         if self.issues:raise EditError('\n'.join(self.issues))
         cached=self._model_cache.get((self.history.revision,page,False))
-        payload=selection_payload(self.history.current,page,ids,self.resolver,
-                                   page_model=cached[0] if cached is not None else None)
+        try:
+            payload=selection_payload(self.history.current,page,ids,self.resolver,
+                                       page_model=cached[0] if cached is not None else None)
+        except EditError:
+            from .reconstruct_text_v322 import reconstruction_selection
+            payload=reconstruction_selection(self.history.current,page,ids,self.resolver)
+        if payload.get('reconstruction_available'):
+            payload['reconstruction_allowed']=True
+        elif self.tagged:
+            payload['reconstruction_allowed']=False
+        else:
+            from .reconstruct_text_v322 import reconstruction_issues
+            source_model=cached[0] if cached is not None else None
+            if source_model is None:
+                with self._open(self.history.current_source) as doc:
+                    source_model=extract_page(doc,page,self.history.current)
+            payload['reconstruction_allowed']=not reconstruction_issues(
+                self.history.current,source_model,source_model.selected(ids))
         catalog=getattr(self,'_rich_catalog',None)
         if catalog is None:
             catalog=self.resolver.catalog()
@@ -814,14 +830,15 @@ class Session:
         return {'matches':matches}
 
     @_reuse_analysis_v315
-    def preview_replacements(self,match_ids,replacement,auto_width=True):
+    def preview_replacements(self,match_ids,replacement,auto_width=True,*,font_choices=None,allow_overlap=True,auto_adapt=True):
         self._require_editing()
         if self.issues:raise EditError('\n'.join(self.issues))
         records=getattr(self,'_review_matches',{})
         if len(match_ids)!=len(set(match_ids)) or any(i not in records for i in match_ids):
             raise EditError('Repite la búsqueda y marca coincidencias válidas.')
         from .search_replace import replace_matches
-        candidate,report=replace_matches(self.history.current,[records[i] for i in match_ids],replacement,self.resolver,auto_width)
+        candidate,report=replace_matches(self.history.current,[records[i] for i in match_ids],replacement,self.resolver,auto_width,
+            font_choices=font_choices,allow_overlap=allow_overlap,auto_adapt=auto_adapt)
         for edit in report['edits']:self._mark_page_edit(edit,edit['page'])
         self._put_preview(candidate,report)
         return self.review_page(records[match_ids[0]]['page'])

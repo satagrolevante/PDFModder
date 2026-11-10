@@ -167,7 +167,15 @@ class SignaturesUiV317Mixin:
         self._signature_drop_filter_v317 = _SignatureDropV317(self)
         self.canvas.viewport().setAcceptDrops(True)
         self.canvas.viewport().installEventFilter(self._signature_drop_filter_v317)
-        self._reload_signatures_v317()
+        # The section starts folded. Decoding/re-encoding every stored PNG
+        # before showing the main window made large libraries delay startup.
+        self._signatures_loaded_v322 = False
+        section.header.toggled.connect(lambda expanded: self._ensure_signatures_loaded_v322() if expanded else None)
+        self._refresh_signatures_v317()
+
+    def _ensure_signatures_loaded_v322(self):
+        if not self._signatures_loaded_v322:
+            self._reload_signatures_v317()
 
     @contextmanager
     def _pause_signature_background_v317(self):
@@ -208,6 +216,7 @@ class SignaturesUiV317Mixin:
         return 0 <= x < bounds[2]-bounds[0] and 0 <= y < bounds[3]-bounds[1]
 
     def _reload_signatures_v317(self, selected_id=None):
+        self._signatures_loaded_v322 = True
         current = self.signature_list_v317.currentItem()
         selected_id = selected_id or (current.data(Qt.UserRole) if current else None)
         self.signature_list_v317.clear()
@@ -301,6 +310,7 @@ class SignaturesUiV317Mixin:
             question.deleteLater()
 
     def _begin_manual_signature_v317(self):
+        self._ensure_signatures_loaded_v322()
         if not self._manual_signature_ready_v317():
             return
         item = self.signature_list_v317.currentItem()

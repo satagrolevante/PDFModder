@@ -579,8 +579,36 @@ class TaggedStructure:
         markers={None:1}
         for mcid in self.marks[page]:markers[mcid]=len(markers)+1
         if len(markers)>65535:fail('demasiados grupos de contenido en una página.')
+        source_ops=self.operations[page]
+        contexts=self.contexts[page]
+        probe_data=self.data
+        resources=obj(self.reader.pages[page].get('/Resources',{}))
+        objects=obj(resources.get('/XObject',{}))
+        if any(op==b'Do' and args and args[0] in objects
+               and obj(objects[args[0]]).get('/Subtype')=='/Form' for args,op in source_ops):
+            # A Form without its own ParentTree association inherits the
+            # surrounding page MCID. Colour its actual descendant SHOWs in a
+            # disposable expansion; setting rg merely before Do is insufficient
+            # because the Form may set its own colour internally.
+            from .form_instances_v200 import _Expansion
+            expanded=_Expansion(self.reader,page)
+            source_ops=expanded.walk(source_ops,expanded.base)
+            stack=[];contexts=[]
+            props=obj(expanded.resources.get('/Properties',{}))
+            for args,op in source_ops:
+                if op in (b'BMC',b'BDC'):
+                    properties=obj(props.get(args[1])) if op==b'BDC' and isinstance(args[1],NameObject) else args[1] if op==b'BDC' else {}
+                    owner=properties.get('/MCID') if isinstance(properties,dict) else None
+                    if owner is not None and owner not in markers:fail('el Form tiene una asociación MCID externa no verificable.')
+                    stack.append(owner)
+                contexts.append(next((value for value in reversed(stack) if value is not None),None))
+                if op==b'EMC':
+                    if not stack:fail('el Form tiene contenido marcado incoherente.')
+                    stack.pop()
+            if stack:fail('el Form deja contenido marcado abierto.')
+            probe_data=expanded.write(self.data,page,source_ops)
         ops=[]
-        for index,((args,operator),mcid) in enumerate(zip(self.operations[page],self.contexts[page])):
+        for index,((args,operator),mcid) in enumerate(zip(source_ops,contexts)):
             if index % 256 == 0:checkpoint()
             if operator in SHOW:
                 value=markers[mcid]
@@ -588,7 +616,7 @@ class TaggedStructure:
                 ops.append(([FloatObject(v/255) for v in rgb],b'rg'))
                 ops.append(([FloatObject(v/255) for v in rgb],b'RG'))
             ops.append((args,operator))
-        with fitz.open(stream=self.data,filetype='pdf') as doc:
+        with fitz.open(stream=probe_data,filetype='pdf') as doc:
             xref=doc.get_new_xref()
             doc.update_object(xref,'<<>>')
             doc.update_stream(xref,_stream(ops))
@@ -805,13 +833,32 @@ class TaggedEdit:
         if None in owners:
             fail('la selección contiene un artefacto; elige contenido con una etiqueta propia.')
         if rewriting and len(owners)!=1 and planned:
-            fail('la sustitución abarca varias etiquetas. Selecciona un fragmento de una sola etiqueta para conservar su significado.')
-        new_owner=next(iter(owners))
+            # A paragraph may split ordinary styled text over several MCIDs.
+            # Consolidating that text is safe only inside one semantic owner,
+            # or sibling Span owners with the same language and no independent
+            # alternate descriptions/links/table semantics.
+            paths={structure.owners[(page,mcid)] for mcid in owners}
+            sibling_spans=(len({path[:-1] for path in paths})==1 and all(
+                str(structure.nodes[path].get('/S'))=='/Span'
+                and not (set(structure.nodes[path])-{'/Type','/S','/P','/Pg','/K','/Lang'})
+                for path in paths))
+            signatures={repr(_attribute_snapshot({k:v for k,v in structure.marks[page][mcid].resolved.items()
+                if k not in ('/MCID','/ActualText')})) for mcid in owners}
+            languages={str(structure.nodes[path].get('/Lang','')) for path in paths}
+            if (not native_inplace or (len(paths)!=1 and not sibling_spans)
+                    or len(signatures)!=1 or len(languages)!=1):
+                fail('la sustitución cruza ámbitos semánticos distintos. Selecciona un bloque con significado común.')
+            logical=[mcid for (number,mcid) in structure.owners if number==page and mcid in owners]
+            physical=list(dict.fromkeys(self.contexts[g.id] for g in original_selection))
+            if logical!=physical:
+                fail('el orden de lectura de las etiquetas no coincide con el bloque seleccionado.')
+        new_owner=self.contexts[original_selection[0].id]
         affected={self.contexts[g.id] for g in selected}
         if None in affected:fail('el ajuste de línea incluye un artefacto y no puede asociarse a una etiqueta.')
         self.affected=affected
         self.selected=[g for g in model.glyphs if self.contexts[g.id] in affected]
         removed={g.id for g in selected}
+        self.removed_ids=removed
         # Neighbours in a justified line retain their original ids and owners.
         replacement={}
         for g in planned:
@@ -1017,19 +1064,62 @@ class TaggedEdit:
         if not changed:return
         resources=obj(self.structure.reader.pages[self.page].get('/Resources',{}))
         properties=obj(resources.get('/Properties',{}));stack=[]
+        owned=self._owned_cluster_scopes()
         for index,(args,operator) in enumerate(self.structure.operations[self.page]):
             if operator in (b'BMC',b'BDC'):
                 value=args[1] if operator==b'BDC' else None
                 value=obj(properties.get(value)) if isinstance(value,NameObject) else obj(value)
-                stack.append((str(args[0]),value or {}))
+                stack.append((index,str(args[0]),value or {}))
             elif operator in SHOW and self.structure.contexts[self.page][index] in changed:
-                for tag,props in stack:
+                for start,tag,props in stack:
                     if tag in ('/OC','/ReversedChars'):
                         fail('el contenido anidado tiene un orden o capa semántica que requiere revisión manual.')
                     if props.get('/MCID') in self.affected:continue
-                    if set(props)-{'/MCID','/Lang'}:
+                    if start in owned:continue
+                    allowed={'/MCID','/Lang'}
+                    if '/PMInstanceID' in props and tag=='/Span':
+                        import re
+                        if isinstance(props['/PMInstanceID'],str) and re.fullmatch(r'\d+(?:\.\d+)*',props['/PMInstanceID']):
+                            allowed.add('/PMInstanceID')
+                    if set(props)-allowed:
                         fail('el contenido anidado tiene propiedades semánticas que necesitan actualización conjunta.')
             elif operator==b'EMC':stack.pop()
+
+    def _owned_cluster_scopes(self):
+        """Allow replacing complete, independently verified shaped clusters.
+
+        A '/PMT' name or private metadata alone grants no authority. Its Unicode,
+        source CIDs/GIDs, font bytes and exact source members must match a
+        verified record; every member of that marked cluster must be selected.
+        The shaped writer removes these wrappers and emits fresh ActualText.
+        """
+        from .typography_v300 import _verified_records
+        from .clipping import operator_glyph_map
+        with fitz.open(stream=self.structure.data,filetype='pdf') as document:
+            verified=_verified_records(document,self.page,self.model)
+        if not verified:return set()
+        clusters={}
+        for record,actual in verified:
+            for cluster in record.get('clusters',[]):
+                members=frozenset(actual[i].id for i in cluster['physical_indices'])
+                clusters[members]=cluster['text']
+        selected=self.removed_ids
+        _,operations,shows,_=operator_glyph_map(self.structure.data,self.page,self.model)
+        byop={show['operation']:{g.id for g in show['glyphs']} for show in shows}
+        stack=[];allowed=set()
+        for index,(args,operator) in enumerate(operations):
+            if operator in (b'BMC',b'BDC'):
+                stack.append((index,args,set()))
+            elif operator in SHOW:
+                for _,_,members in stack:members.update(byop.get(index,()))
+            elif operator==b'EMC' and stack:
+                start,args,members=stack.pop()
+                if (args and str(args[0])=='/PMT' and len(args)==2
+                        and isinstance(args[1],dict) and set(args[1])=={'/ActualText'}
+                        and members and members<=selected
+                        and clusters.get(frozenset(members))==str(args[1]['/ActualText'])):
+                    allowed.add(start)
+        return allowed
 
     def apply_updates(self,document,structure=None):
         """Apply planned element changes on either native or rebuilt content."""

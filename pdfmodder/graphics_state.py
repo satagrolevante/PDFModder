@@ -91,24 +91,30 @@ class _State:
         return result
 
 
-def page_color_issues(reader, page, operations=None):
+def page_color_issues(reader, page, operations=None, *, operation_indices=None,
+                      check_final=True):
     """Only applied states matter; unused resource entries cannot paint.
 
     Check every paint operation, including inherited state in Form XObjects.
     A state reset before painting is harmless. Still check the page's final
     state because some edit paths append content. Malformed stacks, unresolved
     resources and cycles fail closed in the caller's existing analysis error.
-    This is a page-level gate: genuine special-colour painting anywhere on the
-    page remains unsupported, even if the selection is elsewhere.
+    The default remains a page-level advisory check. In-place text editing may
+    supply top-level operation indices and check_final=False to inspect only
+    the original paint it owns. All scopes/resources are still walked and
+    checked for malformed state; no operation or resource is modified.
     """
     result = []
 
-    def visit(ops, resources, initial, ancestry=()):
+    selected = None if operation_indices is None else frozenset(operation_indices)
+
+    def visit(ops, resources, initial, ancestry=(), *, top_level=True, collect=True):
         resources = _resolve(resources)
         if not isinstance(resources, (dict, DictionaryObject)):
             raise ValueError('Recursos gráficos no resolubles.')
         state, stack = replace(initial), []
-        for args, operator in ops:
+        for index, (args, operator) in enumerate(ops):
+            owned = collect and (selected is None or not top_level or index in selected)
             if operator == b'q':
                 stack.append(replace(state))
             elif operator == b'Q':
@@ -124,7 +130,8 @@ def page_color_issues(reader, page, operations=None):
                     raise ValueError('Estado gráfico sin diccionario.')
                 state.update(values)
             elif operator == b'Do':
-                result.extend(state.issues())
+                if owned:
+                    result.extend(state.issues())
                 objects = _resolve(resources.get('/XObject', {}))
                 if len(args) != 1 or args[0] not in objects:
                     raise ValueError('Objeto gráfico no resoluble.')
@@ -134,8 +141,9 @@ def page_color_issues(reader, page, operations=None):
                     if identity in ancestry or len(ancestry) >= 32:
                         raise ValueError('Formularios gráficos cíclicos o demasiado anidados.')
                     visit(ContentStream(obj, reader).operations,
-                          obj.get('/Resources', resources), state, (*ancestry, identity))
-            elif operator in _PAINT:
+                          obj.get('/Resources', resources), state, (*ancestry, identity),
+                          top_level=False, collect=owned)
+            elif operator in _PAINT and owned:
                 result.extend(state.issues())
         if stack:
             raise ValueError('Pila de estado gráfico desequilibrada.')
@@ -143,5 +151,6 @@ def page_color_issues(reader, page, operations=None):
 
     ops = operations if operations is not None else ContentStream(page.get_contents(), reader).operations
     final = visit(ops, page.get('/Resources', {}), _State())
-    result.extend(final.issues())
+    if check_final:
+        result.extend(final.issues())
     return list(dict.fromkeys(result))

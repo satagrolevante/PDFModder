@@ -99,9 +99,46 @@ def form_fields_pdf(data):
     names=root.get('/Names');names=names.get_object() if names else {}
     opening=root.get('/OpenAction');opening=opening.get_object() if opening else None
     document_scripts=bool(names.get('/JavaScript') or root.get('/AA') or isinstance(opening,dict) and opening.get('/S')=='/JavaScript')
+    from .form_dependencies_v322 import analyze_form_dependencies
+    dependencies=analyze_form_dependencies(reader,{row['name'] for row in rows})
+    for row in rows:
+        decision=dependencies['fields'][row['name']]
+        row.update(decision)
+        row['value_editable']=bool(row['editable'] and not row['read_only'] and decision['value_editable'])
     return {'fields':rows,'revision':hashlib.sha256(data).hexdigest(),'reason':reason,
             'has_calculations':bool(form.get('/CO')) or any(row['calculation'] for row in rows),
-            'has_document_scripts':document_scripts}
+            'has_document_scripts':document_scripts,'dependency_analysis':dependencies}
+
+
+def _script_snapshot(reader):
+    root=reader.trailer['/Root'];names=root.get('/Names');names=names.get_object() if names else {}
+    return _pdf_value({'document_aa':root.get('/AA'),'opening':root.get('/OpenAction'),
+        'named_javascript':names.get('/JavaScript'),
+        'page_aa':[page.get('/AA') for page in reader.pages]})
+
+
+def _form_resources(reader):
+    form=reader.trailer['/Root'].get('/AcroForm');form=form.get_object() if form else {}
+    resources=form.get('/DR');resources=resources.get_object() if resources else {}
+    return _pdf_value(resources)
+
+
+def _assert_form_resources(reader,after,font_evidence):
+    before=_form_resources(reader);current=_form_resources(after)
+    if not isinstance(before,dict) or not isinstance(current,dict):
+        raise EditError('Los recursos originales del formulario no se pueden verificar.')
+    old_fonts=before.get('/Font',{});new_fonts=current.get('/Font',{})
+    if not isinstance(old_fonts,dict) or not isinstance(new_fonts,dict):
+        raise EditError('El diccionario de fuentes del formulario no es verificable.')
+    allowed={'/'+item['resource'] for item in font_evidence.values()}
+    stripped=dict(new_fonts)
+    for key in set(stripped)-set(old_fonts):
+        if key not in allowed:raise EditError('Se añadió una fuente no solicitada al formulario.')
+        stripped.pop(key)
+    current=dict(current)
+    if '/Font' in before:current['/Font']=stripped
+    elif not stripped:current.pop('/Font',None)
+    if before!=current:raise EditError('Se alteraron recursos o fuentes de otros campos del formulario.')
 
 
 def _verify_field_linkage(reader,page,xref,name,affected):
@@ -149,19 +186,25 @@ def _check_widget_characters(doc,widget,text):
 def edit_form_field_pdf(data,page,xref,changes,revision=None):
     _guard(data,forms=True)
     if revision and revision!=hashlib.sha256(data).hexdigest():raise EditError('El formulario cambió; vuelve a seleccionar el campo.')
-    if not isinstance(changes,dict) or set(changes)-{'value','rect'}:raise EditError('Sólo se admiten valor, posición y dimensiones del campo.')
+    if not isinstance(changes,dict) or set(changes)-{'value','rect','font'}:raise EditError('Sólo se admiten valor, fuente, posición y dimensiones del campo.')
     listing=form_fields_pdf(data)
     selected=next((f for f in listing['fields'] if f['page']==page and f['xref']==xref),None)
     if not selected or not selected['editable']:raise EditError(selected['reason'] if selected else 'El campo seleccionado ya no existe.')
     value_change='value' in changes and changes['value']!=selected['value']
+    font_change='font' in changes
     if value_change and selected['read_only']:raise EditError('El campo es de sólo lectura; no se cambia su valor.')
-    if value_change and (listing['has_calculations'] or listing['has_document_scripts'] or selected['scripts']):
-        raise EditError('Este formulario usa cálculos o validaciones JavaScript. Se conservan sus scripts; sólo puedes mover o redimensionar campos hasta disponer de un evaluador compatible.')
+    if value_change and not selected['value_editable']:
+        raise EditError(selected.get('value_reason') or 'Este campo participa en cálculos o validaciones JavaScript; se conservan sus valores.')
+    if font_change and selected['field_type'] not in (fitz.PDF_WIDGET_TYPE_TEXT,fitz.PDF_WIDGET_TYPE_COMBOBOX,fitz.PDF_WIDGET_TYPE_LISTBOX):
+        raise EditError('La elección de fuente se aplica a campos de texto y listas, no a casillas o firmas.')
+    if font_change and (selected['scripts'] or not selected['value_editable']):
+        raise EditError('No se cambia la apariencia tipográfica de un campo con cálculos o formato JavaScript pendiente de evaluar.')
     reader,protected,form_state,_=_form_snapshot(data)
     if selected['name'] not in (reader.get_fields() or {}):raise EditError('El widget no está enlazado al árbol AcroForm; no se crea un campo duplicado.')
-    affected=[f for f in listing['fields'] if f['name']==selected['name']] if value_change else [selected]
+    affected=[f for f in listing['fields'] if f['name']==selected['name']] if value_change or font_change else [selected]
     _verify_field_linkage(reader,page,xref,selected['name'],affected)
     new_rect=fitz.Rect(changes.get('rect',selected['rect']))
+    font_evidence={}
     with fitz.open(stream=data,filetype='pdf') as doc:
         target=doc[page]
         bounds=fitz.Rect(0,0,target.cropbox.width,target.cropbox.height)
@@ -170,6 +213,8 @@ def edit_form_field_pdf(data,page,xref,changes,revision=None):
         for row in affected:
             owner=doc[row['page']]
             widget=owner.load_widget(row['xref'])
+            from .form_fonts_v322 import owned_widget_font
+            retained_font=owned_widget_font(doc,widget) if not font_change else None
             if value_change:
                 value=changes['value']
                 if widget.field_type==fitz.PDF_WIDGET_TYPE_CHECKBOX:
@@ -180,30 +225,54 @@ def edit_form_field_pdf(data,page,xref,changes,revision=None):
                     if widget.text_maxlen and len(value)>widget.text_maxlen:raise EditError(f'El campo admite como máximo {widget.text_maxlen} caracteres.')
                     if widget.field_type in (fitz.PDF_WIDGET_TYPE_COMBOBOX,fitz.PDF_WIDGET_TYPE_LISTBOX) and value not in widget.choice_values:
                         raise EditError('El valor debe pertenecer a las opciones del campo.')
-                    if widget.text_font not in doc.FormFonts and widget.text_font.lower() not in ('helv','hebo','heit','hebi','cour','cobo','coit','cobi','tiro','tibo','tiit','tibi','symb','zadb'):
+                    if not font_change and widget.text_font not in doc.FormFonts and widget.text_font.lower() not in ('helv','hebo','heit','hebi','cour','cobo','coit','cobi','tiro','tibo','tiit','tibi','symb','zadb'):
                         raise EditError('Falta el recurso de fuente del formulario; se evita una sustitución silenciosa.')
-                    _check_widget_characters(doc,widget,value)
+                    if not font_change:
+                        try:_check_widget_characters(doc,widget,value)
+                        except EditError as error:
+                            from .font_choice_v321 import FontChoiceRequired
+                            raise FontChoiceRequired(str(error),{'font_name':widget.text_font},value) from error
                     widget.field_value=value
             if row['xref']==xref and row['page']==page:widget.rect=new_rect
             # Position-only changes update Rect directly: preserve the exact
             # appearance and all JavaScript instead of regenerating either.
-            if not value_change:
+            if not value_change and not font_change:
                 rotation=owner.rotation
                 try:
                     owner.set_rotation(0)
                     pdf_rect=new_rect*~owner.transformation_matrix
                 finally:owner.set_rotation(rotation)
                 doc.xref_set_key(widget.xref,'Rect','['+' '.join(f'{v:.9f}' for v in pdf_rect)+']')
-            else:widget.update()
+            else:
+                widget.update()
+                if font_change or retained_font:
+                    from .form_fonts_v322 import replace_widget_font
+                    font_evidence[row['page'],row['xref']]=replace_widget_font(doc,owner,widget,changes.get('font'),existing=retained_font)
         output=full_write(doc)
     after,after_protected,after_state,_=_form_snapshot(output)
-    if protected!=after_protected or form_state!=after_state:
+    _assert_form_resources(reader,after,font_evidence)
+    if font_change:
+        # A deliberate new face changes only DA of the canonical selected
+        # field. Every other protected property, calculation and script stays.
+        expected=dict(protected)
+        expected[selected['name']]=dict(expected[selected['name']])
+        if '/DA' in expected[selected['name']]:
+            expected[selected['name']]['/DA']=next(iter(font_evidence.values()))['default_appearance']
+    else:expected=protected
+    if expected!=after_protected or form_state!=after_state or _script_snapshot(reader)!=_script_snapshot(after):
         raise EditError('La operación alteró propiedades, opciones, scripts o el orden de cálculo del formulario.')
     output_listing=form_fields_pdf(output)
     if len(listing['fields'])!=len(output_listing['fields']):raise EditError('Cambió el número de widgets del formulario.')
+    output_refs={}
     for old,new in zip(listing['fields'],output_listing['fields']):
-        if any(old[key]!=new[key] for key in ('page','name','field_type','font','size','max_length','choices','read_only','scripts','calculation')):
+        output_refs[old['page'],old['xref']]=new['xref']
+        unchanged=('page','name','field_type','size','max_length','choices','read_only','scripts','calculation')
+        if old['name']!=selected['name'] or not font_change:unchanged+=('font',)
+        if any(old[key]!=new[key] for key in unchanged):
             raise EditError('Se alteraron propiedades de un campo ajeno a la operación.')
+        evidence=font_evidence.get((old['page'],old['xref']))
+        if evidence and new['font']!=evidence['resource']:
+            raise EditError('El campo guardado no utiliza la fuente elegida.')
         if (old['page'],old['xref'])!=(page,xref) and max(abs(a-b) for a,b in zip(old['rect'],new['rect']))>.035:
             raise EditError('Se movió otro campo de formulario.')
         if old['name']!=selected['name'] and old['value']!=new['value']:raise EditError('Se alteró otro valor de formulario.')
@@ -239,13 +308,28 @@ def edit_form_field_pdf(data,page,xref,changes,revision=None):
             reports.append(assert_pixels(a,b,excluded))
         # Widget appearance and logical value must both survive a reopen.
         for row in affected:
-            widget=next((w for w in after_doc[row['page']].widgets() or [] if w.field_name==row['name']),None)
+            widget=after_doc[row['page']].load_widget(output_refs[row['page'],row['xref']])
             if widget is None or after_doc.xref_get_key(widget.xref,'AP/N')[0]=='null':raise EditError('El campo no tiene apariencia normal después del guardado.')
             if row['page']==page and row['xref']==xref and max(abs(a-b) for a,b in zip(widget.rect,new_rect))>.035:
                 raise EditError('El campo no conserva la posición y dimensiones solicitadas.')
+            evidence=font_evidence.get((row['page'],row['xref']))
+            if evidence:
+                da=after_doc.xref_get_key(widget.xref,'DA')
+                font=after_doc.xref_get_key(after_doc.pdf_catalog(),'AcroForm/DR/Font/'+evidence['resource'])
+                if da!=('string',evidence['default_appearance']) or font[0]!='xref':
+                    raise EditError('La apariencia o el recurso de fuente del campo no se conserva al reabrir.')
+                if hashlib.sha256(after_doc.extract_font(int(font[1].split()[0]))[3]).hexdigest()!=evidence['font_sha256']:
+                    raise EditError('El programa de fuente del campo cambió al guardar.')
+                appearance=after.get_object(widget.xref)['/AP']['/N'].get_object()
+                label=after.pages[row['page']].extract_xform_text(appearance)
+                join='' if evidence.get('comb') else ' '
+                if join.join(label.split())!=join.join(evidence['appearance_text'].split()):
+                    raise EditError('El texto de la apariencia no coincide con el valor del campo y la fuente elegida.')
     return output,{'verified':True,'operation':'form_widget','page':page,'field_name':selected['name'],
                    'source_regions':[selected['rect']],'destination_regions':[tuple(new_rect)],
-                   'pages':reports,'interactive':True,'javascript_preserved':True,'independent_parser':'pypdf'}
+                   'pages':reports,'interactive':True,'javascript_preserved':True,'independent_parser':'pypdf',
+                   'dependency_analysis':listing['dependency_analysis'],
+                   'font_choice':list(font_evidence.values()) if font_change else None}
 
 
 def atomic_save_form_pdf(data,path,source=None):
@@ -358,7 +442,11 @@ def install_session_tools_v200(cls):
     """Register methods without creating or sharing any live PDF across threads."""
     def form_fields_v200(self):
         self._require_editing()
-        return form_fields_pdf(self.history.current)
+        listing=form_fields_pdf(self.history.current)
+        # Font inventory is loaded only after opening the form tool, never
+        # during application startup or repeated integrity snapshots.
+        listing['catalog']=self.resolver.catalog()
+        return listing
     def form_only_save_v200(self):
         reports=[r for r in self.history.base_reports+self.history.reports[:self.history.index+1] if r]
         if not (bool(reports) and all(r.get('operation') in ('form_widget','document_metadata') for r in reports)

@@ -255,6 +255,60 @@ def page_issues(data, number):
     return list(dict.fromkeys(issues))
 
 
+def scope_text_graphics_v322(data, model, selected=(), *, isolated_append=False,
+                             require_neutral_final=False):
+    """Refine only page-wide colour issues using exact source paint ownership.
+
+    Native in-place edits must retain their source operators, resource states
+    and paint order, and still run the full final validator. ``selected`` is a
+    source glyph selection, not replacement glyphs. A Form occurrence must be
+    isolated by the normal instance planner first.
+
+    ``isolated_append`` is reserved for insertion paths that enclose all old
+    content in balanced q/Q before appending a new neutral-state stream. A
+    redaction/reinsertion path which does not isolate state must instead request
+    ``require_neutral_final=True``. This helper grants no permission to change
+    an unsupported state on the selected text itself.
+    """
+    from dataclasses import replace
+    from .graphics_state import COLOR_ISSUE, BLEND_ISSUE, page_color_issues
+    from .marked_content_v303 import scope_unstructured_marks_v322
+    model=scope_unstructured_marks_v322(data,model,selected)
+    colour = {COLOR_ISSUE, BLEND_ISSUE}
+    if not colour.intersection(model.issues):
+        return model
+    if model.revision and model.revision != hashlib.sha256(data).hexdigest():
+        raise EditError('La selección pertenece a otra revisión del documento.')
+    selected = tuple(selected)
+    if not selected and not isolated_append:
+        return model
+    try:
+        from .analysis_reuse_v315 import page_operations_v315
+        reader = PdfReader(io.BytesIO(data), strict=True)
+        page = reader.pages[model.number]
+        operations = page_operations_v315(data, model.number, reader)
+        if isolated_append:
+            if selected:
+                raise ValueError('An append scope cannot own source glyphs')
+            assert_graphics_scopes_v316(data, model.number)
+            targets = frozenset()
+        else:
+            from .clipping import operator_glyph_map
+            _, _, _, mapping = operator_glyph_map(data, model.number, model)
+            if any(g.id not in mapping for g in selected):
+                return model
+            targets = {mapping[g.id]['operation'] for g in selected}
+        scoped = page_color_issues(reader, page, operations,
+            operation_indices=targets, check_final=require_neutral_final)
+    except DraftCancelled:
+        raise
+    except Exception:
+        # A global diagnostic may be relaxed only by a complete scoped proof.
+        return model
+    return replace(model, issues=list(dict.fromkeys(
+        [issue for issue in model.issues if issue not in colour] + scoped)))
+
+
 # Only successful BT/ET verification of the exact graph can populate this
 # process-local LRU. Entries contain no readers, PDF text or resource objects.
 _TEXT_SCOPE_CACHE_LIMIT = 2048

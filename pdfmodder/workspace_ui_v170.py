@@ -64,9 +64,11 @@ class RecentFilesStore:
             if temporary.exists():
                 temporary.unlink()
 
-    def add(self, path):
-        path = Path(path).resolve()
-        if not path.is_file() or path.suffix.lower() != '.pdf':
+    def add(self, path, *, already_open=False):
+        # A successful worker open already checked this file. Resolving or
+        # probing it again on the GUI thread can stall on a UNC/removable path.
+        path = Path(os.path.abspath(os.fspath(path))) if already_open else Path(path).resolve()
+        if path.suffix.lower() != '.pdf' or (not already_open and not path.is_file()):
             return False
         key = os.path.normcase(str(path))
         items = [item for item in self.entries() if os.path.normcase(item['path']) != key]
@@ -352,10 +354,12 @@ class WorkspaceUiV170Mixin:
         entries = self._recent_store_v170.entries()
         for entry in entries:
             path = Path(entry['path'])
-            exists = path.is_file()
-            item = QListWidgetItem(icon_v170('document'), path.name + ('' if exists else '\nNo disponible'))
+            # Recent files can live on an offline network share or removable
+            # drive. Probing all paths here used to block window construction
+            # and every refresh. The PDF worker checks availability on open.
+            item = QListWidgetItem(icon_v170('document'), path.name)
             item.setData(Qt.UserRole, entry['path'])
-            item.setToolTip(str(path) + ('\nAbre este PDF local.' if exists else '\nEl archivo se ha movido o eliminado.'))
+            item.setToolTip(str(path) + '\nSe comprobará su disponibilidad al abrirlo.')
             self.recent_files_v170.addItem(item)
         if not entries:
             item = QListWidgetItem('Todavía no hay archivos recientes.')
@@ -367,7 +371,7 @@ class WorkspaceUiV170Mixin:
         if not path or not hasattr(self, '_recent_store_v170'):
             return
         try:
-            if self._recent_store_v170.add(path):
+            if self._recent_store_v170.add(path, already_open=True):
                 self._reload_recent_v170()
         except OSError:
             self.statusBar().showMessage('El PDF está abierto; no se ha podido guardar la lista local de recientes.', 5000)
@@ -375,9 +379,6 @@ class WorkspaceUiV170Mixin:
     def _open_recent_v170(self, item):
         path = item.data(Qt.UserRole)
         if not path or self.busy or not self.open_action.isEnabled():
-            return
-        if not Path(path).is_file():
-            QMessageBox.information(self, 'Archivo no disponible', 'Este PDF se ha movido o eliminado. Usa «Abrir» para elegir su ubicación actual.')
             return
         if self._confirm_discard():
             self.open_document(path)

@@ -1,8 +1,18 @@
-# PDF Modder 3.0.21 (código fuente)
+# PDF Modder 3.0.22 (código fuente)
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Apertura y edición ampliada 3.0.22
+
+Apertura sin comprobar todos los recientes y con carga diferida de firmas y
+herramientas. Amplía recortes, movimiento de texto, bloques etiquetados y
+apariciones reutilizadas; unifica reemplazo y fuentes y analiza formularios por
+campo. Permite reconstruir explícitamente ciertos bloques con codificación
+ambigua. Corrige eliminar páginas conservando los perfiles de color de salida.
+Instalador y portable: [publicación 3.0.22](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.22).
+[Cambios, comprobaciones y límites](docs/NOTAS_3.0.22.md).
 
 ## Edición de texto recortado y fuentes 3.0.21
 

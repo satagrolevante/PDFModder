@@ -59,6 +59,7 @@ from .toolbar_ui_v311 import ToolbarUiV311Mixin
 from .signatures_ui_v317 import SignaturesUiV317Mixin
 from .lazy_page_ui_v318 import LazyPageUiV318Mixin
 from . import __version__
+from .worker_entry_v322 import dispatch_pdf_worker as _dispatch
 
 
 def _application_icon():
@@ -71,12 +72,6 @@ def _application_icon():
             if not icon.isNull():
                 return icon
     return QIcon()
-
-
-def _dispatch(command, payload):
-    # This import occurs in the spawned worker. No PDF Document crosses IPC.
-    from .worker import dispatch
-    return dispatch(command, payload)
 
 
 class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixin,DocumentUiV170Mixin,ClipboardUiV170Mixin,WorkspaceUiV170Mixin,SigningUiMixin,ToolsWorkspaceV150Mixin,PageActionsV150Mixin,InsertionUiV150Mixin,RichEditing,ObjectEditing,AdvancedEditing,ExtendedEditing,QMainWindow):
@@ -483,6 +478,10 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
                     self._refresh_actions()
                 return
             self._error(str(exc))
+            if isinstance(exc,FontChoiceRequired) and hasattr(self,'_advanced_font_choice_v322'):
+                self._advanced_font_choice_v322(exc)
+            if command=='preview_form_v200' and isinstance(exc,FontChoiceRequired):
+                self._offer_form_font_choice_v322(exc)
             self._refresh_actions()
         if was_thumbnail and self._pending_text_preview is not None:
             pending,self._pending_text_preview = self._pending_text_preview,None

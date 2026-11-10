@@ -413,7 +413,7 @@ class PageEditor(QTextEdit):
 
     def payload(self):
         output = {key: deepcopy(self._payload[key]) for key in
-            ('page', 'ids', 'rect', 'revision', 'width', 'height', 'allow_overlap', 'auto_width', 'auto_height', 'auto_adapt')
+            ('page', 'ids', 'rect', 'revision', 'width', 'height', 'allow_overlap', 'auto_width', 'auto_height', 'auto_adapt', 'reconstruct')
             if key in self._payload}
         runs, paragraphs = [], []
         block = self.document().begin()

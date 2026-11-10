@@ -410,6 +410,8 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
             if isolated is not None:
                 local,current,isolation=isolated
                 output,report=edit_pdf(local,current,resolver)
+                from .instance_repack_v322 import restore_instance_properties
+                output=restore_instance_properties(data,output,request.page,isolation,report)
                 report['form_isolation']=isolation
                 return output,report
     if (request.text is None and request.size is None and not request.font_name and
@@ -433,6 +435,8 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
         selected=model.selected(request.ids)
         if len(selected)!=len(set(request.ids)):
             raise EditError("La selección pertenece a una versión anterior. Vuelve a seleccionarla.")
+        from .validation import scope_text_graphics_v322
+        model=scope_text_graphics_v322(data,model,selected)
         ocr_mode=getattr(request,'ocr_mode','visible')
         if ocr_mode not in ('visible','searchable'):
             raise EditError("Modo OCR desconocido; selecciona edición visible o corrección buscable.")
@@ -489,6 +493,10 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
             from .clipped_layout import move_clipped_text
             return move_clipped_text(data,request,model)
         page=doc[request.page]
+        # This remaining legacy path may remove/reappend paint. Its final
+        # inherited graphics state must also be neutral; native routes above
+        # preserve their own exact source scope instead.
+        model=scope_text_graphics_v322(data,model,selected,require_neutral_final=True)
         _safe_selection(page,model,selected)
         original_selection=selected[:]
         line_report={}

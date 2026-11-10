@@ -13,8 +13,6 @@ from pathlib import Path
 import re
 import tempfile
 
-import pymupdf as fitz
-
 from .model import EditError
 
 
@@ -34,6 +32,7 @@ _NS = {
 
 
 def _open(data, password=''):
+    import pymupdf as fitz
     try:
         document = fitz.open(stream=data, filetype='pdf')
         if not document.is_pdf or not document.page_count:
@@ -50,6 +49,7 @@ def _open(data, password=''):
 
 def _restriction(data, document, password=''):
     """Independent signature checks precede every full rewrite."""
+    import pymupdf as fitz
     if document.get_sigflags() > 0:
         return 'El documento contiene firmas digitales; sus propiedades se muestran sólo para lectura.', True
     from pypdf import PdfReader
@@ -227,6 +227,7 @@ def _assert_content(before, after, *, page_proof=None):
 
 def update_document_metadata(data, metadata, password=''):
     """Return an undoable snapshot. Unspecified Info keys remain intact."""
+    import pymupdf as fitz
     metadata = validate_metadata(metadata)
     with _open(data, password) as document:
         reason, _ = _restriction(data, document, password)
@@ -427,6 +428,7 @@ def export_secure_pdf(data, path, mode='password', password='', certificate_path
     Passwords and encryption state never enter the return value or history.
     Existing encrypted documents and any signature/certification are refused.
     """
+    import pymupdf as fitz
     target = Path(path).resolve()
     protected = [*protected_paths, *([certificate_path] if certificate_path else [])]
     for value in protected:

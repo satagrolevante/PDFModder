@@ -95,8 +95,9 @@ class _Expansion:
                     if pointer in ancestors:
                         raise EditError('El Form contiene una referencia recursiva; no se ha modificado.')
                     self.forms[invocation] = obj
+                    preserve_group = obj.get('/Group') is not None or obj.get('/OC') is not None
                     if not self.probing:
-                        forbidden = [key for key in ('/Group', '/OC', '/Ref', '/StructParent', '/StructParents') if obj.get(key) is not None]
+                        forbidden = [key for key in ('/Ref', '/StructParent', '/StructParents') if obj.get(key) is not None]
                         if forbidden:
                             raise EditError('Esta instancia Form requiere conservar '+', '.join(forbidden)+
                                             '; edita otro elemento. Sus recursos compartidos siguen intactos.')
@@ -107,11 +108,17 @@ class _Expansion:
                             or abs(matrix[0]*matrix[3]-matrix[1]*matrix[2]) < 1e-12):
                         raise EditError('La matriz o el límite del Form no es verificable.')
                     nested = _dictionary(obj.get('/Resources', resources))
+                    if preserve_group and not self.probing:
+                        from pypdf.generic import TextStringObject
+                        marker=TextStringObject('.'.join(str(i) for i in invocation))
+                        tag='/Span' if self.reader.trailer['/Root'].get('/StructTreeRoot') else '/Artifact'
+                        result.append(([NameObject(tag),DictionaryObject({NameObject('/PMInstanceID'):marker})],b'BDC'))
                     result.extend([([], b'q'), ([FloatObject(v) for v in matrix], b'cm'),
                                    ([FloatObject(v) for v in (bounds[0], bounds[1], bounds[2]-bounds[0], bounds[3]-bounds[1])], b're'),
                                    ([], b'W'), ([], b'n')])
                     result.extend(self.walk(ContentStream(obj, self.reader).operations, nested, invocation, ancestors+(pointer,)))
                     result.append(([], b'Q'))
+                    if preserve_group and not self.probing:result.append(([],b'EMC'))
                     continue
                 args[0] = self._rename(resources, '/XObject', args[0])
             elif op == b'Tf':
@@ -185,10 +192,12 @@ def isolate_selected_forms(data, request):
         return None
     if any(ownership[index] is None for index in request.ids):
         raise EditError('La instancia contiene texto invisible sin un operador verificable.')
-    if reader.trailer['/Root'].get('/StructTreeRoot'):
-        raise EditError('El texto está en un Form etiquetado; falta preservar sus relaciones de estructura al aislar esta instancia.')
     expanded = _Expansion(reader, request.page, targets=targets)
     local = expanded.write(data, request.page, expanded.walk(operations, expanded.base))
+    if reader.trailer['/Root'].get('/StructTreeRoot'):
+        from .tagged import analyze_readonly
+        if analyze_readonly(data).semantic()!=analyze_readonly(local).semantic():
+            raise EditError('La instancia requiere relaciones accesibles propias que no pueden aislarse conservando su significado.')
     from .validation import assert_pixels, related
     with fitz.open(stream=data, filetype='pdf') as before, fitz.open(stream=local, filetype='pdf') as after:
         a, b = before[request.page], after[request.page]
@@ -199,10 +208,29 @@ def isolate_selected_forms(data, request):
             if (text != new_text or any(abs(x-y) > .025 for x, y in zip(point, new_point))
                     or any(style.get(key) != new_style.get(key) for key in ('font', 'size', 'color', 'opacity', 'type', 'dir'))):
                 raise EditError('El aislamiento cambió la tipografía o distribución del texto.')
-        if related(a) != related(b):
+        original_related,prepared_related=related(a),related(b)
+        layer_names=set()
+        def names(value):
+            node=value.get_object() if hasattr(value,'get_object') else value
+            if isinstance(node,dict):
+                if node.get('/Type')=='/OCG':layer_names.add(str(node.get('/Name','')))
+                else:
+                    for item in node.get('/OCGs',[]):names(item)
+        for form in expanded.forms.values():
+            if form.get('/OC') is not None:names(form['/OC'])
+        if layer_names and len(original_related['drawings'])==len(prepared_related['drawings']):
+            expected=[]
+            for first,second in zip(original_related['drawings'],prepared_related['drawings']):
+                first=dict(first)
+                if first.get('layer') in layer_names and second.get('layer')=='':first['layer']=''
+                expected.append(first)
+            original_related=dict(original_related,drawings=tuple(expected))
+        if original_related != prepared_related:
             raise EditError('El aislamiento alteró imágenes, vectores o elementos relacionados.')
         pixels = assert_pixels(a, b, reproduction=True)
     return local, replace(request, revision=sha256(local).hexdigest()), {
         'selected_instance_count': len(targets), 'shared_objects_unchanged': True,
         'vectors_retained': True, 'paint_order_retained': True, 'isolation_visual': pixels,
+        'repack_ids':['.'.join(str(i) for i in path) for path,obj in expanded.forms.items()
+                      if obj.get('/Group') is not None or obj.get('/OC') is not None],
     }

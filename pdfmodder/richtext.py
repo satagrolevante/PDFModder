@@ -178,6 +178,11 @@ def _safe_rich_selection(page,model,selected,metadata,*,preserve_paint_order=Tru
 def _unit(show):
     font = show['font']
     if font.get('/Subtype') in ('/TrueType', '/Type1'): return 1
+    if font.get('/Subtype') == '/Type3':
+        matrix=font.get('/FontMatrix',())
+        if (len(matrix)==6 and all(abs(float(a)-b)<1e-10 for a,b in zip(matrix,(.001,0,0,.001,0,0)))
+                and '/FirstChar' in font and '/LastChar' in font and '/Widths' in font):
+            return 1
     if font.get('/Subtype') == '/Type0' and font.get('/Encoding') == '/Identity-H': return 2
     raise EditError('La fuente usa una codificación variable no compatible con edición por fragmentos.')
 
@@ -538,6 +543,11 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     started=time.perf_counter()
     if request.revision and request.revision!=hashlib.sha256(data).hexdigest():
         raise EditError('El documento cambió desde la selección. Selecciona el texto de nuevo.')
+    if getattr(request,'reconstruct',False):
+        if compose_only or insertion_source is not None:
+            raise EditError('La reconstrucción explícita requiere el documento original, sin anclas temporales.')
+        from .reconstruct_text_v322 import reconstruct_text_pdf
+        return reconstruct_text_pdf(data,request,resolver)
     checkpoint()
     canonical_runs=[dict(run,text=unicodedata.normalize('NFC',str(run.get('text','')))) for run in request.runs]
     if any(a.get('text','')!=b['text'] for a,b in zip(request.runs,canonical_runs)):
@@ -563,6 +573,8 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     if isolated is not None:
         local,current,evidence = isolated
         result, report = edit_rich_pdf(local,current,resolver)
+        from .instance_repack_v322 import restore_instance_properties
+        result=restore_instance_properties(data,result,request.page,evidence,report)
         report['form_isolation'] = evidence
         return result, report
     with fitz.open(stream=data,filetype='pdf') as doc:
@@ -594,7 +606,9 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
                 reader.pages[request.page]['/Resources'].get_object(),page_matrix,page_bounds)
             if hidden:
                 selected=sorted(selected+hidden,key=lambda g:g.id)
-        clean=replace(model,issues=[v for v in model.issues if v!=CLIP_ISSUE])
+        from .validation import scope_text_graphics_v322
+        clean=scope_text_graphics_v322(data,model,selected)
+        clean=replace(clean,issues=[v for v in clean.issues if v!=CLIP_ISSUE])
         metadata=_read_metadata(doc,request.page)
         from .linked_text_v303 import prepare_linked_text
         linked_text=prepare_linked_text(data,request.page,model,selected,new_text)
@@ -786,7 +800,10 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         natural.append(natural_width())
         rect=(rect[0],rect[1],rect[0]+max(.1,*natural),rect[3])
     from .auto_layout_v316 import adapt_rich_layout_v316
-    adaptation_limits=page_bounds & clip
+    from .owned_clip_v322 import plan_owned_clip
+    owned_clip=(plan_owned_clip(operations,{mapping[g.id]['operation'] for g in selected},resources,page_matrix,page_bounds)
+                if request.auto_adapt and not (clip+(-.035,-.035,.035,.035)).contains(page_bounds) else None)
+    adaptation_limits=owned_clip.limits if owned_clip is not None else page_bounds & clip
     if (source_metric_overhang and abs(rect[0]-bounds[0])<.025
             and abs(rect[1]-bounds[1])<.025):
         # Font metric boxes can extend outside a clipping cell while every
@@ -801,6 +818,10 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     laid,lines,rect=_layout(request,tokens,rect)
     planned=[replace(first,id=-1,text=t['char'],origin=t['origin'],bbox=t['bbox'],trace_bbox=t['bbox'],
                      font=t['choice']['font_name'],size=t['size'],color=t['color'],line=t['line']) for t in laid]
+    expanded_clip=bool(owned_clip is not None and any(
+        not (clip+(-.035,-.035,.035,.035)).contains(fitz.Rect(g.bbox)) for g in planned))
+    if expanded_clip:
+        clip=owned_clip.limits
     metric_clip_exception=False
     overlap_neighbors=set()
     for g, token in zip(planned, laid):
@@ -831,7 +852,8 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     # cursor advance. The final candidate still passes the ink and pixel proof.
     with fitz.open(stream=data,filetype='pdf') as safety:
         from .marked_content_v303 import assert_unstructured_artifact_bounds
-        assert_unstructured_artifact_bounds(data,request.page,model,selected,planned,mapping,operations)
+        artifact_properties=assert_unstructured_artifact_bounds(data,request.page,model,selected,planned,mapping,operations,
+                                                               expand=request.auto_adapt)
         if linked_text:linked_text.plan(planned)
         if planned:_safe_rich_selection(safety[request.page],clean,planned,metadata,linked_text=linked_text)
         # Empty replacement removes paint in place and never consolidates
@@ -913,6 +935,11 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
             keep_records.extend(_surviving_records(record,matches))
         else:keep_records.append(record)
     replacements={}
+    expanded_scope=None
+    if expanded_clip:
+        from .owned_clip_v322 import replacement_scope
+        expanded_scope=replacement_scope(owned_clip,operations,shows,resources,page_matrix,
+            fitz.Rect(union(g.bbox for g in planned))+(-.04,-.04,.04,.04),insertion,first.id)
     for op,state in states.items():
         show=byop[op];unit=_unit(show);args,operator=operations[op]
         source_array=args[0] if operator==b'TJ' else [args[0]]
@@ -925,7 +952,7 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
                 raw=_raw(value)
                 for offset in range(0,len(raw),unit):
                     glyph=show['glyphs'][position];code=int.from_bytes(raw[offset:offset+unit],'big')
-                    if glyph.id==first.id:
+                    if glyph.id==first.id and not expanded_clip:
                         flush();chunks.extend(copy.deepcopy(insertion))
                     if glyph.id in chosen:
                         step=_source_width(show['font'],code,glyph.text)+1000*state['tc']/state['size']+(1000*state['tw']/state['size'] if unit==1 and code==32 else 0)
@@ -944,6 +971,8 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
             args,oper=item;props=copy.deepcopy(structure.marks[request.page][mcid].resolved)
             props[NameObject('/ActualText')]=TextStringObject(tagged.marker_updates[mcid]);item=([args[0],props],oper)
         changed_ops.extend(replacements.get(op,[copy.deepcopy(item)]))
+        if expanded_scope is not None and op==owned_clip.end:
+            changed_ops.extend(expanded_scope)
     for record in keep_records:
         for item in record.get('underlines',[]):item['start']=index_map[item['start']]
     if source_decoration:source_decoration.apply_operations(changed_ops,index_map)
@@ -974,6 +1003,8 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         if source_decoration:source_decoration.apply_structure(output_doc)
         if linked_text:linked_text.apply(output_doc)
         output=_write_rich_transaction(output_doc)
+    from .marked_content_v303 import verify_artifact_properties
+    verify_artifact_properties(output,request.page,artifact_properties)
     if metric_clip_exception:
         _assert_clip_paint(output, request.page, [union(g.bbox for g in planned)],
                            'El texto nuevo queda parcialmente oculto por el recorte original.')
@@ -1018,6 +1049,9 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
                   original=model.text(request.ids),replacement=logical_text,
                   elapsed_seconds=round(time.perf_counter()-started,3),rich_text=True)
     report.update(adaptation)
+    if expanded_clip:
+        report.update(clip_expanded_for_replacement=True,original_clip_preserved=True,
+                      clip_expansion_scope='Solo el texto de sustitución; recortes y vecinos originales intactos.')
     if overlap_neighbors:
         warning='Solapamiento permitido con texto vecino. Revisa la vista previa o redistribuye el texto vecino para separarlo.'
         report.setdefault('warnings',[]).append(warning)
@@ -1112,6 +1146,8 @@ def _move_rich_pdf(data, request, resolver=None):
     if isolated is not None:
         local,current,evidence = isolated
         result,report = move_rich_pdf(local,current,resolver)
+        from .instance_repack_v322 import restore_instance_properties
+        result=restore_instance_properties(data,result,request.page,evidence,report)
         report['form_isolation'] = evidence
         return result,report
     with fitz.open(stream=data, filetype='pdf') as doc:

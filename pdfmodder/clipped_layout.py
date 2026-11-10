@@ -274,7 +274,9 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
         raise EditError('Mover texto recortado conserva su formato. Cambia el formato en una operación independiente compatible.')
     if not all(isinstance(v,(int,float)) and math.isfinite(v) for v in (request.dx,request.dy)):
         raise EditError('El desplazamiento debe contener coordenadas finitas.')
-    clean=replace(model,issues=[i for i in model.issues if i!=CLIP_ISSUE])
+    from .validation import scope_text_graphics_v322
+    clean=scope_text_graphics_v322(data,model,selected)
+    clean=replace(clean,issues=[i for i in clean.issues if i!=CLIP_ISSUE])
     dx,dy=request.dx,request.dy
     planned=[replace(g,origin=(g.origin[0]+dx,g.origin[1]+dy),
                      bbox=tuple(v+(dx if i%2==0 else dy) for i,v in enumerate(g.bbox)),
@@ -317,14 +319,18 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
             raise EditError('No se puede verificar la correspondencia entre códigos y caracteres del texto seleccionado.')
         state=_state_at(operations,operation)
         linear=state['ctm']*page_matrix
-        if state['unknown'] or not all(math.isfinite(v) for v in linear) or abs(linear.a*linear.d-linear.b*linear.c)<1e-10:
+        if state['unknown']:
+            from .clip_move_v150 import move_text_with_clip
+            return move_text_with_clip(data,request,model,(reader,operations,shows,mapping),tagged_move=tagged_move)
+        if not all(math.isfinite(v) for v in linear) or abs(linear.a*linear.d-linear.b*linear.c)<1e-10:
             raise EditError('El texto hereda un recorte complejo o una transformación no verificable; no se puede mover con garantías.')
         clip=state['clip']*page_matrix if state['clip'] is not None else page_bounds
         originals=[g for g in show['glyphs'] if g.id in selected_ids]
         destinations=[g for g in planned if g.id in {s.id for s in originals}]
         for g in originals:
             if not (clip+(-.02,-.02,.02,.02)).contains(fitz.Rect(g.bbox)):
-                raise EditError('El texto original está parcialmente recortado; no se puede mover con garantías.')
+                from .clip_move_v150 import move_text_with_clip
+                return move_text_with_clip(data,request,model,(reader,operations,shows,mapping),tagged_move=tagged_move)
         for g in destinations:
             if not page_bounds.contains(fitz.Rect(g.bbox)):
                 raise EditError('La posición de destino queda fuera de la página.')

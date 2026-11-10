@@ -236,6 +236,7 @@ def build_tagged_pages(reader, entries, toc):
     from .pageops import _organizer_toc
     from .engine import transaction_write_v318
     writer = PdfWriter(clone_from=reader)
+    writer.pdf_header = reader.pdf_header
     original_pages = list(writer.pages)
     forbidden = _prune_tree(writer, original_pages, entries)
     pages = []

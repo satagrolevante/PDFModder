@@ -16,4 +16,5 @@ class RichTextRequest:
     auto_width: bool = False
     auto_height: bool = False
     auto_adapt: bool = False
+    reconstruct: bool = False
 

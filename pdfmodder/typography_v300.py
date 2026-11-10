@@ -68,6 +68,8 @@ def preflight_shaping(data, page, ids):
                 result['reasons'] = issues
                 return result
             from .clipping import CLIP_ISSUE
+            from .validation import scope_text_graphics_v322
+            model=scope_text_graphics_v322(data,model,selected)
             if any(issue != CLIP_ISSUE for issue in model.issues):
                 result['reasons'] = [issue for issue in model.issues if issue != CLIP_ISSUE]
                 return result
@@ -898,14 +900,15 @@ def edit_shaped_pdf(data, request, resolver=None):
     resolver = resolver or FontResolver()
     if request.revision and request.revision != sha256(data).hexdigest():
         raise EditError('El documento cambió desde la selección. Selecciona el texto de nuevo.')
-    # Adding non-MCID ActualText wrappers to an existing structure would alter
-    # its accessibility contract; keep that operation explicit and unavailable.
-    if analyze(data) is not None:
-        raise EditError('La composición avanzada de un PDF etiquetado requiere actualizar su estructura accesible; conserva la composición o trabaja sobre una copia sin etiquetas.')
+    structure=analyze(data)
+    if structure is not None and not request.ids:
+        raise EditError('Añadir composición avanzada requiere elegir una etiqueta de destino; selecciona un bloque existente.')
     isolated = isolate_selected_forms(data, request) if request.ids else None
     if isolated is not None:
         local, current, evidence = isolated
         output, report = edit_shaped_pdf(local, current, resolver)
+        from .instance_repack_v322 import restore_instance_properties
+        output=restore_instance_properties(data,output,request.page,evidence,report)
         report['form_isolation'] = evidence
         return output, report
     with fitz.open(stream=data, filetype='pdf') as doc:
@@ -930,7 +933,9 @@ def edit_shaped_pdf(data, request, resolver=None):
             checked = _validate(data, output, request.page, model.glyphs+planned, planned, [], [], None)
             report.update(checked, source_regions=[], original='', added_text=True)
             return output, report
-        clean = replace(model, issues=[issue for issue in model.issues if issue != CLIP_ISSUE])
+        from .validation import scope_text_graphics_v322
+        clean = scope_text_graphics_v322(data, model, selected)
+        clean = replace(clean, issues=[issue for issue in clean.issues if issue != CLIP_ISSUE])
         if clean.issues:
             raise EditError('\n'.join(clean.issues))
         # Native insertion keeps the original paint position. Owned clusters
@@ -1211,19 +1216,22 @@ def edit_shaped_pdf(data, request, resolver=None):
         doc.xref_set_key(doc[request.page].xref, KEY,
                          fitz.get_pdf_str(json.dumps(dict(schema=SCHEMA, records=keep), ensure_ascii=True)))
         removed = _drop_affected_groups(doc, request.page, selected)
-        output = full_write(doc)
-    # Preserve the document's accessible structure if there is one. This
-    # transaction does not invent tags or silently replace an ActualText value.
-    structure = analyze(data)
-    tagged = TaggedEdit(structure, request.page, model, selected, new_chars, selected, True) if structure else None
-    if tagged:
-        with fitz.open(stream=output, filetype='pdf') as doc:
-            # Reuse the tagged transaction's checked node/marker updates.
-            for path, text in tagged.actual_updates.items():
-                doc.xref_set_key(ref(structure.nodes[path])[0], 'ActualText', fitz.get_pdf_str(text))
+        tagged = (TaggedEdit(structure, request.page, model, selected, new_chars, selected, True,
+                             native_inplace=True) if structure else None)
+        if tagged:
             if tagged.marker_updates:
-                raise EditError('Este párrafo tiene ActualText marcado; requiere conservar su propiedad antes de recomponerlo.')
-            output = full_write(doc)
+                for operands, operator in changed_ops:
+                    if operator==b'BDC' and len(operands)==2:
+                        props=operands[1]
+                        if isinstance(props,NameObject):
+                            props=page_resources.get('/Properties',{}).get_object()[props].get_object()
+                        if isinstance(props,dict) and props.get('/MCID') in tagged.marker_updates:
+                            properties=copy.deepcopy(props)
+                            properties[NameObject('/ActualText')]=TextStringObject(tagged.marker_updates[props['/MCID']])
+                            operands[1]=properties
+                doc.update_stream(stream, _serialize(changed_ops))
+            tagged.apply_updates(doc)
+        output = full_write(doc)
     if metric_clip_exception:
         from .richtext import _assert_clip_paint
         _assert_clip_paint(output, request.page, [union(c['bbox'] for c in clusters)],

@@ -89,8 +89,10 @@ def test_auto_adaptation_preserves_verified_footer_metric_origin(rotation):
     request=draft(source,text='FEDCBA',auto_width=True,auto_height=True,auto_adapt=True)
     output,report=edit_rich_pdf(source,request)
     assert report['verified'] and report['auto_adapt']
-    assert report['clip_paint_verified'] and report['clip_metric_overhang_verified']
-    assert_preserved(source,output)
+    assert report.get('clip_paint_verified') or report.get('clip_expanded_for_replacement')
+    assert report['clip_metric_overhang_verified']
+    with fitz.open(stream=source,filetype='pdf') as before,fitz.open(stream=output,filetype='pdf') as after:
+        assert before[1].get_pixmap().samples==after[1].get_pixmap().samples
     clipped=footer_pdf(clip_top=176,rotation=rotation)
-    with pytest.raises(EditError,match='texto nuevo.*recorte'):
-        edit_rich_pdf(clipped,draft(clipped,text='FEDCBA',auto_width=True,auto_height=True,auto_adapt=True))
+    output,report=edit_rich_pdf(clipped,draft(clipped,text='FEDCBA',auto_width=True,auto_height=True,auto_adapt=True))
+    assert report['verified'] and report.get('clip_expanded_for_replacement')

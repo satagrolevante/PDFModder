@@ -27,6 +27,10 @@ class FormEditorDialog(QDialog):
         self.value_edit=QTextEdit();self.value_edit.setObjectName('formValue');self.value_edit.setMaximumHeight(95)
         self.choice=QComboBox();self.check=QCheckBox('Marcado')
         self.change_value=QCheckBox('Cambiar valor');self.change_value.setObjectName('formChangeValue')
+        self.change_font=QCheckBox('Cambiar fuente');self.change_font.setObjectName('formChangeFontV322')
+        self.font_button=QPushButton('Elegir fuente compatible…');self.font_button.setObjectName('formFontChoiceV322')
+        self.font_button.clicked.connect(self._choose_font_v322)
+        self.font_choice=None
         self.change_geometry=QCheckBox('Cambiar posición o dimensiones');self.change_geometry.setObjectName('formChangeGeometry')
         self.geometry=[];form=QFormLayout()
         for label,key in zip(('X','Y','Anchura','Altura'),('X','Y','Width','Height')):
@@ -34,7 +38,8 @@ class FormEditorDialog(QDialog):
             form.addRow(label,spin);self.geometry.append(spin)
         self.notice=QLabel();self.notice.setWordWrap(True)
         details=QVBoxLayout();details.addWidget(self.change_value);details.addWidget(self.value_edit);details.addWidget(self.choice)
-        details.addWidget(self.check);details.addWidget(self.change_geometry);details.addLayout(form);details.addWidget(self.notice);details.addStretch()
+        details.addWidget(self.check);details.addWidget(self.change_font);details.addWidget(self.font_button)
+        details.addWidget(self.change_geometry);details.addLayout(form);details.addWidget(self.notice);details.addStretch()
         arrangement=QHBoxLayout();arrangement.addWidget(self.table,2);arrangement.addLayout(details,1)
         buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
         self.accept_button=buttons.button(QDialogButtonBox.Ok);self.accept_button.setText('Previsualizar campo')
@@ -44,6 +49,7 @@ class FormEditorDialog(QDialog):
         layout.addLayout(arrangement);layout.addWidget(buttons)
         self.table.currentCellChanged.connect(self._selected)
         self.change_value.toggled.connect(self._controls);self.change_geometry.toggled.connect(self._controls)
+        self.change_font.toggled.connect(self._controls)
         self._controls()
         if self.table.rowCount():self.table.setCurrentCell(0,0)
         else:self.notice.setText(listing.get('reason') or 'El PDF no contiene campos AcroForm.')
@@ -51,27 +57,42 @@ class FormEditorDialog(QDialog):
     def _selected(self,row,*_):
         if not 0<=row<len(self.listing['fields']):return
         field=self.selected=self.listing['fields'][row]
-        self.change_value.setChecked(False);self.change_geometry.setChecked(False)
+        self.change_value.setChecked(False);self.change_geometry.setChecked(False);self.change_font.setChecked(False)
+        self.font_choice=None;self.font_button.setText('Elegir fuente compatible…')
         self.value_edit.setPlainText(str(field['value'] or ''))
         self.check.setChecked(field.get('checked',False));self.choice.clear();self.choice.addItems([str(v) for v in field['choices']])
         self.choice.setCurrentText(str(field['value'] or ''))
         x0,y0,x1,y1=field['rect']
         for spin,value in zip(self.geometry,(x0,y0,x1-x0,y1-y0)):spin.setValue(value/PT_PER_MM)
-        scripted=self.listing.get('has_calculations') or self.listing.get('has_document_scripts') or field['scripts']
-        self.notice.setText(field['reason'] or ('Hay cálculos o validaciones JavaScript: se permite mover y redimensionar, conservando las apariencias; cambiar valores requiere evaluar sus scripts.' if scripted else
+        reason=field.get('value_reason')
+        self.notice.setText(field['reason'] or (reason if reason else
             ('Campo de sólo lectura: puedes cambiar su posición.' if field['read_only'] else 'Revisa la apariencia real del campo antes de aplicar.')))
         self._controls()
 
     def _controls(self,*_):
         field=self.selected;editable=bool(field and field['editable'])
-        value_allowed=editable and not field['read_only'] and not field['scripts'] and not self.listing.get('has_calculations') and not self.listing.get('has_document_scripts')
+        value_allowed=editable and field.get('value_editable',not field['read_only'] and not field['scripts'] and not self.listing.get('has_calculations') and not self.listing.get('has_document_scripts'))
         self.change_value.setEnabled(value_allowed);self.change_geometry.setEnabled(editable)
         kind=field['field_type'] if field else -1
         self.value_edit.setVisible(kind==7);self.check.setVisible(kind==2);self.choice.setVisible(kind in (3,4))
         self.value_edit.setEnabled(value_allowed and self.change_value.isChecked())
         self.choice.setEnabled(value_allowed and self.change_value.isChecked());self.check.setEnabled(value_allowed and self.change_value.isChecked())
+        font_allowed=value_allowed and kind in (3,4,7)
+        self.change_font.setEnabled(font_allowed);self.font_button.setEnabled(font_allowed)
         for spin in self.geometry:spin.setEnabled(editable and self.change_geometry.isChecked())
-        self.accept_button.setEnabled(editable and (self.change_value.isChecked() or self.change_geometry.isChecked()))
+        self.accept_button.setEnabled(editable and (self.change_value.isChecked() or self.change_geometry.isChecked()
+            or self.change_font.isChecked() and self.font_choice is not None))
+
+    def _choose_font_v322(self):
+        if not self.selected:return
+        from .font_choice_ui_v321 import FontChoiceDialog
+        text=(self.choice.currentText() if self.selected['field_type'] in (3,4) else self.value_edit.toPlainText())
+        if not self.change_value.isChecked():text=str(self.selected['value'] or '')
+        dialog=FontChoiceDialog(self.selected.get('font') or 'original',text,self.listing.get('catalog',[]),self)
+        if dialog.exec()!=QDialog.Accepted:return
+        self.font_choice={key:dialog.entry[key] for key in ('name','path','font_file','font_axes') if key in dialog.entry}
+        self.change_font.setChecked(True);self.font_button.setText(self.font_choice['name'])
+        self._controls()
 
     def operation(self):
         field=self.selected;changes={}
@@ -79,6 +100,7 @@ class FormEditorDialog(QDialog):
             changes['value']=self.check.isChecked() if field['field_type']==2 else self.choice.currentText() if field['field_type'] in (3,4) else self.value_edit.toPlainText()
         if self.change_geometry.isChecked():
             x,y,w,h=(s.value()*PT_PER_MM for s in self.geometry);changes['rect']=(x,y,x+w,y+h)
+        if self.change_font.isChecked() and self.font_choice is not None:changes['font']=dict(self.font_choice)
         return {'page':field['page'],'xref':field['xref'],'revision':self.listing['revision'],'changes':changes}
 
 
@@ -167,11 +189,32 @@ class FormsRedactionMixin:
     def _show_form_editor_v200(self,result):
         dialog=FormEditorDialog(result,self)
         try:
-            if self._exec_edit_dialog(dialog)==QDialog.Accepted:self._submit('preview_form_v200',dialog.operation(),self._form_preview_v200)
+            if self._exec_edit_dialog(dialog)==QDialog.Accepted:
+                operation=dialog.operation()
+                self._form_retry_v322=(operation,result.get('catalog',[]),getattr(self,'_active_session_v200',None))
+                self._submit('preview_form_v200',operation,self._form_preview_v200)
         finally:dialog.deleteLater()
 
     def _form_preview_v200(self,result):
+        self._form_retry_v322=None
         self._previewed(result);self._notice('Campo conservado como formulario interactivo. Revisa el resultado y pulsa «Aceptar ✓»; después guarda una copia.')
+
+    def _offer_form_font_choice_v322(self,error):
+        retry=getattr(self,'_form_retry_v322',None)
+        if not retry:return
+        operation,catalog,session=retry
+        def offer():
+            if (getattr(self,'_closed',False) or self.busy or session!=getattr(self,'_active_session_v200',None)
+                    or operation['revision']!=self.state.get('document_revision')):return
+            from .font_choice_ui_v321 import FontChoiceDialog
+            dialog=FontChoiceDialog(error.source_style.get('font_name') or 'original',error.text,catalog,self)
+            if self._exec_edit_dialog(dialog)!=QDialog.Accepted:return
+            changes=dict(operation['changes'])
+            changes['font']={key:dialog.entry[key] for key in ('name','path','font_file','font_axes') if key in dialog.entry}
+            request=dict(operation,changes=changes)
+            self._form_retry_v322=(request,catalog,session)
+            self._submit('preview_form_v200',request,self._form_preview_v200)
+        QTimer.singleShot(0,offer)
 
     def choose_redaction_v200(self):
         if not self.state or self.busy:return

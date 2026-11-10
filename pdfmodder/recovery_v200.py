@@ -55,7 +55,7 @@ def recovery_path(identifier,root=None):
     return target
 
 
-def read_checkpoint(identifier,root=None,verify=False):
+def read_checkpoint(identifier,root=None,verify=False,*,listing=False):
     folder=recovery_path(identifier,root)
     try:
         manifest=json.loads((folder/'session.json').read_text(encoding='utf-8'))
@@ -67,10 +67,16 @@ def read_checkpoint(identifier,root=None,verify=False):
             raise ValueError('Invalid manifest')
         names=[*states,'original.pdf']
         if manifest.get('pending'):names.append(manifest['pending'])
+        # Listing is advisory. Probing every historical snapshot on startup
+        # used to make a long editing history expensive before a PDF was open.
+        # Recovery itself still checks every path and hash with verify=True.
+        required={states[index],'original.pdf',manifest.get('pending')}
+        resolved_folder=folder.resolve()
         for name in names:
             if not re.fullmatch(r'(?:original|[a-f0-9]{32})\.pdf',name):raise ValueError('Invalid snapshot name')
+            if listing and not verify and name not in required:continue
             file=folder/name
-            if file.is_symlink() or not file.is_file() or file.resolve().parent!=folder.resolve():raise ValueError('Invalid snapshot')
+            if file.is_symlink() or not file.is_file() or file.resolve().parent!=resolved_folder:raise ValueError('Invalid snapshot')
         if verify:
             for name,digest in zip(states,manifest['digests']):
                 if hashlib.sha256((folder/name).read_bytes()).hexdigest()!=digest:raise ValueError('Snapshot mismatch')
@@ -86,7 +92,7 @@ def list_recovery(root=None,exclude=()):
         if folder.name in exclude or not re.fullmatch(r'[a-f0-9]{32}',folder.name):continue
         try:
             if folder.is_symlink() or in_use(folder):continue
-            _,manifest=read_checkpoint(folder.name,parent)
+            _,manifest=read_checkpoint(folder.name,parent,listing=True)
             meta=manifest['metadata'];index=manifest['index']
             dirty=manifest['digests'][index]!=meta.get('saved_digest')
             if not dirty and not manifest.get('pending') and not meta.get('draft'):continue
