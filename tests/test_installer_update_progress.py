@@ -129,6 +129,47 @@ class InstallerProgressHarness {
         if (failure != null) throw failure;
         Check(shown && completed, "Update did not automatically run through completion");
     }
+    static void CompletionWindow(bool success) {
+        Exception failure = null; bool confirmed = false, closed = false;
+        using (var form = new InstallerWindow(new Options { Update = false, Launch = false }))
+        using (var timer = new System.Windows.Forms.Timer { Interval = 25 }) {
+            var watch = new System.Diagnostics.Stopwatch();
+            var status = Control<TextBox>(form, "installationStatus");
+            var closeTimer = (System.Windows.Forms.Timer)typeof(InstallerWindow).GetField("successCloseTimer", Instance).GetValue(form);
+            typeof(InstallerWindow).GetProperty("ExitCode", Instance).GetSetMethod(true).Invoke(form, new object[] { success ? 0 : 1 });
+            form.Shown += delegate {
+                try {
+                    watch.Start(); status.Text = success ? "Verified files and saved report" : "Installation failed";
+                    typeof(InstallerWindow).GetMethod("ShowSuccessfulCompletion", Instance).Invoke(form, null);
+                    if (success) {
+                        Check(status.Text.Contains("Instalación completada correctamente") && status.Text.Contains("cerrará automáticamente"),
+                            "Visible success confirmation missing");
+                        Check(status.Text.Contains("Verified files and saved report") && closeTimer.Enabled,
+                            "Completion removed diagnostic details or did not schedule close");
+                        Check(Control<ProgressBar>(form, "installationProgress").Value == 100, "Successful completion did not reach 100");
+                    } else {
+                        Check(!closeTimer.Enabled && status.Text == "Installation failed", "Failure was disguised as success or scheduled to close");
+                    }
+                    confirmed = true;
+                } catch (Exception ex) { failure = ex; }
+                timer.Start();
+            };
+            timer.Tick += delegate {
+                if (failure != null || !success) { timer.Stop(); form.Close(); return; }
+                if (watch.Elapsed.TotalSeconds > 7) {
+                    failure = new Exception("Success window did not close automatically"); timer.Stop(); form.Close();
+                }
+            };
+            form.FormClosed += delegate {
+                closed = true;
+                if (success && failure == null && watch.ElapsedMilliseconds < 2500)
+                    failure = new Exception("Success confirmation disappeared before it could be read");
+            };
+            Application.Run(form);
+        }
+        if (failure != null) throw failure;
+        Check(confirmed && closed, "Completion window was not exercised");
+    }
     [STAThread] static int Main(string[] args) {
         AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
         AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
@@ -137,6 +178,8 @@ class InstallerProgressHarness {
             else if (args[0] == "extract") ExtractPayload(args[1]);
             else if (args[0] == "hash") HashWrittenBytes(args[1], args[2]);
             else if (args[0] == "render") { Application.EnableVisualStyles(); RenderProgress(); }
+            else if (args[0] == "complete") { Application.EnableVisualStyles(); CompletionWindow(true); }
+            else if (args[0] == "failure-view") { Application.EnableVisualStyles(); CompletionWindow(false); }
             else if (args[0] == "gui") {
                 System.Windows.Forms.Control.CheckForIllegalCrossThreadCalls = true;
                 Application.EnableVisualStyles(); AutomaticFailure(args[1], args[2]);
@@ -219,6 +262,14 @@ def test_copy_and_disk_sha256_report_actual_bytes_below_final_completion(install
 
 def test_meter_handles_indeterminate_phases_without_fake_completion(installer_harness):
     run_harness(installer_harness, 'render')
+
+
+def test_success_confirmation_closes_window_automatically_without_user_input(installer_harness):
+    run_harness(installer_harness, 'complete')
+
+
+def test_failure_remains_visible_without_scheduling_a_success_close(installer_harness):
+    run_harness(installer_harness, 'failure-view')
 
 
 @pytest.mark.parametrize('mode', ['gui', 'silent'])

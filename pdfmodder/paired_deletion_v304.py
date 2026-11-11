@@ -115,9 +115,11 @@ def try_delete_paired_text(data, request, model=None):
         # The paired source proof owns only this local safety view. Tr=2 and
         # every original glyph mode remain untouched in the actual output.
         clean = replace(model, issues=[issue for issue in model.issues if issue != CLIP_ISSUE])
+        from .marked_text_v324 import native_marked_plan
+        native_marks=native_marked_plan(data,request.page,model,selected,[],operations,mapping,reader=reader)
         _safe_selection(source[request.page], clean,
                         [replace(g, mode=0) if g.mode == 1 else g for g in selected],
-                        preserve_paint_order=True)
+                        preserve_paint_order=True,native_marks=native_marks)
         if any(_match(g, saved) for record in _read_metadata(source, request.page)
                for saved in record.get('glyphs', []) for g in selected):
             raise EditError('El texto con contorno contiene formato propio del editor que necesita actualización conjunta.')
@@ -151,7 +153,9 @@ def try_delete_paired_text(data, request, model=None):
         if any(contexts[a] != contexts[b] for a, b in pairs.values()):
             raise EditError('El relleno y el contorno no pertenecen a la misma etiqueta accesible.')
     from .tagged_unmarked_v323 import native_text_plan
-    tagged = native_text_plan(structure, request.page, model, selected, [], operations, mapping)
+    tagged = native_text_plan(structure, request.page, model, selected, [], operations, mapping,source_data=data)
+    if tagged is not None and hasattr(tagged,'apply_operations'):
+        tagged.apply_operations(operations)
 
     resources = reader.pages[request.page]['/Resources'].get_object()
     changed_ops = copy.deepcopy(operations)

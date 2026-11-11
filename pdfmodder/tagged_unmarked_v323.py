@@ -44,9 +44,13 @@ def verified_unmarked_selection(structure, page, model, selected, operations, ma
 
 
 def native_text_plan(structure, page, model, selected, planned, operations, mapping,
-                     *, decoration_policy=None):
+                     *, decoration_policy=None, source_data=None,replacement_text=None):
     """Share one source-scope decision across native edit/delete/composition."""
-    if structure is None:return None
+    if structure is None:
+        from .marked_text_v324 import native_marked_plan
+        return (native_marked_plan(source_data,page,model,selected,planned,operations,mapping,
+                                   replacement_text=replacement_text)
+                if source_data is not None else None)
     if verified_unmarked_selection(structure, page, model, selected, operations, mapping):
         return UnmarkedNativeEdit(structure, page, model, selected, planned, operations, mapping)
     from .tagged_artifacts import verified_artifact_selection

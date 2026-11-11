@@ -278,7 +278,7 @@ def test_layout_bbox_preserves_contained_edits_and_blocks_container_overflow():
     assert_structure_preserved(source, output)
 
 
-@pytest.mark.parametrize('operation', ['text', 'image_add', 'image_transform',
+@pytest.mark.parametrize('operation', ['image_add', 'image_transform',
                                       'pages_merge'])
 def test_tagged_operations_without_semantic_choices_have_specific_blocks(operation):
     from pdfmodder.composition import AddTextRequest, insert_text_pdf

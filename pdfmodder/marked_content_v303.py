@@ -166,7 +166,7 @@ def assert_unstructured_artifact_bounds(data, page_number, model, selected,
     for index,(args,operator) in enumerate(operations):
         if operator in (b'BMC',b'BDC'):
             box_id=None
-            if operator==b'BDC':
+            if operator==b'BDC' and str(args[0])=='/Artifact':
                 props=_properties(str(args[0]),args[1],resources)
                 if str(args[0])=='/Artifact' and '/BBox' in props:
                     box_id=index
@@ -242,6 +242,13 @@ def scope_unstructured_marks_v322(data,model,selected):
     reader,operations,shows,mapping=operator_glyph_map(data,model.number,model)
     if reader.trailer['/Root'].get('/StructTreeRoot'):return model
     if any(g.id not in mapping for g in selected):return model
+    from .marked_text_v324 import native_marked_plan
+    try:
+        plan=native_marked_plan(data,model.number,model,list(selected),list(selected),operations,mapping,reader=reader)
+        if plan is not None:
+            return replace(model,issues=[i for i in model.issues if i!=MARKED_ISSUE])
+    except EditError:
+        pass
     targets={mapping[g.id]['operation'] for g in selected}
     resources=_resolve(reader.pages[model.number].get('/Resources',{}))
     stack=[];seen=set()

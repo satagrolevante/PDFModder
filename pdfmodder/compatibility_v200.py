@@ -58,6 +58,8 @@ def preflight_text(data, page, ids, new_text=None, resolver=None, *,
             selected=model.selected(ids)
             if not selected or len(selected)!=len(set(ids)):
                 raise EditError('Selecciona texto de la revisión actual.')
+            from .validation import scope_text_graphics_v322
+            model=scope_text_graphics_v322(local,model,selected)
             if model.issues:
                 from .clipping import CLIP_ISSUE
                 problems=[issue for issue in model.issues if issue!=CLIP_ISSUE]
@@ -79,12 +81,14 @@ def preflight_text(data, page, ids, new_text=None, resolver=None, *,
             from .linked_text_v303 import prepare_linked_text
             linked=prepare_linked_text(local,page,model,selected,
                 text if text is not None else ''.join(g.text for g in selected))
+            reader,operations,shows,mapping=operator_glyph_map(local,page,model)
+            from .marked_text_v324 import native_marked_plan
+            native_marks=native_marked_plan(local,page,model,selected,selected,operations,mapping,reader=reader)
             _safe_selection(doc[page],replace(model,issues=[v for v in model.issues if v!=CLIP_ISSUE]),
-                            selected,preserve_paint_order=True,linked_text=linked)
+                            selected,preserve_paint_order=True,linked_text=linked,native_marks=native_marks)
             if linked:
                 result['linked_text']=linked.report()
                 result.setdefault('warnings',[]).append('Se comprobarán el texto visible, el destino y el área activa del enlace conjuntamente.')
-            _,operations,shows,mapping=operator_glyph_map(local,page,model)
             sources={show['operation']:show for show in shows}
             grouped={}
             for glyph in selected:

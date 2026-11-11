@@ -69,7 +69,8 @@ class TaggedAddition:
         self.structure = analyze(data)
         self.page = page
         self.role = role
-        self.order = order
+        self.order = 'page_end' if order is None else order
+        self.automatic_order = order is None
         self.alt_text = alt_text
         self.decorative = decorative
         self.expected = None
@@ -88,7 +89,7 @@ class TaggedAddition:
                 fail('una imagen decorativa no debe tener una descripción alternativa contradictoria.')
             self.expected = s.semantic()
             return
-        if order not in ('page_start', 'page_end'):
+        if self.order not in ('page_start', 'page_end'):
             fail('elige si el contenido nuevo se leerá al inicio o al final de esta página.')
         if role == '/P' and (not isinstance(text, str) or not text.strip()):
             fail('escribe un párrafo para añadir al documento.')
@@ -96,7 +97,7 @@ class TaggedAddition:
             fail('añade cada párrafo por separado para conservar su estructura de lectura. El ajuste automático de una línea sí está permitido.')
         if role == '/Figure':
             if not isinstance(alt_text, str) or not alt_text.strip():
-                fail('describe la imagen con texto alternativo o elígela explícitamente como decorativa.')
+                fail('añade una descripción de la imagen en texto alternativo o elígela explícitamente como decorativa.')
             if len(alt_text) > 4000 or any(ord(c) < 32 for c in alt_text):
                 fail('la descripción alternativa debe tener hasta 4000 caracteres y no contener controles.')
             self.alt_text = alt_text.strip()
@@ -125,11 +126,16 @@ class TaggedAddition:
                     walk(value.get('/K', []), page)
         walk(s.tree.get('/K', []))
         if self.page not in sequence:
-            # No existing reading content: place relative to the nearest page
-            # only if a single document container gives an unambiguous order.
-            fail('esta página no tiene una frontera de lectura verificable; no se asignan etiquetas automáticamente.')
-        target = (sequence.index(self.page) if self.order == 'page_start'
-                  else len(sequence) - list(reversed(sequence)).index(self.page))
+            # An empty/untagged page can sit between complete logical blocks.
+            # Only use that boundary if all earlier/later pages separate at
+            # exactly one cut; never split a paragraph or table across pages.
+            target=sum(number<self.page for number in sequence)
+            if (not sequence or any(number>=self.page for number in sequence[:target])
+                    or any(number<=self.page for number in sequence[target:])):
+                fail('esta página no tiene una frontera de lectura verificable; no se asignan etiquetas automáticamente.')
+        else:
+            target = (sequence.index(self.page) if self.order == 'page_start'
+                      else len(sequence) - list(reversed(sequence)).index(self.page))
         rolemap = obj(s.tree.get('/RoleMap', {}))
         candidates = []
         offset = 0
@@ -240,6 +246,7 @@ class TaggedAddition:
         if self.structure is None: return None
         return {'verified': True, 'existing_structure_preserved': True,
                 'reading_order': self.order if not self.decorative else None,
+                'automatic_reading_order': self.automatic_order and not self.decorative,
                 'role': 'Artifact' if self.decorative else self.role[1:],
                 'mcid': self.mcid, 'alt_text': self.alt_text,
                 'scope': 'Relaciones y orden verificados; no certificación PDF/UA.'}

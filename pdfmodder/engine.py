@@ -128,7 +128,10 @@ def _native_text_wrappers(page):
     stream = DecodedStreamObject()
     stream.set_data(page.read_contents())
     inside = False
+    unstructured=page.parent.xref_get_key(page.parent.pdf_catalog(),'StructTreeRoot')[0]=='null'
     for _, operator in ContentStream(stream, None).operations:
+        if unstructured and operator in (b'BMC',b'BDC',b'MP',b'DP'):
+            return True
         if operator == b'BT':
             inside = True
         elif operator == b'ET':
@@ -166,7 +169,8 @@ def _stroke_hits(drawing, rect):
     return False
 
 
-def _safe_selection(page, model, selected, *, preserve_paint_order=False, owned_auxiliary_ids=(), linked_text=None):
+def _safe_selection(page, model, selected, *, preserve_paint_order=False, owned_auxiliary_ids=(), linked_text=None,
+                    native_marks=None):
     if model.issues:
         raise EditError('\n'.join(model.issues))
     if not selected:
@@ -179,7 +183,12 @@ def _safe_selection(page, model, selected, *, preserve_paint_order=False, owned_
             raise EditError("Codificación, ligadura o dirección del texto no reconstruible con garantías.")
         if abs(g.direction[0]-1)>1e-5 or abs(g.direction[1])>1e-5:
             raise EditError("Texto con orientación propia: sólo se edita texto horizontal; la rotación de página sí se admite.")
-        if g.mode != 0 or g.layer:
+        layer_allowed=False
+        if g.layer:
+            from .marked_text_v324 import NativeMarkedTextPlan
+            layer_allowed=(isinstance(native_marks,NativeMarkedTextPlan)
+                           and native_marks.allows_layer(page,model,g))
+        if g.mode != 0 or (g.layer and not layer_allowed):
             raise EditError("Texto invisible, trazado, recortado o en capas: propiedad no reproducible.")
         for index,item in enumerate(paint_log):
             # Painting after text may obscure it. Reinsertion on top would alter z order.

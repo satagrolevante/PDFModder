@@ -53,7 +53,7 @@ def _scope(operations, target):
     raise EditError('Mover el recorte necesita un ámbito aislable de texto y geometría de recorte; este fragmento comparte un ámbito más complejo con otros objetos.')
 
 
-def move_text_with_clip(data, request, model, mapped, tagged_move=None):
+def move_text_with_clip(data, request, model, mapped, tagged_move=None,native_marks=None):
     from .engine import _safe_selection, transaction_write_v318
     started = time.perf_counter()
     reader, operations, shows, mapping = mapped
@@ -84,8 +84,8 @@ def move_text_with_clip(data, request, model, mapped, tagged_move=None):
     clean = scope_text_graphics_v322(data,model,selected)
     clean = replace(clean, issues=[i for i in clean.issues if i != CLIP_ISSUE])
     with fitz.open(stream=data, filetype='pdf') as doc:
-        _safe_selection(doc[request.page], clean, selected, preserve_paint_order=True)
-        _safe_selection(doc[request.page], clean, planned, preserve_paint_order=True)
+        _safe_selection(doc[request.page], clean, selected, preserve_paint_order=True,native_marks=native_marks)
+        _safe_selection(doc[request.page], clean, planned, preserve_paint_order=True,native_marks=native_marks)
     if tagged_move:
         from .tagged_clip_move import clip_scope
         begin, end = clip_scope(operations, target, planned, resources, page_matrix, page_bounds, ALLOWED)
@@ -191,6 +191,8 @@ def move_text_with_clip(data, request, model, mapped, tagged_move=None):
                                  tagged_expected=tagged_move.expected if tagged_move else None)
     if tagged_move:
         report['accessibility'] = tagged_move.validate(output)
+    if native_marks:
+        report['marked_content']=native_marks.validate(output)
     report.update(page=request.page, operation='move_text_with_clip',
                   source_regions=[g.bbox for g in selected], destination_regions=[g.bbox for g in planned],
                   old_bounds=union(g.bbox for g in selected), new_bounds=union(g.bbox for g in planned),

@@ -149,10 +149,11 @@ def _source_width(font, code, text):
     return float(descendant.get('/DW', 1000))
 
 
-def _safe_rich_selection(page,model,selected,metadata,*,preserve_paint_order=True,linked_text=None):
+def _safe_rich_selection(page,model,selected,metadata,*,preserve_paint_order=True,linked_text=None,native_marks=None):
     """Allow only this editor's verified, owned underline paths above text."""
     if not any(r.get('underlines') for r in metadata):
-        return _safe_selection(page,model,selected,preserve_paint_order=preserve_paint_order,linked_text=linked_text)
+        return _safe_selection(page,model,selected,preserve_paint_order=preserve_paint_order,linked_text=linked_text,
+                               native_marks=native_marks)
     # The original native operations stay intact; an isolated safety probe
     # removes only exactly matched owned underline sequences.
     data=page.parent.tobytes(garbage=0)
@@ -172,7 +173,8 @@ def _safe_rich_selection(page,model,selected,metadata,*,preserve_paint_order=Tru
         remapped=extract_page(probe,page.number)
         lookup={g.id:g for g in remapped.glyphs}
         targets=[replace(g,seqno=lookup[g.id].seqno) if g.id in lookup else g for g in selected]
-        _safe_selection(probe[page.number],replace(remapped,issues=model.issues),targets,preserve_paint_order=preserve_paint_order,linked_text=linked_text)
+        _safe_selection(probe[page.number],replace(remapped,issues=model.issues,revision=model.revision),targets,
+                        preserve_paint_order=preserve_paint_order,linked_text=linked_text,native_marks=native_marks)
 
 
 def _unit(show):
@@ -548,6 +550,12 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
             raise EditError('La reconstrucción explícita requiere el documento original, sin anclas temporales.')
         from .reconstruct_text_v322 import reconstruct_text_pdf
         return reconstruct_text_pdf(data,request,resolver)
+    if not request.ids:
+        with fitz.open(stream=data,filetype='pdf') as source:
+            tagged_insertion=source.xref_get_key(source.pdf_catalog(),'StructTreeRoot')[0]!='null'
+        if tagged_insertion:
+            from .tagged_rich_insert_v324 import add_tagged_rich_text
+            return add_tagged_rich_text(data,request,resolver)
     checkpoint()
     canonical_runs=[dict(run,text=unicodedata.normalize('NFC',str(run.get('text','')))) for run in request.runs]
     if any(a.get('text','')!=b['text'] for a,b in zip(request.runs,canonical_runs)):
@@ -610,9 +618,11 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         clean=scope_text_graphics_v322(data,model,selected)
         clean=replace(clean,issues=[v for v in clean.issues if v!=CLIP_ISSUE])
         metadata=_read_metadata(doc,request.page)
+        from .marked_text_v324 import native_marked_plan
+        marked_safety=native_marked_plan(data,request.page,model,selected,selected,operations,mapping,reader=reader)
         from .linked_text_v303 import prepare_linked_text
         linked_text=prepare_linked_text(data,request.page,model,selected,new_text)
-        _safe_rich_selection(doc[request.page],clean,selected,metadata,linked_text=linked_text)
+        _safe_rich_selection(doc[request.page],clean,selected,metadata,linked_text=linked_text,native_marks=marked_safety)
     chosen={g.id for g in selected}
     others=[g for g in model.glyphs if g.id not in chosen]
     pure_delete=not any(str(run.get('text','')) for run in request.runs)
@@ -855,7 +865,7 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         artifact_properties=assert_unstructured_artifact_bounds(data,request.page,model,selected,planned,mapping,operations,
                                                                expand=request.auto_adapt)
         if linked_text:linked_text.plan(planned)
-        if planned:_safe_rich_selection(safety[request.page],clean,planned,metadata,linked_text=linked_text)
+        if planned:_safe_rich_selection(safety[request.page],clean,planned,metadata,linked_text=linked_text,native_marks=marked_safety)
         # Empty replacement removes paint in place and never consolidates
         # separate text SHOWs across intervening artwork.
         if planned:_safe_native_consolidation(safety[request.page],selected,planned)
@@ -870,7 +880,10 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     if source_decoration:source_decoration.plan(planned,allow_overlap=request.allow_overlap)
     from .tagged_unmarked_v323 import native_text_plan
     tagged=native_text_plan(structure,request.page,model,selected,planned,operations,mapping,
-                            decoration_policy=source_decoration)
+                            decoration_policy=source_decoration,source_data=data,
+                            replacement_text=''.join(t['char'] for t in tokens))
+    if tagged is not None and hasattr(tagged,'apply_operations'):
+        tagged.apply_operations(operations)
     artifact=structure is not None and tagged is None
     if source_decoration and tagged:source_decoration.expected_structure(tagged.expected)
     matrix=first_state['matrix'];linear=first_state['ctm']*page_matrix;inverse=~linear
@@ -912,7 +925,8 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
         with fitz.open(stream=data,filetype='pdf') as safety:
             decorations=[replace(first,bbox=tuple(item['rect'])) for item in new_underlines]
             try:
-                _safe_rich_selection(safety[request.page],clean,decorations,metadata,preserve_paint_order=False,linked_text=linked_text)
+                _safe_rich_selection(safety[request.page],clean,decorations,metadata,preserve_paint_order=False,
+                                     linked_text=linked_text,native_marks=marked_safety)
             except EditError as exc:
                 raise EditError('No se puede conservar el orden visual del subrayado solicitado. '+str(exc)) from exc
     # Each underline belongs to a character, so editing a partial styled range
@@ -984,7 +998,12 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     for item in new_underlines:
         r=fitz.Rect(item['rect'])*inverse_page
         ops=[([],b'q'),([_number(v) for v in item['color']],b'rg'),([_number(v) for v in (r.x0,r.y0,r.width,r.height)],b're'),([],b'f'),([],b'Q')]
-        item.update(start=len(changed_ops),length=len(ops),sha256=hashlib.sha256(_serialize(ops)).hexdigest())
+        owned_ops=ops
+        if tagged is not None and hasattr(tagged,'wrap_graphics'):
+            ops=tagged.wrap_graphics(ops)
+        prefix_length=(len(ops)-len(owned_ops))//2
+        item.update(start=len(changed_ops)+prefix_length,length=len(owned_ops),
+                    sha256=hashlib.sha256(_serialize(owned_ops)).hexdigest())
         changed_ops.extend(ops)
     stored_glyphs=[dict(index=t['index'],text=t['char'],origin=t['origin'],bbox=t['bbox'],char_spacing=t['spacing'],
                        underline=t['underline'],break_before=t.get('break_before','')) for t in laid]

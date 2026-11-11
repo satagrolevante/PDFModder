@@ -19,7 +19,7 @@ def test_explicit_order_description_or_decorative(qtbot):
     qtbot.addWidget(dialog)
     accept = dialog.buttons.button(QDialogButtonBox.Ok)
     assert not accept.isEnabled()
-    dialog.order.setCurrentIndex(2)
+    assert dialog.order.currentData()=='page_end'
     assert not accept.isEnabled()
     dialog.alt.setText('Mapa de cultivos')
     assert accept.isEnabled()
@@ -50,6 +50,10 @@ def test_tagged_ui_add_cancel_commit_undo_reopen(qtbot, editor, tmp_path):
             return
         try:
             if isinstance(dialog, TextDialog):
+                if mode['value']=='cancel':
+                    seen.append('cancelled-text')
+                    dialog.reject()
+                    return
                 dialog.content.setPlainText('Texto añadido accesible')
                 dialog.width_box.setValue(90)
                 dialog.height_box.setValue(12)
@@ -60,7 +64,7 @@ def test_tagged_ui_add_cancel_commit_undo_reopen(qtbot, editor, tmp_path):
                 if mode['value'] == 'cancel':
                     dialog.reject()
                 else:
-                    dialog.order.setCurrentIndex(2)
+                    dialog.order.setCurrentIndex(dialog.order.findData('page_end'))
                     if dialog.is_image:
                         dialog.alt.setText('Ilustración azul añadida')
                     qtbot.mouseClick(dialog.buttons.button(QDialogButtonBox.Ok), Qt.LeftButton)
@@ -73,7 +77,7 @@ def test_tagged_ui_add_cancel_commit_undo_reopen(qtbot, editor, tmp_path):
         window.add_text_action.trigger()
         assert window._placement == 'text'
         window.placed(48, 350)
-        qtbot.waitUntil(lambda: len(seen) >= 2, timeout=30000)
+        qtbot.waitUntil(lambda: len(seen) >= 1, timeout=30000)
         settled(qtbot, window)
         assert not errors
         assert window.state['history_index'] == 0 and not window.state['preview']
@@ -81,9 +85,10 @@ def test_tagged_ui_add_cancel_commit_undo_reopen(qtbot, editor, tmp_path):
         seen.clear()
         window.add_text_action.trigger()
         window.placed(48, 350)
-        qtbot.waitUntil(lambda: len(seen) >= 2, timeout=30000)
+        qtbot.waitUntil(lambda: len(seen) >= 1, timeout=30000)
         settled(qtbot, window)
         assert not errors and window.state['preview']
+        assert seen==['text']
         qtbot.mouseClick(window.commit_button, Qt.LeftButton)
         settled(qtbot, window)
         assert window.state['history_index'] == 1

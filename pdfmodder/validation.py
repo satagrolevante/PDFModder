@@ -238,7 +238,9 @@ def page_issues(data, number):
             try:
                 assert_compatible_unstructured_marks(reader, page, ops)
             except EditError as exc:
-                issues.append(str(exc))
+                from .marked_text_v324 import compatible_page_markers
+                if not compatible_page_markers(reader,number,ops):
+                    issues.append(str(exc))
         elif any(op in (b'BDC', b'BMC') for _,op in ops):
             from .tagged import validate_tagged
             try:

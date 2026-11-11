@@ -100,8 +100,10 @@ def test_unsafe_partial_mcid_reorder_and_missing_semantics_remain_explicit():
     model, selected = select(source, 'PALA')
     with pytest.raises(EditError, match='orden de lectura'):
         edit_pdf(source, request_for(model, selected, dx=20, dy=30))
-    with pytest.raises(EditError, match='inicio o al final'):
-        insert_text_pdf(source, AddTextRequest(0, 48, 350, 200, 30, 'Sin orden'))
+    output,report=insert_text_pdf(source, AddTextRequest(0, 48, 350, 200, 30, 'Orden automático'))
+    assert report['verified'] and report['accessibility']['reading_order']=='page_end'
+    assert report['accessibility']['automatic_reading_order']
+    assert 'Orden automático' in audit_tagged(output)['reading_order']
     with pytest.raises(EditError, match='texto alternativo'):
         add_image_pdf(source, 0, image_bytes(), (160, 260, 200, 284), accessibility_order='page_end')
     with pytest.raises(EditError, match='párrafo por separado'):

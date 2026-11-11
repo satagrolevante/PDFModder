@@ -284,11 +284,14 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
                      trace_bbox=tuple(v+(dx if i%2==0 else dy) for i,v in enumerate(g.trace_bbox))) for g in selected]
     selected_ids={g.id for g in selected}
     others=[g for g in model.glyphs if g.id not in selected_ids]
+    reader,operations,shows,mapping=operator_glyph_map(data,request.page,model)
+    from .marked_text_v324 import native_marked_plan
+    marked_move=native_marked_plan(data,request.page,model,selected,planned,operations,mapping,reader=reader)
     with fitz.open(stream=data,filetype='pdf') as doc:
         issues=document_issues(data,doc,operation="content")
         if issues:raise EditError('\n'.join(issues))
-        _safe_selection(doc[request.page],clean,selected,preserve_paint_order=True)
-        _safe_selection(doc[request.page],clean,planned,preserve_paint_order=True)
+        _safe_selection(doc[request.page],clean,selected,preserve_paint_order=True,native_marks=marked_move)
+        _safe_selection(doc[request.page],clean,planned,preserve_paint_order=True,native_marks=marked_move)
         rotation=doc[request.page].rotation
         doc[request.page].set_rotation(0)
         page_matrix=doc[request.page].transformation_matrix
@@ -296,7 +299,6 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
         doc[request.page].set_rotation(rotation)
     if not getattr(request,'allow_overlap',False) and any(intersects(g.bbox,n.bbox,.12) for g in planned for n in others):
         raise EditError('El texto movido se solapa con un vecino. Elige otra posición.')
-    reader,operations,shows,mapping=operator_glyph_map(data,request.page,model)
     tagged_move=None
     if reader.trailer['/Root'].get('/StructTreeRoot'):
         from .tagged_clip_move import TaggedNativeMove
@@ -322,7 +324,7 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
         linear=state['ctm']*page_matrix
         if state['unknown']:
             from .clip_move_v150 import move_text_with_clip
-            return move_text_with_clip(data,request,model,(reader,operations,shows,mapping),tagged_move=tagged_move)
+            return move_text_with_clip(data,request,model,(reader,operations,shows,mapping),tagged_move=tagged_move,native_marks=marked_move)
         if not all(math.isfinite(v) for v in linear) or abs(linear.a*linear.d-linear.b*linear.c)<1e-10:
             raise EditError('El texto hereda un recorte complejo o una transformación no verificable; no se puede mover con garantías.')
         clip=state['clip']*page_matrix if state['clip'] is not None else page_bounds
@@ -331,13 +333,13 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
         for g in originals:
             if not (clip+(-.02,-.02,.02,.02)).contains(fitz.Rect(g.bbox)):
                 from .clip_move_v150 import move_text_with_clip
-                return move_text_with_clip(data,request,model,(reader,operations,shows,mapping),tagged_move=tagged_move)
+                return move_text_with_clip(data,request,model,(reader,operations,shows,mapping),tagged_move=tagged_move,native_marks=marked_move)
         for g in destinations:
             if not page_bounds.contains(fitz.Rect(g.bbox)):
                 raise EditError('La posición de destino queda fuera de la página.')
             if not (clip+(-.02,-.02,.02,.02)).contains(fitz.Rect(g.bbox)):
                 from .clip_move_v150 import move_text_with_clip
-                return move_text_with_clip(data,request,model,(reader,operations,shows,mapping),tagged_move=tagged_move)
+                return move_text_with_clip(data,request,model,(reader,operations,shows,mapping),tagged_move=tagged_move,native_marks=marked_move)
         inverse=~linear
         delta=fitz.Point(dx,dy)*inverse-fitz.Point(0,0)*inverse
         chunks=[]
@@ -409,6 +411,8 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
                                tagged_expected=tagged_move.expected if tagged_move else None)
     if tagged_move:
         report['accessibility']=tagged_move.validate(output)
+    if marked_move:
+        report['marked_content']=marked_move.validate(output)
     report.update(page=request.page,elapsed_seconds=round(time.perf_counter()-started,3),
                   old_bounds=union(g.bbox for g in selected),new_bounds=union(g.bbox for g in planned),
                   source_regions=[g.bbox for g in selected],destination_regions=[g.bbox for g in planned],

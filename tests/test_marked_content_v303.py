@@ -67,7 +67,7 @@ def test_app_created_tagless_pdf_can_be_edited_without_removing_wrappers(named):
         assert a[1].get_pixmap().samples==b[1].get_pixmap().samples
 
 
-@pytest.mark.parametrize('key',['/ActualText','/Alt','/E','/OC','/BBox','/Unknown'])
+@pytest.mark.parametrize('key',['/Alt','/E','/OC','/BBox','/Unknown'])
 @pytest.mark.parametrize('form',[False,True])
 def test_semantic_unknown_and_geometric_properties_remain_blocked_in_forms(key,form):
     props=DictionaryObject({NameObject('/MCID'):NumberObject(0),NameObject(key):TextStringObject('preserved')})

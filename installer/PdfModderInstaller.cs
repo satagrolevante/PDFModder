@@ -1250,6 +1250,7 @@ namespace PdfModderInstallation
         readonly TextBox status = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, BorderStyle = BorderStyle.None,
             BackColor = SystemColors.Control, ScrollBars = ScrollBars.Vertical, Name = "installationStatus" };
         readonly Options options;
+        readonly System.Windows.Forms.Timer successCloseTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         bool busy, automaticPending;
         internal int ExitCode { get; private set; }
 
@@ -1284,6 +1285,8 @@ namespace PdfModderInstallation
             status.Text = options.PreviousDirectory == null ? "Tus PDF y preferencias se conservan. No se ha detectado una instalación anterior reconocida." :
                 "Copia anterior: " + options.PreviousDirectory + "\r\nSe retirarán todas las versiones e instaladores anteriores verificados después de instalar correctamente; se conservan sus PDF y archivos modificados.";
             closeButton.Click += delegate { Close(); };
+            successCloseTimer.Tick += delegate { successCloseTimer.Stop(); Close(); };
+            Disposed += delegate { successCloseTimer.Dispose(); };
             FormClosing += delegate(object sender, FormClosingEventArgs e) { if (busy || automaticPending) e.Cancel = true; };
             browseButton.Click += delegate
             {
@@ -1349,7 +1352,6 @@ namespace PdfModderInstallation
                 ExitCode = result != null && result.ok && String.IsNullOrEmpty(result.error) ? 0 : 1;
                 if (ExitCode == 0)
                 {
-                    progress.Value = 100; status.ForeColor = Color.DarkGreen;
                     status.Text = "Instalación terminada: " + result.files + " archivos comprobados.\r\n" + result.directory;
                     if (result.removed_installations > 0) status.Text += "\r\nVersiones retiradas: " + String.Join(", ", result.removed_versions) + " (" + result.removed_installations + " instalaciones).";
                     if (result.reclaimed_bytes > 0) status.Text += "\r\nEspacio recuperado: " + (result.reclaimed_bytes / 1048576.0).ToString("N1", CultureInfo.CurrentCulture) + " MiB.";
@@ -1368,12 +1370,24 @@ namespace PdfModderInstallation
                     if (result != null && result.warnings.Count > 0) status.Text += "\r\n" + String.Join("\r\n", result.warnings);
                 }
                 if (options.Report != null && args.Error == null) status.Text += "\r\nInforme: " + options.Report;
+                if (ExitCode == 0) ShowSuccessfulCompletion();
                 worker.Dispose();
             };
             // Paint the initial state before the worker can start discovery or wait
             // for the application that handed off this automatic update.
             Update();
             worker.RunWorkerAsync();
+        }
+
+        void ShowSuccessfulCompletion()
+        {
+            // Called only after payload verification, cleanup and the final
+            // report have completed successfully. Errors keep the window open.
+            if (ExitCode != 0) return;
+            progress.Value = 100; status.ForeColor = Color.DarkGreen;
+            status.Text = "Instalación completada correctamente. Esta ventana se cerrará automáticamente.\r\n\r\n" + status.Text;
+            status.SelectionStart = 0; status.SelectionLength = 0; status.ScrollToCaret();
+            successCloseTimer.Start();
         }
     }
 

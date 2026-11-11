@@ -360,6 +360,8 @@ class ExtendedEditing:
     def _new_content_accessibility(self,*,image=False):
         if not self.state.get('tagged'):
             return {}
+        if not image:
+            return {}  # The worker chooses and validates the page-end boundary.
         from .accessibility_ui import AccessibilityDialog
         dialog=AccessibilityDialog(self,image=image)
         if self._exec_edit_dialog(dialog)!=QDialog.Accepted:

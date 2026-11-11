@@ -67,22 +67,28 @@ jobs:
           "version=$releaseVersion" >> $env:GITHUB_OUTPUT
       - name: Instalar dependencias fijadas
         run: ./scripts/install.ps1 -Development -PythonExe (Get-Command python).Source
-      - name: Comprobar regresiones de 3.0.23 y recorrido GUI
+      - name: Comprobar regresiones de 3.0.24 y recorrido GUI
         timeout-minutes: 10
         env:
           PYTEST_ADDOPTS: '-vv -o faulthandler_timeout=60'
           PYTHONUNBUFFERED: '1'
         run: >-
           .venv/Scripts/python.exe scripts/release_v300.py --source-only --headless-qa --tests
-          tests/test_tagged_mixed_text_v323.py
-          tests/test_resource_values_v323.py
+          tests/test_marked_text_v324.py
+          tests/test_tagged_rich_insert_v324.py
+          tests/test_marked_content_v303.py
+          tests/test_accessibility_ui.py
+          tests/test_tagged_v160.py
           tests/test_tagged.py
-          tests/test_tagged_artifacts.py
-          tests/test_tagged_reuse_v318.py
-          tests/test_tagged_move_v318.py
           tests/test_clipped_layout.py
           tests/test_clip_move_v150.py
+          tests/test_clipboard_v170.py
+          tests/test_clipboard_fast_v318.py
           tests/test_native_panel_v092.py
+          tests/test_tagged_mixed_text_v323.py
+          tests/test_resource_values_v323.py
+          tests/test_added_text_transactions_v315.py
+          tests/test_draft_session_v305.py
           tests/test_atomic_save_exact.py
           tests/test_validation_evidence_v318.py
       - name: Compilar y comprobar ejecutable e instalador
@@ -141,7 +147,7 @@ jobs:
   publish:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.23-publicacion')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.24-publicacion')
     needs: build
     runs-on: windows-2022
     permissions:

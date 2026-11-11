@@ -7,6 +7,7 @@ from copy import deepcopy
 from hashlib import sha256
 from io import BytesIO
 import math
+import struct
 
 import pymupdf as fitz
 from pypdf import PdfReader
@@ -26,34 +27,42 @@ def _revision(data, revision):
         raise EditError('El documento cambió. Selecciona el objeto de nuevo antes de usar el portapapeles.')
 
 
-def _font_identity(value, depth=0):
+def _font_identity(value, depth=0, *, normalize_numbers=True):
     """A resource identity independent of renumbered indirect references."""
     if depth > 12:
         raise EditError('El recurso de fuente tiene una estructura demasiado compleja.')
     value = value.get_object() if hasattr(value, 'get_object') else value
     if hasattr(value, 'get_data'):
         return ('stream', sha256(value.get_data()).hexdigest(),
-                _font_identity({k:v for k,v in value.items() if k not in ('/Length','/Filter','/DecodeParms')}, depth+1))
+                _font_identity({k:v for k,v in value.items() if k not in ('/Length','/Filter','/DecodeParms')}, depth+1,
+                               normalize_numbers=normalize_numbers))
     if isinstance(value, dict):
-        return tuple((str(k),_font_identity(v,depth+1)) for k,v in sorted(value.items(),key=lambda item:str(item[0])))
+        return tuple((str(k),_font_identity(v,depth+1,normalize_numbers=normalize_numbers)) for k,v in sorted(value.items(),key=lambda item:str(item[0])))
     if isinstance(value,(list,tuple)):
-        return tuple(_font_identity(v,depth+1) for v in value)
+        return tuple(_font_identity(v,depth+1,normalize_numbers=normalize_numbers) for v in value)
     if isinstance(value, bytes):
         return ('bytes', value.hex())
+    if normalize_numbers and isinstance(value,float) and math.isfinite(value):
+        try:
+            packed=struct.pack('!f',value);number=struct.unpack('!f',packed)[0]
+            if math.isfinite(number):
+                return str(int(number)) if number.is_integer() else ('binary32',packed.hex())
+        except (OverflowError,struct.error):pass
     return str(value)
 
 
-def _resource_identity(reader, page, resource):
+def _resource_identity(reader, page, resource, *, normalize_numbers=True):
     try:
         font = reader.pages[page]['/Resources']['/Font'][resource]
-        return sha256(repr(_font_identity(font)).encode('utf-8')).hexdigest()
+        return sha256(repr(_font_identity(font,normalize_numbers=normalize_numbers)).encode('utf-8')).hexdigest()
     except (KeyError,TypeError,AttributeError):
         raise EditError('No se puede identificar el recurso de fuente seleccionado.')
 
 
-def _copy_fonts(data, page, model, runs, resolver):
+def _copy_fonts(data, page, model, runs, resolver, *, selected=None):
     """Resolve selected faces and prove that their portable programs reproduce them."""
     reader=PdfReader(BytesIO(data),strict=True)
+    selected=model.glyphs if selected is None else selected
     fonts={}; resolved={}; errors=[]
     with fitz.open(stream=data,filetype='pdf') as doc:
         for run in runs:
@@ -77,10 +86,10 @@ def _copy_fonts(data, page, model, runs, resolver):
             try:
                 # Reproduce at the original glyph origins before exporting a
                 # program. Matching a font name or a cmap alone is insufficient.
-                _redact(doc[page],model,model.glyphs)
+                _redact(doc[page],model,selected)
                 erased=full_write(doc)
                 with fitz.open(stream=erased,filetype='pdf') as probe:
-                    _insert(probe[page],model.glyphs,resolved)
+                    _insert(probe[page],selected,resolved)
                     reproduced=full_write(probe)
                 from .validation import assert_pixels
                 with fitz.open(stream=data,filetype='pdf') as before, fitz.open(stream=reproduced,filetype='pdf') as after:
@@ -119,11 +128,9 @@ def copy_selection_v170(session, page, ids=None, image_id=None, revision=None):
         raise EditError('Selecciona texto visible para copiar como objeto editable.')
     payload=selection_payload(data,page,ids,session.resolver)
     runs=deepcopy(payload['runs'])
-    # A model restricted to the selection still lets redaction check all
-    # neighbours: _redact receives the complete model and selected separately.
-    from dataclasses import replace
-    subset=replace(model,glyphs=selected)
-    fonts,errors=_copy_fonts(data,page,subset,runs,session.resolver)
+    # Keep the full model for the reproduction check: unselected characters
+    # remain on the page and must never be counted as an unexpected failure.
+    fonts,errors=_copy_fonts(data,page,model,runs,session.resolver,selected=selected)
     bundle={'version':BUNDLE_VERSION,'kind':'text','source_revision':model.revision,'source_page':page,
             'rect':tuple(payload['rect']),'runs':runs,'paragraphs':deepcopy(payload.get('paragraphs',[])),
             'fonts':fonts,'text':payload['text'],'portable':not errors,
@@ -177,6 +184,10 @@ def _paste_text(data,page,bundle,rect,resolver,allow_overlap,auto_adapt=False):
     reader=PdfReader(BytesIO(data),strict=True)
     page_fonts=reader.pages[page].get('/Resources',{}).get('/Font',{})
     identities={_resource_identity(reader,page,str(resource)):str(resource) for resource in page_fonts}
+    # Clipboard objects from an earlier installed version keep working when
+    # their exact original resource spelling still matches this document.
+    identities.update({_resource_identity(reader,page,str(resource),normalize_numbers=False):str(resource)
+                       for resource in page_fonts})
     from .clipping import operator_glyph_map
     with fitz.open(stream=data,filetype='pdf') as doc:model=extract_page(doc,page,data)
     _,_,shows,_=operator_glyph_map(data,page,model)
@@ -187,7 +198,15 @@ def _paste_text(data,page,bundle,rect,resolver,allow_overlap,auto_adapt=False):
         if resource in used_resources:
             run.update(font_resource=resource,font_xref=None,font_file=None)
         elif entry.get('portable'):
-            run.update(font_resource=None,font_xref=None,font_file='clipboard-font:'+str(token),font_name=entry['name'])
+            if entry.get('base14'):
+                from .fonts import BASE14
+                if BASE14.get(entry.get('name'))!=entry['base14']:
+                    raise EditError('La identidad de la fuente estándar copiada no es válida.')
+                # A Base-14 face has no OpenType file. A pseudo file path
+                # would wrongly request shaping for ordinary words like "fin".
+                font_file=None
+            else:font_file='clipboard-font:'+str(token)
+            run.update(font_resource=None,font_xref=None,font_file=font_file,font_name=entry['name'])
         else:
             raise EditError('No está disponible la fuente exacta «'+str(entry.get('name',run.get('font_name','')))+'». '
                             'Importa y asocia esa fuente y copia de nuevo. '+str(entry.get('error','')))
@@ -256,10 +275,16 @@ def _apply_clipboard_v318(session, operation, page, revision=None, bundle=None, 
             candidate,report=_paste_text(data,page,bundle,area,session.resolver,allow_overlap,auto_adapt)
             report['operation']='clipboard_paste_text'
         elif bundle.get('kind')=='plain_text':
-            from .composition import AddTextRequest, insert_text_pdf
-            candidate,report=insert_text_pdf(data,AddTextRequest(page,area[0],area[1],area[2]-area[0],area[3]-area[1],
-                bundle.get('text',''),font_name=bundle['font_name'],font_file=bundle.get('font_file'),
-                allow_overlap=allow_overlap,accessibility_order=accessibility_order),session.resolver)
+            if accessibility_order is None:
+                candidate,report=edit_rich_pdf(data,RichTextRequest(page,[],[
+                    dict(text=bundle.get('text',''),font_name=bundle['font_name'],font_file=bundle.get('font_file'),
+                         size=12,color=(0,0,0),opacity=1)],rect=area,revision=revision,
+                    allow_overlap=allow_overlap,auto_height=True,auto_adapt=auto_adapt),session.resolver)
+            else:
+                from .composition import AddTextRequest, insert_text_pdf
+                candidate,report=insert_text_pdf(data,AddTextRequest(page,area[0],area[1],area[2]-area[0],area[3]-area[1],
+                    bundle.get('text',''),font_name=bundle['font_name'],font_file=bundle.get('font_file'),
+                    allow_overlap=allow_overlap,accessibility_order=accessibility_order,auto_adapt=auto_adapt),session.resolver)
             report['operation']='clipboard_paste_text'
         else:raise EditError('El objeto del portapapeles no se puede pegar en el PDF.')
     else:raise EditError('Operación de portapapeles desconocida.')
