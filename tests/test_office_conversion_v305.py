@@ -290,7 +290,7 @@ def test_word_uses_static_encoded_script_and_scoped_cleanup(source, tmp_path, mo
     output = tmp_path / "destino ' ` $().pdf"
     office._convert_word(source, output, {'executable': 'powershell.exe'}, tmp_path, 30, None)
     command, env, timeout = calls[0]
-    assert command[1:5] == ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand']
+    assert command[1:6] == ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand']
     decoded = base64.b64decode(command[-1]).decode('utf-16le')
     assert str(source) not in decoded and str(output) not in decoded
     assert env['PDFMODDER_OFFICE_SOURCE'] == str(source)

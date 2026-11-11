@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -142,44 +143,107 @@ def _validate_source(path):
 
 # Path values are environment data, never interpolated into PowerShell code.
 # The COM server must have a new PID before we open a document or call Quit.
-_WORD_SCRIPT = r'''
+_WORD_HELPERS = r'''
+function Get-PdfModderOfficeCode($exception) {
+    $current = $exception; $code = '0x00000000'
+    for ($depth = 0; $current -ne $null -and $depth -lt 12; $depth++) {
+        $code = '0x{0:X8}' -f ([long]$current.HResult -band [long]4294967295)
+        if ($current -is [Runtime.InteropServices.COMException]) { return $code }
+        $current = $current.InnerException
+    }
+    return $code
+}
+function Invoke-PdfModderOfficeCall([scriptblock]$action) {
+    for ($attempt = 0; ; $attempt++) {
+        try { return & $action } catch {
+            $code = Get-PdfModderOfficeCode $_.Exception
+            if ($attempt -ge 4 -or $code -notin @('0x80010001', '0x8001010A')) { throw }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+}
+function Invoke-PdfModderWordDocument($word) {
+    $document = $null; $settings = $null
+    try {
+        $script:PdfModderOfficeStage = 'settings'
+        [void](Invoke-PdfModderOfficeCall { $word.Visible = $false; $word.DisplayAlerts = 0; $word.AutomationSecurity = 3 })
+        $settings = @(Invoke-PdfModderOfficeCall {
+            # Emit the snapshot only after every COM property was read. A busy
+            # call must not append half a snapshot before the next attempt.
+            $links = $word.Options.UpdateLinksAtOpen
+            $fields = $word.Options.UpdateFieldsAtPrint
+            $printLinks = $word.Options.UpdateLinksAtPrint
+            $links; $fields; $printLinks
+        })
+        [void](Invoke-PdfModderOfficeCall {
+            $word.Options.UpdateLinksAtOpen = $false
+            $word.Options.UpdateFieldsAtPrint = $false
+            $word.Options.UpdateLinksAtPrint = $false
+            $word.ScreenUpdating = $false
+        })
+        $script:PdfModderOfficeStage = 'open'
+        # Omit optional encoding/format/password arguments. Supplying numeric
+        # placeholder values is not equivalent to Word's own default values.
+        $document = Invoke-PdfModderOfficeCall { $word.Documents.Open($env:PDFMODDER_OFFICE_SOURCE, $false, $true, $false) }
+        $script:PdfModderOfficeStage = 'export'
+        [void](Invoke-PdfModderOfficeCall { $document.ExportAsFixedFormat($env:PDFMODDER_OFFICE_OUTPUT, 17, $false, 0, 0, 1, 1, 0, $true, $true, 1, $true, $true, $false) })
+        $script:PdfModderOfficeStage = 'completed'
+    } finally {
+        if ($document -ne $null) {
+            try { [void](Invoke-PdfModderOfficeCall { $document.Close(0) }) } catch {}
+            if ([Runtime.InteropServices.Marshal]::IsComObject($document)) {
+                [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($document)
+            }
+        }
+        if ($settings -ne $null) {
+            try {
+                [void](Invoke-PdfModderOfficeCall {
+                    $word.Options.UpdateLinksAtOpen = $settings[0]
+                    $word.Options.UpdateFieldsAtPrint = $settings[1]
+                    $word.Options.UpdateLinksAtPrint = $settings[2]
+                })
+            } catch {}
+        }
+    }
+}
+'''
+
+
+_WORD_SCRIPT = _WORD_HELPERS + r'''
 $ErrorActionPreference = 'Stop'
-$word = $null; $document = $null; $owned = $false; $settings = $null
+$word = $null; $owned = $false
+$script:PdfModderOfficeStage = 'initialization'; $script:PdfModderOfficeReason = $null
 try {
     Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class PdfModderOfficePid { [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId); }'
     $existing = @(Get-Process WINWORD -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-    $word = New-Object -ComObject Word.Application
+    $script:PdfModderOfficeStage = 'start'
+    $word = Invoke-PdfModderOfficeCall { New-Object -ComObject Word.Application }
+    $script:PdfModderOfficeStage = 'identity'
     [uint32]$wordPid = 0
-    [void][PdfModderOfficePid]::GetWindowThreadProcessId([IntPtr]$word.Hwnd, [ref]$wordPid)
-    if ($wordPid -eq 0 -or $existing -contains [int]$wordPid) { throw 'No se pudo crear una instancia independiente de Word.' }
+    $windowHandle = Invoke-PdfModderOfficeCall { $word.Hwnd }
+    [void][PdfModderOfficePid]::GetWindowThreadProcessId([IntPtr]$windowHandle, [ref]$wordPid)
+    if ($wordPid -eq 0 -or $existing -contains [int]$wordPid) {
+        $script:PdfModderOfficeReason = 'instance_not_owned'
+        throw 'No se pudo crear una instancia independiente de Word.'
+    }
     $owned = $true
     $process = Get-Process -Id $wordPid
     @{pid=[int]$wordPid; started=$process.StartTime.ToUniversalTime().Ticks.ToString()} | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:PDFMODDER_OFFICE_PID -Encoding UTF8
-    $word.Visible = $false
-    $word.DisplayAlerts = 0
-    $word.AutomationSecurity = 3
-    $settings = @($word.Options.UpdateLinksAtOpen, $word.Options.UpdateFieldsAtPrint, $word.Options.UpdateLinksAtPrint)
-    $word.Options.UpdateLinksAtOpen = $false
-    $word.Options.UpdateFieldsAtPrint = $false
-    $word.Options.UpdateLinksAtPrint = $false
-    $word.ScreenUpdating = $false
-    $document = $word.Documents.Open($env:PDFMODDER_OFFICE_SOURCE, $false, $true, $false, '', '', $true, '', '', 0, 0, $false, $false, 0, $true)
-    $document.ExportAsFixedFormat($env:PDFMODDER_OFFICE_OUTPUT, 17, $false, 0, 0, 1, 1, 0, $true, $true, 1, $true, $true, $false)
+    Invoke-PdfModderWordDocument $word
+} catch {
+    # The exception message can contain private document text. Persist only
+    # our phase and a numeric HRESULT, never stdout or Word's raw error text.
+    try {
+        @{schema=1; stage=$script:PdfModderOfficeStage; code=(Get-PdfModderOfficeCode $_.Exception); reason=$script:PdfModderOfficeReason} |
+            ConvertTo-Json -Compress | Set-Content -LiteralPath $env:PDFMODDER_OFFICE_DIAGNOSTIC -Encoding UTF8
+    } catch {}
+    throw
 } finally {
-    if ($document -ne $null) {
-        try { $document.Close(0) } catch {}
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($document)
-    }
     if ($word -ne $null) {
-        if ($owned -and $settings -ne $null) {
-            try {
-                $word.Options.UpdateLinksAtOpen = $settings[0]
-                $word.Options.UpdateFieldsAtPrint = $settings[1]
-                $word.Options.UpdateLinksAtPrint = $settings[2]
-            } catch {}
+        if ($owned) { try { [void](Invoke-PdfModderOfficeCall { $word.Quit(0) }) } catch {} }
+        if ([Runtime.InteropServices.Marshal]::IsComObject($word)) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($word)
         }
-        if ($owned) { try { $word.Quit(0) } catch {} }
-        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($word)
     }
 }
 '''
@@ -199,7 +263,7 @@ if (Test-Path -LiteralPath $env:PDFMODDER_OFFICE_PID) {
 
 def _powershell_command(executable, script):
     encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
-    return [executable, '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]
+    return [executable, '-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', encoded]
 
 
 def _stop_process(process):
@@ -257,7 +321,9 @@ def _run(command, *, env, timeout, cancel):
                 time.sleep(.05)
             _check_cancel(cancel)
             if process.returncode:
-                raise ConversionError('El programa no pudo convertir el documento. Puede estar protegido, dañado o requerir intervención al abrirlo.')
+                error=ConversionError('El programa no pudo convertir el documento. Puede estar protegido, dañado o requerir intervención al abrirlo.')
+                error.returncode=int(process.returncode)
+                raise error
         finally:
             _stop_process(process)
 
@@ -265,11 +331,16 @@ def _run(command, *, env, timeout, cancel):
 def _convert_word(source, output, backend, folder, timeout, cancel):
     env = os.environ.copy()
     identity = folder / 'word-process.json'
+    diagnostic = folder / 'word-diagnostic.json'
     env.update(PDFMODDER_OFFICE_SOURCE=str(source), PDFMODDER_OFFICE_OUTPUT=str(output),
-               PDFMODDER_OFFICE_PID=str(identity))
+               PDFMODDER_OFFICE_PID=str(identity),PDFMODDER_OFFICE_DIAGNOSTIC=str(diagnostic))
     try:
-        _run(_powershell_command(backend['executable'], _WORD_SCRIPT), env=env,
-             timeout=timeout, cancel=cancel)
+        try:
+            _run(_powershell_command(backend['executable'], _WORD_SCRIPT), env=env,
+                 timeout=timeout, cancel=cancel)
+        except ConversionError as exc:
+            if not hasattr(exc,'returncode'):raise
+            raise ConversionError(_word_diagnostic_message(diagnostic,exc.returncode)) from exc
     finally:
         # Only the PID and creation time recorded for our new COM instance can
         # be stopped; an existing Word process is never used or terminated.
@@ -281,6 +352,37 @@ def _convert_word(source, output, backend, folder, timeout, cancel):
                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             except (OSError, subprocess.TimeoutExpired):
                 pass
+
+
+def _word_diagnostic_message(path,returncode):
+    phases={'initialization':'preparar la automatización','start':'iniciar Word',
+            'identity':'comprobar la instancia independiente','settings':'preparar las opciones de Word',
+            'open':'abrir la copia del documento','export':'exportar el PDF','completed':'terminar la conversión'}
+    detail={}
+    try:
+        if path.stat().st_size<=4096:
+            value=json.loads(path.read_text(encoding='utf-8-sig'))
+            if isinstance(value,dict) and value.get('schema')==1:detail=value
+    except (OSError,ValueError,UnicodeError):pass
+    stage=detail.get('stage')
+    phase=phases.get(stage,'completar la automatización') if isinstance(stage,str) else 'completar la automatización'
+    code=detail.get('code')
+    if not (isinstance(code,str) and len(code)==10 and code.startswith('0x')
+            and all(c in '0123456789ABCDEFabcdef' for c in code[2:])):
+        code=None
+    message=f'Microsoft Word no pudo {phase}.'
+    if detail.get('reason')=='instance_not_owned':
+        message+=' No se obtuvo una instancia independiente; tus ventanas de Word se han conservado.'
+    elif code in ('0x80010001','0x8001010A'):
+        message+=' Word sigue ocupado después de varios intentos. Revisa sus ventanas o avisos pendientes.'
+    elif code=='0x80040154':
+        message+=' La automatización de Word no está registrada correctamente. Revisa o repara la instalación de Office.'
+    elif code=='0x80080005':
+        message+=' Word no pudo iniciar su servidor de automatización. Ábrelo normalmente y comprueba sus avisos de inicio.'
+    else:
+        message+=' Si el archivo se abre normalmente, revisa los avisos de Word; este fallo automático no demuestra que el documento esté dañado.'
+    message+=f' Código de Word: {code}.' if code else f' Código del proceso: {int(returncode)}.'
+    return message+' El documento original se conserva y no se ha publicado ningún PDF.'
 
 
 def _convert_libreoffice(source, output, backend, folder, timeout, cancel):

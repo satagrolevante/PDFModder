@@ -1,192 +1,34 @@
-name: Construir y publicar Windows
+name: Comprobar conversión Word en Windows
 
 on:
   push:
-    branches: ['**']
-    paths:
-      - 'pdfmodder/**'
-      - 'scripts/**'
-      - 'tests/**'
-      - 'docs/**'
-      - 'installer/**'
-      - 'assets/**'
-      - 'requirements*.txt'
-      - 'pyproject.toml'
-      - 'README.md'
-      - 'PDFModder.spec'
-      - 'run_pdfmodder.py'
-      - '.github/workflows/windows-release.yml'
-  pull_request:
-    paths:
-      - 'pdfmodder/**'
-      - 'scripts/**'
-      - 'tests/**'
-      - 'docs/**'
-      - 'installer/**'
-      - 'assets/**'
-      - 'requirements*.txt'
-      - 'pyproject.toml'
-      - 'README.md'
-      - 'PDFModder.spec'
-      - 'run_pdfmodder.py'
-      - '.github/workflows/windows-release.yml'
+    branches: [correccion-conversion-word]
   workflow_dispatch:
-    inputs:
-      publish:
-        description: 'Publicar esta entrega comprobada (sólo main)'
-        type: boolean
-        default: false
-        required: true
 
 permissions:
   contents: read
 
-concurrency:
-  group: windows-release-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build:
+  check:
     runs-on: windows-2022
-    timeout-minutes: 60
-    outputs:
-      version: ${{ steps.release.outputs.version }}
-    defaults:
-      run:
-        shell: pwsh
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: x64
-      - name: Identificar versión de entrega
-        id: release
-        run: |
-          $releaseVersion = python -c "from pdfmodder import __version__; print(__version__)"
-          "version=$releaseVersion" >> $env:GITHUB_OUTPUT
-      - name: Instalar dependencias fijadas
-        run: ./scripts/install.ps1 -Development -PythonExe (Get-Command python).Source
-      - name: Comprobar regresiones de 3.0.24 y recorrido GUI
-        timeout-minutes: 10
-        env:
-          PYTEST_ADDOPTS: '-vv -o faulthandler_timeout=60'
-          PYTHONUNBUFFERED: '1'
+      - name: Instalar dependencias de las comprobaciones
+        run: python -m pip install --only-binary=:all: PyMuPDF==1.26.7 pypdf==6.6.0 pytest==9.0.2
+      - name: Comprobar conversor y contrato nativo PowerShell
         run: >-
-          .venv/Scripts/python.exe scripts/release_v300.py --source-only --headless-qa --tests
-          tests/test_marked_text_v324.py
-          tests/test_tagged_rich_insert_v324.py
-          tests/test_marked_content_v303.py
-          tests/test_accessibility_ui.py
-          tests/test_tagged_v160.py
-          tests/test_tagged.py
-          tests/test_clipped_layout.py
-          tests/test_clip_move_v150.py
-          tests/test_clipboard_v170.py
-          tests/test_clipboard_fast_v318.py
-          tests/test_native_panel_v092.py
-          tests/test_tagged_mixed_text_v323.py
-          tests/test_resource_values_v323.py
-          tests/test_added_text_transactions_v315.py
-          tests/test_draft_session_v305.py
-          tests/test_atomic_save_exact.py
-          tests/test_validation_evidence_v318.py
-      - name: Compilar y comprobar ejecutable e instalador
-        timeout-minutes: 15
-        env:
-          PYTHONUNBUFFERED: '1'
-        run: .venv/Scripts/python.exe scripts/release_v300.py --start build --headless-qa
-      - name: Conservar entregas y diagnóstico
+          python -m pytest -v --tb=short
+          --junitxml=output/office-fix-v325/windows.xml
+          tests/test_office_conversion_v305.py tests/test_office_word_v325.py
+      - name: Conservar resultados
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: PDFModder-v${{ steps.release.outputs.version }}-Windows-${{ github.sha }}
-          path: |
-            releases/v${{ steps.release.outputs.version }}/
-            output/release-v*-*.log
-            output/pytest-v300-results.xml
-            output/*v300*smoke*
-            output/v300-source-tests.json
-            output/upgrade-cleanup-v306.json
-            output/portability/**/resultado.json
-            output/portability/**/instalacion.json
-            output/portability/**/desinstalacion.json
-            output/portability/**/editor-instalado-v300.json
-            output/portability/**/*.png
-          if-no-files-found: ignore
-          retention-days: 14
-
-
-      - name: Comprobar integración nativa de Windows
-        timeout-minutes: 5
-        env:
-          QT_QPA_PLATFORM: offscreen
-          PYTHONUNBUFFERED: '1'
-        run: >-
-          .venv/Scripts/python.exe -m pytest -v -o faulthandler_timeout=45
-          --junitxml output/pytest-native-windows.xml
-          tests/test_upgrade_cleanup_v306.py::test_production_upgrade_cleanup_preserves_documents_and_current_registration
-          tests/test_shell_registration_v305.py::test_production_shell_registration_in_isolated_registry
-          tests/test_shell_registration_v305.py::test_native_shell_selection_preserves_all_files_in_one_launch
-          tests/test_shell_registration_v305.py::test_native_com_local_server_activation_and_selection_rpc
-          tests/test_pdf_associations_v202.py::test_production_pdf_associations_in_isolated_registry
-          tests/test_installer_update_progress.py
-      - name: Conservar diagnóstico nativo
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: PDFModder-v${{ steps.release.outputs.version }}-Windows-native-${{ github.sha }}
-          path: |
-            output/pytest-native-windows.xml
-            output/upgrade-cleanup-v306.json
-            output/shell-*-v305.json
-            output/pdf-*-v202.json
-          if-no-files-found: ignore
-          retention-days: 14
-
-  publish:
-    if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
-      || (github.event_name == 'push' && github.ref == 'refs/heads/version-3.0.24-publicacion')
-    needs: build
-    runs-on: windows-2022
-    permissions:
-      contents: write
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          architecture: x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: PDFModder-v${{ needs.build.outputs.version }}-Windows-${{ github.sha }}
-          path: .
-      - name: Instalar dependencias del publicador
-        run: >-
-          python -m pip install requests==2.34.2 charset-normalizer==3.5.1
-          idna==3.20 urllib3==2.8.0 certifi==2026.7.22
-      - name: Publicar instalador, portable, fuentes y manifiesto
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: >-
-          python scripts/publish_github_releases.py --version ${{ needs.build.outputs.version }}
-          --notes-file docs/NOTAS_${{ needs.build.outputs.version }}.md
-      - name: Retirar publicaciones anteriores tras verificar la actualización pública
-        if: needs.build.outputs.version == '3.0.16'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: >-
-          python scripts/cleanup_previous_releases.py --keep v3.0.16 --apply
-          --report output/github-cleanup-v3.0.16.json
-      - name: Conservar informe de limpieza de publicaciones
-        if: always() && needs.build.outputs.version == '3.0.16'
-        uses: actions/upload-artifact@v4
-        with:
-          name: PDFModder-v3.0.16-limpieza-${{ github.sha }}
-          path: output/github-cleanup-v3.0.16.json
-          if-no-files-found: ignore
+          name: Word-conversion-Windows-checks
+          path: output/office-fix-v325/windows.xml
           retention-days: 14

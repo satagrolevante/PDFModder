@@ -18,6 +18,18 @@ Los originales se conservan y cada PDF se guarda junto al documento, usando
 abre en la aplicación; un lote muestra la lista de resultados y sus errores.
 Cancelar no borra los PDF cuya conversión ya terminó.
 
+La automatización de Word abre la copia en modo de solo lectura con sus valores
+predeterminados de formato y codificación. Si Word está ocupado, reintenta de
+forma limitada. Un fallo de Word muestra la fase (inicio, apertura o exportación)
+y, cuando está disponible, su código numérico, sin revelar texto del documento.
+Que un archivo se abra o imprima correctamente en Word no garantiza que su
+conversión automática funcione: puede haber un aviso pendiente o un problema de
+automatización. Ese fallo, por sí solo, no significa que el archivo esté dañado.
+
+Si falla, abre Word normalmente, resuelve los avisos pendientes y vuelve a
+intentarlo. El código y la fase del nuevo aviso ayudan a distinguir los casos
+sin cambiar de motor ni sobrescribir el original.
+
 Se verifican la cabecera, la apertura y el número de páginas del PDF con dos
 lectores antes de guardarlo. Esta comprobación acredita que el resultado puede
 abrirse, no que cada elemento sea visualmente idéntico a Word. La paginación y el
