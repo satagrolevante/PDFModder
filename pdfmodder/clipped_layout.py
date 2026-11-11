@@ -222,7 +222,8 @@ def edit_clipped_layout(data,request,model):
     if len(new_ops)!=len(operations):raise EditError('Cambió el número de operadores.')
     for i,((a,o),(b,p)) in enumerate(zip(operations,new_ops)):
         if i!=operation and (o!=p or _signature(a)!=_signature(b)):raise EditError('Cambió un operador ajeno al SHOW.')
-    if _signature(reader.pages[request.page]['/Resources']['/Font'][show['resource']])!=_signature(after.pages[request.page]['/Resources']['/Font'][show['resource']]):
+    from .resource_values_v323 import same_resource_values
+    if not same_resource_values(reader.pages[request.page]['/Resources']['/Font'][show['resource']],after.pages[request.page]['/Resources']['/Font'][show['resource']]):
         raise EditError('Cambió la fuente.')
     expected=[(g.text,g.origin,g.font,g.size) for g in others+planned]
     report=validate_transition(data,output,request.page,expected,[g.bbox for g in selected+planned])
@@ -399,7 +400,8 @@ def _move_clipped_text(data,request,model,*,update_metadata=None,writer=None):
     actual_ops=ContentStream(after.pages[request.page].get_contents(),after).operations
     if len(actual_ops)!=len(expected_ops) or any(o!=p or _signature(a)!=_signature(b) for (a,o),(b,p) in zip(expected_ops,actual_ops)):
         raise EditError('La escritura alteró operadores ajenos al movimiento; operación cancelada.')
-    if _signature(reader.pages[request.page]['/Resources'])!=_signature(after.pages[request.page]['/Resources']):
+    from .resource_values_v323 import same_resource_values
+    if not same_resource_values(reader.pages[request.page]['/Resources'],after.pages[request.page]['/Resources']):
         raise EditError('La escritura alteró recursos compartidos; operación cancelada.')
     _assert_typography(output,request.page,others+planned)
     report=validate_transition(data,output,request.page,[(g.text,g.origin,g.font,g.size) for g in others+planned],

@@ -537,7 +537,7 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     from .native_codes import verified_catalog
     from .native_font_extension import prepare_native_font
     from .validation import document_issues, assert_characters
-    from .tagged import analyze_readonly, TaggedEdit
+    from .tagged import analyze_readonly
     if isinstance(request,dict): request=RichTextRequest(**request)
     resolver=resolver or FontResolver()
     started=time.perf_counter()
@@ -868,12 +868,10 @@ def _edit_rich_pdf(data, request, resolver=None, *, insertion_source=None, compo
     source_decoration=(bound_decoration if bound_decoration is not None
                        and bound_decoration.needs_update(planned) else None)
     if source_decoration:source_decoration.plan(planned,allow_overlap=request.allow_overlap)
-    from .tagged_artifacts import verified_artifact_selection
-    artifact=(structure is not None and verified_artifact_selection(
-        structure,request.page,[g.id for g in selected],mapping,operations,model=model,planned=planned))
-    tagged=(TaggedEdit(structure,request.page,model,selected,planned,selected,True,native_inplace=True,
-                       decoration_policy=source_decoration)
-            if structure is not None and not artifact else None)
+    from .tagged_unmarked_v323 import native_text_plan
+    tagged=native_text_plan(structure,request.page,model,selected,planned,operations,mapping,
+                            decoration_policy=source_decoration)
+    artifact=structure is not None and tagged is None
     if source_decoration and tagged:source_decoration.expected_structure(tagged.expected)
     matrix=first_state['matrix'];linear=first_state['ctm']*page_matrix;inverse=~linear
     insertion=[];new_underlines=[];groups=[]

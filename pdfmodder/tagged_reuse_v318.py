@@ -98,6 +98,7 @@ class _PageEvidence:
     graphical_artifacts: frozenset
     scope_events: tuple
     estimated_bytes: int
+    unmarked_shows: int = 0
 
 
 def capture_page_evidence_v318(structure):
@@ -129,7 +130,10 @@ def capture_page_evidence_v318(structure):
             artifacts = frozenset(item['mcid'] for item in structure.source_irregularities
                 if item.get('kind') == 'detached_graphical_artifact' and item.get('page') == number)
             result.append(_PageEvidence(records, tuple(structure.contexts[number]),
-                                        len(operations), artifacts, events, budget[1]))
+                                        len(operations), artifacts, events, budget[1],
+                                        sum(item['shows'] for item in structure.source_irregularities
+                                            if item.get('kind') == 'unmarked_text'
+                                            and item.get('page') == number)))
             remaining -= budget[1]
         except _UnsupportedAst:
             # Indirect properties, unknown operand types and over-budget
@@ -178,6 +182,9 @@ class PageSemanticReuseV318:
                                                           evidence.operations, evidence.scope_events))
         candidate.marks.append(marks)
         candidate.contexts.append(evidence.contexts)
+        if evidence.unmarked_shows:
+            candidate.source_irregularities.append({'kind':'unmarked_text','page':number,
+                                                    'shows':evidence.unmarked_shows})
         candidate._reused_graphical_artifacts_v318.update((number, mcid)
                                                         for mcid in evidence.graphical_artifacts)
         candidate.reused_semantic_pages_v318.add(number)

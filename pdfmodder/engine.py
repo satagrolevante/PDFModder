@@ -476,6 +476,15 @@ def edit_pdf(data:bytes, request:EditRequest, resolver=None):
         if any(partial_cid(g) for g in selected) or _native_text_wrappers(doc[request.page]):
             from .native_panel import edit_native_panel
             return edit_native_panel(data,request,model,resolver)
+        if doc.xref_get_key(doc.pdf_catalog(),'StructTreeRoot')[0]!='null':
+            from .tagged import analyze_readonly
+            structure=analyze_readonly(data)
+            contexts=structure.glyph_contexts(request.page,model)
+            if any(contexts[g.id] is None for g in selected):
+                # Keep existing unmarked/Artifact text on its native source
+                # SHOWs. Regional redaction must not reassign it to a tag.
+                from .native_panel import edit_native_panel
+                return edit_native_panel(data,request,model,resolver)
         from .clipping import CLIP_ISSUE,edit_clipped_text
         if CLIP_ISSUE in model.issues:
             if (doc.xref_get_key(doc.pdf_catalog(),'StructTreeRoot')[0]!='null'

@@ -123,9 +123,12 @@ def test_global_form_changes_do_not_invalidate_page_syntax_evidence():
 
 def test_changed_page_with_unmarked_text_never_reuses_old_contexts():
     source = make_tagged_pdf()
-    tagged.analyze_readonly(source)
+    original = tagged.analyze_readonly(source)
     with fitz.open(stream=source, filetype='pdf') as document:
         document[1].insert_text((40, 350), 'Untagged unexpected text')
         output = document.tobytes(garbage=0)
-    with pytest.raises(EditError, match='texto sin etiqueta'):
-        tagged.analyze_readonly(output)
+    candidate = tagged.analyze_readonly(output)
+    assert 1 not in candidate.reused_semantic_pages_v318
+    assert len(candidate.contexts[1]) > len(original.contexts[1])
+    assert {'kind':'unmarked_text','page':1,'shows':1} in candidate.source_irregularities
+    assert candidate.semantic()==original.semantic()

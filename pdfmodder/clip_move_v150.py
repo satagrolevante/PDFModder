@@ -181,7 +181,8 @@ def move_text_with_clip(data, request, model, mapped, tagged_move=None):
     if len(actual_ops) != len(expected_ops) or any(op != newop or _signature(args) != _signature(newargs)
             for (args, op), (newargs, newop) in zip(expected_ops, actual_ops)):
         raise EditError('El guardado alteró operadores ajenos al traslado del recorte.')
-    if _signature(reader.pages[request.page]['/Resources']) != _signature(after.pages[request.page]['/Resources']):
+    from .resource_values_v323 import same_resource_values
+    if not same_resource_values(reader.pages[request.page]['/Resources'],after.pages[request.page]['/Resources']):
         raise EditError('El guardado alteró recursos compartidos durante el traslado del recorte.')
     _assert_typography(output, request.page, others+planned)
     report = validate_transition(data, output, request.page,

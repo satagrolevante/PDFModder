@@ -17,6 +17,7 @@ def _font_evidence(before, after, page, report):
     from io import BytesIO
     from pypdf import PdfReader
     from .clipping import _signature
+    from .resource_values_v323 import same_resource_values
 
     original = PdfReader(BytesIO(before), strict=True).pages[page]
     current = PdfReader(BytesIO(after), strict=True).pages[page]
@@ -26,11 +27,14 @@ def _font_evidence(before, after, page, report):
         result = resources.get('/Font', {})
         return result.get_object() if hasattr(result, 'get_object') else result
     original_fonts, current_fonts = fonts(original), fonts(current)
+    number_normalized=False
     for resource, font in original_fonts.items():
-        if resource not in current_fonts or _signature(font) != _signature(current_fonts[resource]):
+        if resource not in current_fonts or not same_resource_values(font,current_fonts[resource]):
             raise EditError('La composición alteró una fuente original, su programa o su codificación.')
+        number_normalized |= _signature(font) != _signature(current_fonts[resource])
     report.update(original_font_resources_unchanged=True,
                   font_resources_unchanged=set(original_fonts) == set(current_fonts))
+    if number_normalized:report['resource_number_normalization_verified']=True
     extensions = {resource: evidence for resource, evidence in report.get('fonts', {}).items()
                   if isinstance(evidence, dict) and 'explicit' in evidence
                   and evidence.get('original_resource_unchanged')}

@@ -127,7 +127,7 @@ def test_semantic_actualtext_is_blocked_instead_of_becoming_stale(where):
 
 
 @pytest.mark.parametrize('defect', ['duplicate_mcid', 'broken_parenttree', 'missing_parenttree',
-                                   'untagged_glyph', 'malformed_layer', 'unclosed_marked_content'])
+                                   'malformed_layer', 'unclosed_marked_content'])
 def test_invalid_tagged_constructions_block_before_modifying_bytes(defect):
     source = make_tagged_pdf(defect=defect)
     original_hash = sha256(source).hexdigest()

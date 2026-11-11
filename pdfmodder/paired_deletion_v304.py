@@ -49,8 +49,7 @@ def try_delete_paired_text(data, request, model=None):
     from .clipped_layout import _state_at, _assert_typography
     from .native_layout import _compact_adjustments, _number
     from .richtext import _unit, _source_width, _validate, _drop_affected_groups, _read_metadata, _match
-    from .tagged import analyze_readonly, TaggedEdit
-    from .tagged_artifacts import verified_artifact_selection
+    from .tagged import analyze_readonly
     from .validation import document_issues
 
     started = time.perf_counter()
@@ -151,11 +150,8 @@ def try_delete_paired_text(data, request, model=None):
         contexts = structure.glyph_contexts(request.page, model)
         if any(contexts[a] != contexts[b] for a, b in pairs.values()):
             raise EditError('El relleno y el contorno no pertenecen a la misma etiqueta accesible.')
-    artifact = structure is not None and verified_artifact_selection(
-        structure, request.page, list(removed), mapping, operations, model=model, planned=[])
-    tagged = (TaggedEdit(structure, request.page, model, selected, [], selected,
-                         True, native_inplace=True)
-              if structure is not None and not artifact else None)
+    from .tagged_unmarked_v323 import native_text_plan
+    tagged = native_text_plan(structure, request.page, model, selected, [], operations, mapping)
 
     resources = reader.pages[request.page]['/Resources'].get_object()
     changed_ops = copy.deepcopy(operations)

@@ -332,6 +332,7 @@ class TaggedStructure:
         stack=[]
         semantic_scopes=[]
         contexts=[]
+        unmarked_shows=0
         resources=obj(page.get('/Resources',{}))
         properties=obj(resources.get('/Properties',{}))
         for index,(args,operator) in enumerate(ops):
@@ -369,7 +370,12 @@ class TaggedStructure:
             artifact=any(tag=='/Artifact' for tag,_ in stack)
             contexts.append(context)
             if operator in SHOW and _has_string(args) and context is None and not artifact:
-                fail(f'hay texto sin etiqueta ni marca de artefacto en la página {number+1}.')
+                if stack:
+                    fail(f'hay texto sin etiqueta dentro de un ámbito semántico no verificable en la página {number+1}.')
+                # Exporters may append browser headers/footers outside the
+                # logical tree. Retain that source condition instead of
+                # inventing tags or blocking independently owned page text.
+                unmarked_shows+=1
             if operator in PAINT and context is not None:
                 marks[context].paints=True
             if operator==b'EMC':
@@ -381,6 +387,9 @@ class TaggedStructure:
                     mark.end=index
         if stack:
             fail('hay contenido marcado sin cerrar.')
+        if unmarked_shows:
+            self.source_irregularities.append({'kind':'unmarked_text','page':number,
+                                               'shows':unmarked_shows})
         if marks:
             key=_integer(page.get('/StructParents'),'StructParents de página')
             if key in self.page_parent_keys:
