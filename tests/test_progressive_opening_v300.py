@@ -113,9 +113,12 @@ def test_clean_reader_workspace_and_tab_switch_do_not_publish_recovery(tmp_path)
     finally:session.close()
 
 
-def test_snapshot_detects_source_change_during_capture_and_removes_partial_state(tmp_path,monkeypatch):
+@pytest.mark.parametrize('retry_changed_source', [False, True])
+def test_snapshot_detects_source_change_during_capture_and_removes_partial_state(
+        tmp_path, monkeypatch, retry_changed_source):
     import pdfmodder.history as history
     source=pdf_file(tmp_path);root=tmp_path/'capture';fstat=history.os.fstat;calls=0
+    waits = []
     def changed(fd):
         nonlocal calls
         calls+=1
@@ -125,7 +128,10 @@ def test_snapshot_detects_source_change_during_capture_and_removes_partial_state
                                    st_mtime_ns=result.st_mtime_ns,st_ctime_ns=result.st_ctime_ns)
         return result
     monkeypatch.setattr(history.os,'fstat',changed)
-    with pytest.raises(EditError,match='cambió mientras'):History.from_file(source,persistent_root=root)
+    monkeypatch.setattr(history.time, 'sleep', waits.append)
+    with pytest.raises(EditError, match='cambió mientras'):
+        History.from_file(source, persistent_root=root, retry_changed_source=retry_changed_source)
+    assert len(waits) == (2 if retry_changed_source else 0)
     assert not root.exists()
 
 
@@ -168,6 +174,32 @@ def test_snapshot_rejects_real_in_place_write_before_descriptor_recheck(tmp_path
     assert not root.exists()
 
 
+def test_print_snapshot_retry_captures_only_the_new_stable_bytes(tmp_path, monkeypatch):
+    import pdfmodder.history as history
+
+    source = pdf_file(tmp_path)
+    with fitz.open() as document:
+        document.new_page().insert_text((50, 75), 'Revision lista para imprimir')
+        revised = document.tobytes()
+    fstat = history.os.fstat
+    checks = 0
+
+    def after_write(fd):
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            source.write_bytes(revised)
+        return fstat(fd)
+
+    monkeypatch.setattr(history.os, 'fstat', after_write)
+    snapshot = History.from_file(source, directory=tmp_path, retry_changed_source=True)
+    try:
+        assert snapshot.original_source.read_bytes() == revised
+        assert snapshot.revision == sha256(revised).hexdigest()
+    finally:
+        snapshot.close()
+
+
 @pytest.mark.parametrize('change',['replacement','removal'])
 def test_snapshot_rechecks_named_source_while_original_descriptor_is_alive(tmp_path,monkeypatch,change):
     import builtins
@@ -189,7 +221,9 @@ def test_snapshot_rechecks_named_source_while_original_descriptor_is_alive(tmp_p
             return original_open(replacement,*args,**kwargs)
         return original_open(path,*args,**kwargs)
     monkeypatch.setattr(history,'open',changed_name,raising=False)
-    with pytest.raises(EditError,match='cambió mientras'):History.from_file(source,persistent_root=root)
+    monkeypatch.setattr(history.time, 'sleep', lambda _: pytest.fail('The requested file disappeared or was replaced'))
+    with pytest.raises(EditError, match='cambió mientras'):
+        History.from_file(source, persistent_root=root, retry_changed_source=True)
     assert source_handle.closed and not root.exists()
 
 

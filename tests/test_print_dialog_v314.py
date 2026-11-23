@@ -34,7 +34,7 @@ def dialog_factory(qtbot, monkeypatch):
     monkeypatch.setattr(ui, '_new_device_v314', device)
     def defaults(name, printer):
         return {'color': QPrinter.Color, 'duplex': QPrinter.DuplexLongSide,
-                'dpi': 300, 'paper': 1, 'orientation': 1, 'collate': True,
+                'dpi': 600, 'paper': 1, 'orientation': 1, 'collate': True,
                 'fit': True, 'driver_layout': True, 'copies': 1}
     monkeypatch.setattr(ui, '_defaults_v314', defaults)
     def create(preferences=None):
@@ -50,13 +50,15 @@ def dialog_factory(qtbot, monkeypatch):
 def test_driver_defaults_and_saved_profile_capability_warning(dialog_factory, tmp_path):
     create, _ = dialog_factory
     initial = create()
+    assert initial.dpi.value() == 300
     assert initial.duplex.currentData() == QPrinter.DuplexLongSide
     assert initial.settings()['driver_layout']
     store = PrinterPreferencesV311(tmp_path / 'printers.json')
-    store.remember('Oficina', {'duplex': QPrinter.DuplexShortSide, 'paper': 2})
+    store.remember('Oficina', {'duplex': QPrinter.DuplexShortSide, 'paper': 2, 'dpi': 450})
     store.remember('Mono', {'duplex': QPrinter.DuplexLongSide, 'color': QPrinter.Color})
     dialog = create(store)
     assert dialog.duplex.currentData() == QPrinter.DuplexShortSide
+    assert dialog.dpi.value() == 450
     assert dialog.paper.currentIndex() == 2
     assert not dialog.settings()['driver_layout']
     dialog.printer.setCurrentIndex(1)

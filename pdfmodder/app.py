@@ -589,6 +589,9 @@ class MainWindowCore(ShellActionsUiMixin,ContinuousUiV180Mixin,ReadingUiV171Mixi
             self._error("Aplica o cancela la escritura antes de abrir otro documento.")
             return False
         payload = {"path":str(path),"password":password,"reading":True}
+        print_request = getattr(self, '_shell_print_v320', None)
+        if print_request is not None and Path(path) == print_request['path']:
+            payload['retry_changed_source'] = True
         if self.config_path:
             payload["config_path"] = str(self.config_path)
         if self.history_dir:

@@ -1,8 +1,17 @@
-# PDF Modder 3.0.24 (código fuente)
+# PDF Modder 3.0.25 (código fuente)
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Impresión desde el Explorador y 300 ppp en 3.0.25
+
+**Imprimir** desde el Explorador reintenta la lectura si el mismo PDF cambia
+durante la apertura. Envía una copia estable a la impresora predeterminada y
+prepara sus páginas a un máximo de 300 ppp. En **Ctrl+P**, la resolución parte
+de 300 ppp y puedes ajustarla y guardarla por impresora.
+
+[Instalador y portable](https://github.com/satagrolevante/PDFModder/releases/tag/v3.0.25) · [Notas de la versión](docs/NOTAS_3.0.25.md)
 
 ## Instalador y portapapeles en PDF etiquetados 3.0.24
 

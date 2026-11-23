@@ -4,6 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
 
+from .printer_preferences_v311 import DEFAULT_PRINT_SETTINGS_V311
 from .printing_device_v314 import printer_defaults_v314
 
 
@@ -16,10 +17,11 @@ def system_default_printer_v320(document):
     if (not printer.isValid() or printer.printerName() != name
             or printer.outputFormat() != QPrinter.NativeFormat):
         raise ValueError('La impresora predeterminada no está disponible. Revisa su configuración en Windows.')
-    # Read the new device; never apply a PDFModder profile or rewrite the native
-    # layout, color, duplex, resolution, copies, tray or private driver settings.
+    # Limit the resolution of the prepared page image. The native device keeps
+    # its resolution, layout, color, duplex, copies, tray and driver options.
     settings = printer_defaults_v314(name, printer)
-    settings.update(copies=max(1, printer.copyCount()),
+    settings.update(dpi=min(settings['dpi'], DEFAULT_PRINT_SETTINGS_V311['dpi']),
+                    copies=max(1, printer.copyCount()),
                     printer_device_v314=printer, preserve_driver_defaults_v320=True)
     printer.setDocName(Path(document).name)
     return settings

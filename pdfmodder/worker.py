@@ -35,7 +35,7 @@ def _reuse_analysis_v315(function):
 
 class Session:
     def __init__(self,path,password='',config_path=None,history_dir=None,reading=False,
-                 recovery_root=None,session_id=None):
+                 recovery_root=None,session_id=None,*,retry_changed_source=False):
         self.session_id=session_id or uuid.uuid4().hex
         self.recovery_id=uuid.uuid4().hex
         self.path=str(Path(path).resolve())
@@ -45,7 +45,8 @@ class Session:
         from .recovery_v200 import recovery_path
         self.history=History.from_file(self.path,directory=history_dir,
             persistent_root=recovery_path(self.recovery_id,recovery_root or (Path(history_dir)/'recovery' if history_dir else None)),
-            metadata={'path':self.path,'protected_paths':[self.path]})
+            metadata={'path':self.path,'protected_paths':[self.path]},
+            retry_changed_source=retry_changed_source)
         try:
             with self._open(self.history.original_source) as doc:
                 self.page_count=doc.page_count

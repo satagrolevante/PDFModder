@@ -8,6 +8,37 @@ import os
 import shutil
 import time
 
+from .model import EditError
+
+
+_SOURCE_CHANGED = 'El archivo cambió mientras se abría. Vuelve a abrirlo cuando termine de guardarse.'
+
+
+def _source_signature(stream):
+    info = os.fstat(stream.fileno())
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _copy_source(incoming, outgoing):
+    digest = hashlib.sha256()
+    size = 0
+    cloned = False
+    try:
+        # Copy-on-write on supported Linux filesystems.
+        import fcntl
+        fcntl.ioctl(outgoing.fileno(), 0x40049409, incoming.fileno())
+        cloned = True
+    except (ImportError, OSError):
+        outgoing.seek(0)
+        outgoing.truncate()
+    while block := incoming.read(1024 * 1024):
+        if not cloned:
+            outgoing.write(block)
+        digest.update(block)
+        size += len(block)
+    outgoing.flush()
+    return digest.hexdigest(), size
+
 
 def atomic_bytes(path,data):
     path=Path(path)
@@ -41,54 +72,47 @@ class History:
 
     @classmethod
     def from_file(cls,source,directory=None,max_states=40,max_bytes=512*1024*1024,
-                  persistent_root=None,metadata=None):
+                  persistent_root=None,metadata=None,*,retry_changed_source=False):
         """Capture immutable bytes on disk without retaining a document-sized buffer.
 
         A PDF engine may keep seeking the same file long after opening. Never
         point it at the user's mutable original: copying also protects reading
-        and comparison when another application replaces that original.
+        and comparison when another application replaces that original. A
+        print request can wait briefly for the same file to stabilise.
         """
         obj=cls(b'',directory,max_states,max_bytes,persistent_root,metadata)
         obj.root.mkdir(parents=True,exist_ok=True)
         destination=obj.root/'original.pdf'
         fd,name=tempfile.mkstemp(prefix='.opening-',dir=obj.root)
-        digest=hashlib.sha256();size=0
         try:
-            with os.fdopen(fd,'wb') as outgoing,open(source,'rb') as incoming:
-                before=os.fstat(incoming.fileno())
-                cloned=False
-                try:
-                    # Linux filesystems with copy-on-write can capture a large
-                    # PDF without duplicating its data blocks before rendering.
-                    import fcntl
-                    fcntl.ioctl(outgoing.fileno(),0x40049409,incoming.fileno())
-                    cloned=True
-                except (ImportError,OSError):
-                    outgoing.seek(0);outgoing.truncate(0)
-                while True:
-                    block=incoming.read(1024*1024)
-                    if not block:break
-                    if not cloned:outgoing.write(block)
-                    digest.update(block);size+=len(block)
-                outgoing.flush()
-                after=os.fstat(incoming.fileno())
-                # Compare descriptors using the same API. On CPython 3.12
-                # Windows, stat(path).st_ctime is creation time whereas
-                # fstat(fd).st_ctime is the actual metadata change time.
-                # Reopening also checks that the name still identifies the
-                # file we read, while its first handle remains alive.
-                try:
-                    with open(source,'rb') as named_source:
-                        named=os.fstat(named_source.fileno())
-                except FileNotFoundError:
-                    from .model import EditError
-                    raise EditError('El archivo cambió mientras se abría. Vuelve a abrirlo cuando termine de guardarse.') from None
-                identity=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
-                if identity(before)!=identity(after) or identity(after)!=identity(named) or size!=before.st_size:
-                    from .model import EditError
-                    raise EditError('El archivo cambió mientras se abría. Vuelve a abrirlo cuando termine de guardarse.')
+            # Keep one handle alive across attempts and reread without a Python
+            # buffer so a retry captures the current bytes of that same file.
+            with os.fdopen(fd, 'wb') as outgoing, open(source, 'rb', buffering=0) as incoming:
+                delays = (0, 0.25, 0.75) if retry_changed_source else (0,)
+                for delay in delays:
+                    if delay:
+                        time.sleep(delay)
+                        incoming.seek(0)
+                        outgoing.seek(0)
+                        outgoing.truncate()
+                    before = _source_signature(incoming)
+                    value, size = _copy_source(incoming, outgoing)
+                    after = _source_signature(incoming)
+                    # On CPython 3.12 for Windows, stat(path) and fstat(fd)
+                    # report different ctime fields. Use fstat for both handles.
+                    try:
+                        with open(source, 'rb') as named_source:
+                            named = _source_signature(named_source)
+                    except FileNotFoundError:
+                        raise EditError(_SOURCE_CHANGED) from None
+                    if before == after == named and size == before[2]:
+                        break
+                    if not before[1] or before[:2] != after[:2] or before[:2] != named[:2]:
+                        # A distinct or unidentifiable source cannot be retried.
+                        raise EditError(_SOURCE_CHANGED)
+                else:
+                    raise EditError(_SOURCE_CHANGED)
             os.replace(name,destination)
-            value=digest.hexdigest()
             obj.states=[destination];obj.digests=[value];obj.sizes=[size]
             obj._current=obj._original=None
             obj._original_durable=False

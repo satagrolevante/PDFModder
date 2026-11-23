@@ -121,8 +121,8 @@ class ShellActionsUiMixin:
         context = (state.get('session_id'), state.get('document_revision'))
 
         def print_document():
-            if (not self._closed and context ==
-                    (self._active_session_v200, self.state.get('document_revision'))):
+            if (not self._closed and not getattr(self, '_close_waiting_v300', False)
+                    and context == (self._active_session_v200, self.state.get('document_revision'))):
                 self.print_to_default_v320()
 
         QTimer.singleShot(0, print_document)

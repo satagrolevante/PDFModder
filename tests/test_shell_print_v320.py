@@ -24,10 +24,43 @@ def source_pdf(path, encrypted=False):
     return path
 
 
+def _dispatch_with_one_open_conflict(command, payload):
+    """Simulate one transient Windows metadata change in the spawned worker."""
+    from unittest.mock import patch
+
+    from pdfmodder import history
+    from pdfmodder.worker_entry_v322 import dispatch_pdf_worker
+
+    if command != 'open':
+        return dispatch_pdf_worker(command, payload)
+    fstat = history.os.fstat
+    with Path(payload['path']).open('rb') as source:
+        original = fstat(source.fileno())
+    checks = 0
+
+    def changing_metadata(fd):
+        nonlocal checks
+        current = fstat(fd)
+        if (current.st_dev, current.st_ino) == (original.st_dev, original.st_ino):
+            checks += 1
+            if checks == 2:
+                return SimpleNamespace(st_dev=current.st_dev, st_ino=current.st_ino,
+                                       st_size=current.st_size, st_mtime_ns=current.st_mtime_ns,
+                                       st_ctime_ns=current.st_ctime_ns+1_000_000_000)
+        return current
+
+    with patch.object(history.os, 'fstat', changing_metadata):
+        return dispatch_pdf_worker(command, payload)
+
+
 @pytest.mark.parametrize('encrypted', [False, True])
+@pytest.mark.parametrize('source_changes', [False, True], ids=['stable', 'transient-change'])
 def test_print_sends_the_selected_file_without_a_dialog_or_saved_profile(
-        qtbot, saving_window, tmp_path, monkeypatch, encrypted):
+        qtbot, saving_window, tmp_path, monkeypatch, encrypted, source_changes):
     window = saving_window
+    if source_changes:
+        from pdfmodder import app
+        monkeypatch.setattr(app, '_dispatch', _dispatch_with_one_open_conflict)
     source = source_pdf(tmp_path/'Factura con espacios y ñ.PDF', encrypted)
     original = source.read_bytes()
     import pdfmodder.printing_direct_v320 as direct
@@ -44,7 +77,8 @@ def test_print_sends_the_selected_file_without_a_dialog_or_saved_profile(
     monkeypatch.setattr(window._printer_preferences_v311, 'settings_for', lambda *_: pytest.fail('Do not read saved preferences'))
     monkeypatch.setattr(QInputDialog, 'getText', lambda *_: ('secret', True))
     assert window.open_pdf_for_print_v320(source)
-    qtbot.waitUntil(lambda: bool(started) and window._print_context_v314 is None, timeout=20000)
+    qtbot.waitUntil(lambda: bool(window.last_error) or (bool(started) and window._print_context_v314 is None),
+                    timeout=20000)
     finished(qtbot, window)
     assert len(started) == 1 and window._shell_print_v320 is None
     assert window._print_context_v314 is None
@@ -83,7 +117,8 @@ def test_cancelling_password_also_cancels_the_print_request(
     assert window._shell_print_v320 is None and not shown
 
 
-def test_a_tab_change_before_sending_cannot_print_the_wrong_document(qtbot, tmp_path):
+@pytest.mark.parametrize('interruption', ['tab-change', 'window-closing'])
+def test_interrupted_open_does_not_start_printing(qtbot, tmp_path, interruption):
     class Window(ShellActionsUiMixin, QMainWindow):
         operation_finished = Signal(str, object)
         error_raised = Signal(str)
@@ -101,7 +136,10 @@ def test_a_tab_change_before_sending_cannot_print_the_wrong_document(qtbot, tmp_
     window.state = {'path': str(source), 'session_id': 'selected', 'document_revision': 'first'}
     window._active_session_v200 = 'selected'
     window.operation_finished.emit('open', {'state': dict(window.state)})
-    window._active_session_v200 = 'another-tab'
+    if interruption == 'tab-change':
+        window._active_session_v200 = 'another-tab'
+    else:
+        window._close_waiting_v300 = True
     qtbot.wait(10)
     assert not window.printed
 
@@ -150,7 +188,9 @@ def pdf_device(tmp_path, copies=1):
             'paper': 0, 'orientation': 2, 'fit': True}, output
 
 
-def test_system_defaults_use_a_fresh_native_device_without_setting_overrides(qapp, monkeypatch):
+@pytest.mark.parametrize('driver_dpi, render_dpi', [(1200, 300), (150, 150)])
+def test_direct_print_limits_render_resolution_and_keeps_native_settings(
+        qapp, monkeypatch, driver_dpi, render_dpi):
     import pdfmodder.printing_direct_v320 as direct
     from pdfmodder.printing_ui_v314 import PrintingUiV314Mixin
     info = SimpleNamespace(isNull=lambda: False, printerName=lambda: 'Windows default')
@@ -166,7 +206,7 @@ def test_system_defaults_use_a_fresh_native_device_without_setting_overrides(qap
         def printerName(self): return 'Windows default'
         def outputFormat(self): return QPrinter.NativeFormat
         def pageLayout(self): return layout
-        def resolution(self): return 1200
+        def resolution(self): return driver_dpi
         def colorMode(self): return QPrinter.GrayScale
         def duplex(self): return QPrinter.DuplexShortSide
         def copyCount(self): return 3
@@ -182,7 +222,8 @@ def test_system_defaults_use_a_fresh_native_device_without_setting_overrides(qap
     owner = SimpleNamespace(state={'path': 'Factura ñ.pdf'})
     device = PrintingUiV314Mixin._make_print_printer_v314(owner, settings)
     assert len(devices) == 1 and device is devices[0]
-    assert device.document_name == 'Factura ñ.pdf' and device.resolution() == 1200
+    assert device.document_name == 'Factura ñ.pdf' and device.resolution() == driver_dpi
+    assert settings['dpi'] == render_dpi
     assert settings['copies'] == 3 and not settings['collate']
     assert settings['color'] == QPrinter.GrayScale and settings['duplex'] == QPrinter.DuplexShortSide
     assert settings['page_layout_v314'].isEquivalentTo(layout)
