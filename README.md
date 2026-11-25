@@ -1,8 +1,15 @@
-# PDF Modder 3.0.25 (código fuente)
+# PDF Modder 3.0.26 (código fuente)
 
 Editor local para Windows 11 x64, en español: texto PDF real, imágenes y páginas.
 No necesita cuentas, nube, telemetría ni IA. No realiza OCR; conserva la herramienta
 anterior para corregir una capa buscable existente.
+
+## Apertura de PDF sincronizados en 3.0.26
+
+PDF Modder reintenta la apertura si OneDrive está descargando o actualizando el
+archivo. En cuanto puede leer una copia estable, muestra el PDF directamente.
+
+[Notas de la versión](docs/NOTAS_3.0.26.md)
 
 ## Impresión desde el Explorador y 300 ppp en 3.0.25
 

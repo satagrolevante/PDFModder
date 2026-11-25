@@ -35,7 +35,8 @@ def _reuse_analysis_v315(function):
 
 class Session:
     def __init__(self,path,password='',config_path=None,history_dir=None,reading=False,
-                 recovery_root=None,session_id=None,*,retry_changed_source=False):
+                 recovery_root=None,session_id=None,*,retry_changed_source=False,
+                 follow_source_updates=False):
         self.session_id=session_id or uuid.uuid4().hex
         self.recovery_id=uuid.uuid4().hex
         self.path=str(Path(path).resolve())
@@ -46,7 +47,7 @@ class Session:
         self.history=History.from_file(self.path,directory=history_dir,
             persistent_root=recovery_path(self.recovery_id,recovery_root or (Path(history_dir)/'recovery' if history_dir else None)),
             metadata={'path':self.path,'protected_paths':[self.path]},
-            retry_changed_source=retry_changed_source)
+            retry_changed_source=retry_changed_source,follow_source_updates=follow_source_updates)
         try:
             with self._open(self.history.original_source) as doc:
                 self.page_count=doc.page_count
@@ -1454,7 +1455,7 @@ def _dispatch_command(command,payload=None):
         return result
     if command=='open':
         retain=payload.pop('retain_existing',False)
-        new=Session(**payload)
+        new=Session(**payload,follow_source_updates=not payload.get('retry_changed_source',False))
         _attach(new,retain)
         return {'state':new.state()}
     if _session is None:

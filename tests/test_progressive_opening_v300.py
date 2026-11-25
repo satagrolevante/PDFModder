@@ -113,9 +113,13 @@ def test_clean_reader_workspace_and_tab_switch_do_not_publish_recovery(tmp_path)
     finally:session.close()
 
 
-@pytest.mark.parametrize('retry_changed_source', [False, True])
+@pytest.mark.parametrize('options,wait_count,error_message', [
+    ({}, 0, 'cambió mientras'),
+    ({'retry_changed_source': True}, 2, 'cambió mientras'),
+    ({'follow_source_updates': True}, 5, 'copia estable'),
+])
 def test_snapshot_detects_source_change_during_capture_and_removes_partial_state(
-        tmp_path, monkeypatch, retry_changed_source):
+        tmp_path, monkeypatch, options, wait_count, error_message):
     import pdfmodder.history as history
     source=pdf_file(tmp_path);root=tmp_path/'capture';fstat=history.os.fstat;calls=0
     waits = []
@@ -129,9 +133,9 @@ def test_snapshot_detects_source_change_during_capture_and_removes_partial_state
         return result
     monkeypatch.setattr(history.os,'fstat',changed)
     monkeypatch.setattr(history.time, 'sleep', waits.append)
-    with pytest.raises(EditError, match='cambió mientras'):
-        History.from_file(source, persistent_root=root, retry_changed_source=retry_changed_source)
-    assert len(waits) == (2 if retry_changed_source else 0)
+    with pytest.raises(EditError, match=error_message):
+        History.from_file(source, persistent_root=root, **options)
+    assert len(waits) == wait_count
     assert not root.exists()
 
 
@@ -147,7 +151,8 @@ def test_snapshot_uses_descriptor_timestamps_when_windows_path_stat_differs(tmp_
                                    st_mtime_ns=result.st_mtime_ns,st_ctime_ns=result.st_ctime_ns-1_000_000_000)
         return result
     monkeypatch.setattr(history.os,'stat',windows_path_stat)
-    captured=History.from_file(source,directory=tmp_path)
+    monkeypatch.setattr(history.time, 'sleep', lambda _: pytest.fail('A stable PDF needs no wait'))
+    captured=History.from_file(source,directory=tmp_path,follow_source_updates=True)
     try:
         assert captured.original_source.read_bytes()==original
         assert captured.revision==sha256(original).hexdigest()
@@ -225,6 +230,66 @@ def test_snapshot_rechecks_named_source_while_original_descriptor_is_alive(tmp_p
     with pytest.raises(EditError, match='cambió mientras'):
         History.from_file(source, persistent_root=root, retry_changed_source=True)
     assert source_handle.closed and not root.exists()
+
+
+def test_open_snapshot_reads_replacement_after_releasing_the_old_handle(tmp_path, monkeypatch):
+    from pdfmodder import history
+
+    source = pdf_file(tmp_path)
+    replacement = tmp_path / 'revision.pdf'
+    with fitz.open() as document:
+        document.new_page().insert_text((50, 75), 'Revision sincronizada')
+        document.save(replacement)
+    revised = replacement.read_bytes()
+    handles = []
+    waits = []
+
+    def open_with_update(path, *args, **kwargs):
+        if Path(path) != source:
+            return open(path, *args, **kwargs)
+        # Simulate seeing the new file during the name recheck while the
+        # original is open. Windows can defer the real rename until it closes.
+        filename = replacement if len(handles) == 1 else source
+        handle = open(filename, *args, **kwargs)
+        handles.append(handle)
+        return handle
+
+    def sync_completes(delay):
+        waits.append(delay)
+        assert len(handles) == 2 and all(handle.closed for handle in handles)
+        replacement.replace(source)
+
+    monkeypatch.setattr(history, 'open', open_with_update, raising=False)
+    monkeypatch.setattr(history.time, 'sleep', sync_completes)
+    snapshot = History.from_file(source, directory=tmp_path, follow_source_updates=True)
+    try:
+        assert len(waits) == 1
+        assert snapshot.current_source.read_bytes() == source.read_bytes() == revised
+        assert snapshot.revision == sha256(revised).hexdigest()
+    finally:
+        snapshot.close()
+
+
+@pytest.mark.parametrize('error', [FileNotFoundError, PermissionError])
+def test_open_snapshot_waits_for_temporarily_unavailable_pdf(tmp_path, monkeypatch, error):
+    from pdfmodder import history
+
+    source = pdf_file(tmp_path, count=1)
+    waits = []
+
+    def open_when_available(path, *args, **kwargs):
+        if Path(path) == source and not waits:
+            raise error(str(source))
+        return open(path, *args, **kwargs)
+
+    monkeypatch.setattr(history, 'open', open_when_available, raising=False)
+    monkeypatch.setattr(history.time, 'sleep', waits.append)
+    snapshot = History.from_file(source, directory=tmp_path, follow_source_updates=True)
+    try:
+        assert len(waits) == 1
+        assert snapshot.original_source.read_bytes() == source.read_bytes()
+    finally:
+        snapshot.close()
 
 
 def test_file_snapshot_push_undo_and_suspend_preserve_original(tmp_path):

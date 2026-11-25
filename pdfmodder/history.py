@@ -12,6 +12,9 @@ from .model import EditError
 
 
 _SOURCE_CHANGED = 'El archivo cambió mientras se abría. Vuelve a abrirlo cuando termine de guardarse.'
+_OPEN_RETRY_DELAYS = (0, 0.25, 0.75, 1.5, 2.5, 3)
+_OPEN_NOT_STABLE = ('No se pudo abrir una copia estable del PDF tras varios intentos. '
+                    'Comprueba que haya terminado la sincronización o el guardado.')
 
 
 def _source_signature(stream):
@@ -38,6 +41,64 @@ def _copy_source(incoming, outgoing):
         size += len(block)
     outgoing.flush()
     return digest.hexdigest(), size
+
+
+def _copy_if_stable(source, incoming, outgoing):
+    before = _source_signature(incoming)
+    digest, size = _copy_source(incoming, outgoing)
+    after = _source_signature(incoming)
+    # On CPython 3.12 for Windows, stat(path) and fstat(fd) report different
+    # ctime fields. Recheck the name using the same API with both handles open.
+    try:
+        with open(source, 'rb') as named_source:
+            named = _source_signature(named_source)
+    except FileNotFoundError:
+        return None, False
+    if before == after == named and size == before[2]:
+        return (digest, size), True
+    return None, bool(before[1] and before[:2] == after[:2] == named[:2])
+
+
+def _capture_open_source(source, outgoing):
+    """Open the requested path once syncing settles, even after replacement."""
+    for delay in _OPEN_RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+            outgoing.seek(0)
+            outgoing.truncate()
+        try:
+            # Release the handle before waiting. A sync client may need to
+            # replace the file, and the next attempt must read its new entry.
+            with open(source, 'rb', buffering=0) as incoming:
+                snapshot, _ = _copy_if_stable(source, incoming, outgoing)
+        except FileNotFoundError:
+            error = 'No se encuentra el PDF. Comprueba que esté disponible en su carpeta.'
+        except PermissionError:
+            # Windows can report sharing violations as PermissionError.
+            error = ('No se pudo leer el PDF tras varios intentos. '
+                     'Comprueba el acceso al archivo y su estado de sincronización.')
+        else:
+            if snapshot is not None:
+                return snapshot
+            error = _OPEN_NOT_STABLE
+    raise EditError(error)
+
+
+def _capture_fixed_source(source, outgoing, retry):
+    """A print request can retry the selected file, but cannot change targets."""
+    with open(source, 'rb', buffering=0) as incoming:
+        for delay in (0, 0.25, 0.75) if retry else (0,):
+            if delay:
+                time.sleep(delay)
+                incoming.seek(0)
+                outgoing.seek(0)
+                outgoing.truncate()
+            snapshot, same_file = _copy_if_stable(source, incoming, outgoing)
+            if snapshot is not None:
+                return snapshot
+            if not same_file:
+                break
+    raise EditError(_SOURCE_CHANGED)
 
 
 def atomic_bytes(path,data):
@@ -72,46 +133,26 @@ class History:
 
     @classmethod
     def from_file(cls,source,directory=None,max_states=40,max_bytes=512*1024*1024,
-                  persistent_root=None,metadata=None,*,retry_changed_source=False):
+                  persistent_root=None,metadata=None,*,retry_changed_source=False,
+                  follow_source_updates=False):
         """Capture immutable bytes on disk without retaining a document-sized buffer.
 
         A PDF engine may keep seeking the same file long after opening. Never
         point it at the user's mutable original: copying also protects reading
         and comparison when another application replaces that original. A
-        print request can wait briefly for the same file to stabilise.
+        print request can wait briefly for the same file to stabilise. A normal
+        open can instead retry against the current file at the selected path.
         """
         obj=cls(b'',directory,max_states,max_bytes,persistent_root,metadata)
         obj.root.mkdir(parents=True,exist_ok=True)
         destination=obj.root/'original.pdf'
         fd,name=tempfile.mkstemp(prefix='.opening-',dir=obj.root)
         try:
-            # Keep one handle alive across attempts and reread without a Python
-            # buffer so a retry captures the current bytes of that same file.
-            with os.fdopen(fd, 'wb') as outgoing, open(source, 'rb', buffering=0) as incoming:
-                delays = (0, 0.25, 0.75) if retry_changed_source else (0,)
-                for delay in delays:
-                    if delay:
-                        time.sleep(delay)
-                        incoming.seek(0)
-                        outgoing.seek(0)
-                        outgoing.truncate()
-                    before = _source_signature(incoming)
-                    value, size = _copy_source(incoming, outgoing)
-                    after = _source_signature(incoming)
-                    # On CPython 3.12 for Windows, stat(path) and fstat(fd)
-                    # report different ctime fields. Use fstat for both handles.
-                    try:
-                        with open(source, 'rb') as named_source:
-                            named = _source_signature(named_source)
-                    except FileNotFoundError:
-                        raise EditError(_SOURCE_CHANGED) from None
-                    if before == after == named and size == before[2]:
-                        break
-                    if not before[1] or before[:2] != after[:2] or before[:2] != named[:2]:
-                        # A distinct or unidentifiable source cannot be retried.
-                        raise EditError(_SOURCE_CHANGED)
+            with os.fdopen(fd, 'wb') as outgoing:
+                if follow_source_updates:
+                    value, size = _capture_open_source(source, outgoing)
                 else:
-                    raise EditError(_SOURCE_CHANGED)
+                    value, size = _capture_fixed_source(source, outgoing, retry_changed_source)
             os.replace(name,destination)
             obj.states=[destination];obj.digests=[value];obj.sizes=[size]
             obj._current=obj._original=None

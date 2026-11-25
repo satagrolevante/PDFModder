@@ -53,6 +53,25 @@ def _dispatch_with_one_open_conflict(command, payload):
         return dispatch_pdf_worker(command, payload)
 
 
+def test_normal_open_recovers_from_transient_sync_without_error(qtbot, saving_window, tmp_path, monkeypatch):
+    from pdfmodder import app
+
+    monkeypatch.setattr(app, '_dispatch', _dispatch_with_one_open_conflict)
+    source = source_pdf(tmp_path / 'Documento sincronizado.pdf')
+    original = source.read_bytes()
+    errors = []
+    saving_window.error_raised.connect(errors.append)
+
+    with qtbot.waitSignal(saving_window.operation_finished, timeout=20000,
+                         check_params_cb=lambda command, _: command == 'open'):
+        assert saving_window.open_document(source)
+    finished(qtbot, saving_window)
+    assert not errors
+    assert saving_window.state['page_count'] == 1
+    assert Path(saving_window.state['path']) == source.resolve()
+    assert source.read_bytes() == original
+
+
 @pytest.mark.parametrize('encrypted', [False, True])
 @pytest.mark.parametrize('source_changes', [False, True], ids=['stable', 'transient-change'])
 def test_print_sends_the_selected_file_without_a_dialog_or_saved_profile(
